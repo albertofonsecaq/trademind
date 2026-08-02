@@ -27,6 +27,8 @@ export function TelegramConnect() {
   const [code, setCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [resending, setResending] = useState(false);
+  const [resendMsg, setResendMsg] = useState("");
 
   const [dialogs, setDialogs] = useState<Dialog[]>([]);
   const [loadingDialogs, setLoadingDialogs] = useState(false);
@@ -68,6 +70,19 @@ export function TelegramConnect() {
       setError(t("telegramConnect.error"));
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const resendCode = async () => {
+    setResending(true); setResendMsg(""); setError("");
+    try {
+      await api.post(`/workspaces/${workspaceId}/connections/telegram/${connectionId}/resend`);
+      setCode("");
+      setResendMsg(t("telegramConnect.codeSent"));
+    } catch {
+      setError(t("telegramConnect.error"));
+    } finally {
+      setResending(false);
     }
   };
 
@@ -157,11 +172,15 @@ export function TelegramConnect() {
           <>
             <p style={{ fontSize: "0.875rem", color: "#555" }}>{t("telegramConnect.enterCode")}</p>
             {error && <p style={{ color: "#c0392b", fontSize: "0.85rem" }}>{error}</p>}
+            {resendMsg && <p style={{ color: "#27ae60", fontSize: "0.85rem" }}>{resendMsg}</p>}
             <form onSubmit={verify}>
               <label style={lbl}>{t("telegramConnect.code")}</label>
               <input style={inp} value={code} onChange={(e) => setCode(e.target.value)} required autoFocus />
               <button type="submit" style={btn()} disabled={submitting}>
                 {submitting ? t("telegramConnect.verifying") : t("telegramConnect.verify")}
+              </button>
+              <button type="button" style={btn(false)} onClick={resendCode} disabled={resending}>
+                {resending ? t("common.loading") : t("telegramConnect.resendCode")}
               </button>
             </form>
           </>

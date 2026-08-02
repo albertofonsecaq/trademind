@@ -444,6 +444,8 @@
     "selectedCount": "seleccionados",
     "addSelected": "Agregar fuentes seleccionadas",
     "adding": "Agregando...",
-    "skipForNow": "Omitir por ahora"
+    "skipForNow": "Omitir por ahora",
+    "resendCode": "Reenviar código",
+    "codeSent": "Nuevo código enviado — revisa tu app de Telegram"
   }
 }

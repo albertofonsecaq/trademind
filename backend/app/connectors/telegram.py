@@ -286,6 +286,19 @@ async def start_telegram_auth(
     return session_string, sent.phone_code_hash
 
 
+async def resend_telegram_code(
+    *, api_id: int, api_hash: str, session_string: str, phone: str
+) -> tuple[str, str]:
+    client = TelegramClient(StringSession(session_string), api_id, api_hash)
+    await client.connect()
+    try:
+        sent = await client.send_code_request(phone)
+        new_session = client.session.save()
+        return new_session, sent.phone_code_hash
+    finally:
+        await client.disconnect()
+
+
 async def complete_telegram_auth(
     *, api_id: int, api_hash: str, session_string: str, phone: str, code: str, phone_code_hash: str
 ) -> str:

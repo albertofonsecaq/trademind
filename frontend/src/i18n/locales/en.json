@@ -444,6 +444,8 @@
     "selectedCount": "selected",
     "addSelected": "Add Selected Sources",
     "adding": "Adding...",
-    "skipForNow": "Skip for now"
+    "skipForNow": "Skip for now",
+    "resendCode": "Resend code",
+    "codeSent": "New code sent — check your Telegram app"
   }
 }
