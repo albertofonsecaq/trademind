@@ -12,8 +12,9 @@ class SourceConfig(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     workspace_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("workspaces.id"), nullable=False)
     platform_connection_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("platform_connections.id"), nullable=True)
-    source_type: Mapped[str] = mapped_column(String(50), nullable=False)  # "telegram" | "youtube"
-    identifier: Mapped[str] = mapped_column(String(255), nullable=False)  # channel handle/id
+    source_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    identifier: Mapped[str] = mapped_column(String(255), nullable=False)
+    label: Mapped[str | None] = mapped_column(String(255), nullable=True)
     fetch_cadence: Mapped[str] = mapped_column(String(20), nullable=False, default="hourly")
     # {text: true, image: false, video: false, url: false}
     content_filters: Mapped[dict] = mapped_column(JSONB, nullable=False, default=lambda: {"text": True, "image": False, "video": False, "url": False})

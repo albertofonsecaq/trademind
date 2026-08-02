@@ -279,7 +279,8 @@
     "noJobs": "No hay trabajos de backfill aún.",
     "now": "ahora",
     "items": "ítems",
-    "from": "desde"
+    "from": "desde",
+    "fetchInProgress": "Obteniendo en segundo plano — se actualizará al terminar..."
   },
   "trading": {
     "title": "Trading en papel",

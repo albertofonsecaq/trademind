@@ -8,9 +8,10 @@ import api from "../api/client";
 
 type Connection = { id: string; label: string; status: string; platform: string };
 type Source = {
-  id: string; source_type: string; identifier: string; fetch_cadence: string;
-  content_filters: Record<string, boolean>; last_fetched_at: string | null;
-  platform_connection_id: string | null; backfill_start_date: string | null;
+  id: string; source_type: string; identifier: string; label: string | null;
+  fetch_cadence: string; content_filters: Record<string, boolean>;
+  last_fetched_at: string | null; platform_connection_id: string | null;
+  backfill_start_date: string | null;
 };
 type BackfillJob = {
   id: string; status: string; items_ingested: number;
@@ -42,6 +43,8 @@ const SOURCE_BADGE: Record<string, React.CSSProperties> = {
 const JOB_COLOR: Record<string, string> = {
   queued: "#888", running: "#1565c0", completed: "#2e7d32", failed: "#c0392b",
 };
+
+const PULSE_STYLE = `@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }`;
 
 // ── per-source config + backfill panel ────────────────────────────────────────
 function SourcePanel({ source, workspaceId, onSaved }: {
@@ -213,6 +216,7 @@ export function AdminSources() {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [sources, setSources] = useState<Source[]>([]);
   const [fetchingId, setFetchingId] = useState<string | null>(null);
+  const [activeFetches, setActiveFetches] = useState<Record<string, string>>({}); // id → triggered-at ISO
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   // Add source form
@@ -271,11 +275,36 @@ export function AdminSources() {
     }
   };
 
+  // Poll sources every 5s while any fetch is active; clear when last_fetched_at updates
+  useEffect(() => {
+    if (Object.keys(activeFetches).length === 0) return;
+    const interval = setInterval(async () => {
+      if (!workspaceId) return;
+      const { data } = await api.get<Source[]>(`/workspaces/${workspaceId}/sources`);
+      setSources(data);
+      setActiveFetches((prev) => {
+        const next = { ...prev };
+        for (const [id, triggeredAt] of Object.entries(prev)) {
+          const updated = data.find((s) => s.id === id);
+          if (updated?.last_fetched_at && updated.last_fetched_at > triggeredAt) {
+            delete next[id];
+          }
+        }
+        return next;
+      });
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [activeFetches, workspaceId]);
+
   const fetchNow = async (sourceId: string) => {
     if (!workspaceId) return;
     setFetchingId(sourceId);
-    try { await api.post(`/workspaces/${workspaceId}/sources/${sourceId}/fetch`); }
-    finally { setFetchingId(null); setTimeout(load, 2000); }
+    try {
+      await api.post(`/workspaces/${workspaceId}/sources/${sourceId}/fetch`);
+      setActiveFetches((prev) => ({ ...prev, [sourceId]: new Date().toISOString() }));
+    } finally {
+      setFetchingId(null);
+    }
   };
 
   const removeSource = async (sourceId: string) => {
@@ -288,6 +317,7 @@ export function AdminSources() {
 
   return (
     <div style={{ minHeight: "100vh", background: "#f5f5f5", fontFamily: "system-ui, sans-serif" }}>
+      <style>{PULSE_STYLE}</style>
       <NavBar />
       <main style={{ maxWidth: "820px", margin: "0 auto", padding: "2rem 1.5rem" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1.5rem" }}>
@@ -395,8 +425,9 @@ export function AdminSources() {
             sources.map((s) => (
               <div key={s.id} style={{ borderBottom: "1px solid #f0f0f0", padding: "0.75rem 0" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                    <span style={{ fontWeight: 600, fontSize: "0.9rem" }}>{s.identifier}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+                    <span style={{ fontWeight: 600, fontSize: "0.9rem" }}>{s.label || s.identifier}</span>
+                    {s.label && <span style={{ fontSize: "0.75rem", color: "#aaa", fontFamily: "monospace" }}>{s.identifier}</span>}
                     <span style={{ fontSize: "0.7rem", padding: "2px 7px", borderRadius: "10px", ...(SOURCE_BADGE[s.source_type] || {}) }}>{s.source_type}</span>
                     <span style={{ fontSize: "0.75rem", color: "#999" }}>{s.fetch_cadence}</span>
                   </div>
@@ -424,6 +455,12 @@ export function AdminSources() {
                 <p style={{ margin: "0.2rem 0 0", fontSize: "0.77rem", color: "#aaa" }}>
                   {t("sources.lastFetched")}: {s.last_fetched_at ? new Date(s.last_fetched_at).toLocaleString() : t("sources.never")}
                 </p>
+                {activeFetches[s.id] && (
+                  <p style={{ margin: "0.15rem 0 0", fontSize: "0.77rem", color: "#1565c0", display: "flex", alignItems: "center", gap: "0.3rem" }}>
+                    <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: "#1565c0", animation: "pulse 1.2s infinite" }} />
+                    {t("sources.fetchInProgress")}
+                  </p>
+                )}
 
                 {expandedId === s.id && workspaceId && (
                   <SourcePanel source={s} workspaceId={workspaceId} onSaved={load} />

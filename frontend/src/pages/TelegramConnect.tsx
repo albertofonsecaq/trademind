@@ -112,6 +112,7 @@ export function TelegramConnect() {
         api.post(`/workspaces/${workspaceId}/sources`, {
           source_type: "telegram",
           identifier: d.identifier,
+          label: d.name,
           platform_connection_id: connectionId,
           fetch_cadence: "hourly",
           content_filters: { text: true, image: false, video: false, url: false },

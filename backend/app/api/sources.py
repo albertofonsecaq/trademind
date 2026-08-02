@@ -32,8 +32,9 @@ async def _assert_member(db: AsyncSession, workspace_id: uuid.UUID, user_id: uui
 
 
 class SourceCreateRequest(BaseModel):
-    source_type: str  # "telegram"
+    source_type: str
     identifier: str
+    label: str | None = None
     platform_connection_id: uuid.UUID | None = None
     fetch_cadence: str = "hourly"
     content_filters: dict = {"text": True, "image": False, "video": False, "url": False}
@@ -44,6 +45,7 @@ class SourceOut(BaseModel):
     id: uuid.UUID
     source_type: str
     identifier: str
+    label: str | None
     fetch_cadence: str
     content_filters: dict
     backfill_start_date: datetime | None
@@ -98,6 +100,7 @@ async def add_source(
         platform_connection_id=payload.platform_connection_id,
         source_type=payload.source_type,
         identifier=payload.identifier,
+        label=payload.label,
         fetch_cadence=payload.fetch_cadence,
         content_filters=payload.content_filters,
         backfill_start_date=payload.backfill_start_date.replace(tzinfo=None) if payload.backfill_start_date else None,
@@ -123,6 +126,7 @@ async def list_sources(
 
 
 class SourceUpdateRequest(BaseModel):
+    label: str | None = None
     fetch_cadence: str | None = None
     content_filters: dict | None = None
     backfill_start_date: datetime | None = None
@@ -145,6 +149,8 @@ async def update_source(
     source = result.scalar_one_or_none()
     if not source:
         raise HTTPException(status_code=404, detail="Source not found")
+    if payload.label is not None:
+        source.label = payload.label
     if payload.fetch_cadence is not None:
         source.fetch_cadence = payload.fetch_cadence
     if payload.content_filters is not None:
