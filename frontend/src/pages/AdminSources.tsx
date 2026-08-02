@@ -221,6 +221,7 @@ export function AdminSources() {
 
   // Add source form
   const [showAddSource, setShowAddSource] = useState(false);
+  const [showAddYoutube, setShowAddYoutube] = useState(false);
   const [newSourceType, setNewSourceType] = useState<"telegram" | "youtube">("telegram");
   const [newIdentifier, setNewIdentifier] = useState("");
   const [newConnId, setNewConnId] = useState("");
@@ -266,7 +267,7 @@ export function AdminSources() {
         content_filters: newFilters,
         backfill_start_date: newBackfillDate ? new Date(newBackfillDate).toISOString() : null,
       });
-      setNewIdentifier(""); setNewBackfillDate(""); setShowAddSource(false);
+      setNewIdentifier(""); setNewBackfillDate(""); setShowAddSource(false); setShowAddYoutube(false);
       await load();
     } catch (err: unknown) {
       setAddError((err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? t("common.error"));
@@ -342,6 +343,63 @@ export function AdminSources() {
                 <span style={{ fontSize: "0.72rem", padding: "2px 8px", borderRadius: "12px", background: c.status === "active" ? "#e8f5e9" : "#fff3e0", color: c.status === "active" ? "#2e7d32" : "#e65100" }}>
                   {c.status}
                 </span>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* YouTube Channels */}
+        <div style={sec}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem" }}>
+            <h2 style={{ margin: 0, fontSize: "1rem" }}>{t("sources.youtube")}</h2>
+            <button style={btn()} onClick={() => { handleSourceTypeChange("youtube"); setShowAddYoutube(true); }}>
+              {t("sources.addSource")}
+            </button>
+          </div>
+
+          {showAddYoutube && (
+            <form onSubmit={addSource} style={{ background: "#f9f9f9", padding: "1rem", borderRadius: "6px", marginBottom: "1rem", display: "flex", flexDirection: "column", gap: "0.55rem" }}>
+              <label style={lbl}>{t("sources.youtubeIdentifier")}</label>
+              <input style={inp} value={newIdentifier} onChange={(e) => setNewIdentifier(e.target.value)}
+                placeholder="@ChannelName or UCxxxxxxx or PLxxxxxxx" required />
+              <p style={{ margin: 0, fontSize: "0.78rem", color: "#888" }}>{t("sources.youtubeNote")}</p>
+              <p style={{ margin: 0, fontSize: "0.82rem", color: "#555" }}>{t("sources.noConnectionNeeded")}</p>
+
+              <label style={lbl}>{t("sources.cadence")}</label>
+              <select style={inp} value={newCadence} onChange={(e) => setNewCadence(e.target.value)}>
+                <option value="realtime">{t("sources.cadenceOptions.realtime")}</option>
+                <option value="hourly">{t("sources.cadenceOptions.hourly")}</option>
+                <option value="daily">{t("sources.cadenceOptions.daily")}</option>
+              </select>
+
+              <label style={{ ...lbl, marginTop: "0.25rem" }}>{t("sources.backfillStartDate")}</label>
+              <input type="date" style={{ ...inp, width: "auto" }} value={newBackfillDate} onChange={(e) => setNewBackfillDate(e.target.value)} />
+              <p style={{ margin: 0, fontSize: "0.76rem", color: "#888" }}>{t("sources.backfillStartDateHint")}</p>
+
+              {addError && <p style={{ margin: 0, color: "#c0392b", fontSize: "0.82rem" }}>{addError}</p>}
+              <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.25rem" }}>
+                <button type="submit" style={btn()} disabled={addingSource}>{addingSource ? t("common.loading") : t("sources.addSource")}</button>
+                <button type="button" style={btn(false)} onClick={() => { setShowAddYoutube(false); setAddError(""); }}>{t("common.cancel")}</button>
+              </div>
+            </form>
+          )}
+
+          {sources.filter((s) => s.source_type === "youtube").length === 0 && !showAddYoutube ? (
+            <p style={{ color: "#aaa", fontSize: "0.85rem", margin: 0 }}>—</p>
+          ) : (
+            sources.filter((s) => s.source_type === "youtube").map((s) => (
+              <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0.45rem 0", borderBottom: "1px solid #f5f5f5" }}>
+                <div>
+                  <span style={{ fontSize: "0.875rem", fontWeight: 500 }}>{s.label || s.identifier}</span>
+                  {s.label && <span style={{ fontSize: "0.75rem", color: "#aaa", fontFamily: "monospace", marginLeft: "0.4rem" }}>{s.identifier}</span>}
+                  <span style={{ fontSize: "0.75rem", color: "#999", marginLeft: "0.4rem" }}>{s.fetch_cadence}</span>
+                </div>
+                <div style={{ display: "flex", gap: "0.4rem" }}>
+                  <button style={btn()} disabled={fetchingId === s.id} onClick={() => fetchNow(s.id)}>
+                    {fetchingId === s.id ? t("sources.fetching") : t("sources.fetchNow")}
+                  </button>
+                  <button style={btn(false, true)} onClick={() => removeSource(s.id)}>{t("common.delete")}</button>
+                </div>
               </div>
             ))
           )}
