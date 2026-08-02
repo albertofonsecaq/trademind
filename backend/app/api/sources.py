@@ -260,21 +260,27 @@ async def list_backfill_jobs(
 # --- background task runners ---
 
 async def _run_fetch_bg(source_id: uuid.UUID, workspace_id: uuid.UUID):
+    import logging
+    log = logging.getLogger(__name__)
     from app.services.ingestion_pipeline import run_fetch_pipeline
     from sqlalchemy.orm import selectinload
-    async with AsyncSessionLocal() as db:
-        source_result = await db.execute(
-            select(SourceConfig)
-            .options(selectinload(SourceConfig.connection))
-            .where(SourceConfig.id == source_id)
-        )
-        source = source_result.scalar_one_or_none()
-        workspace_result = await db.execute(
-            select(Workspace).where(Workspace.id == workspace_id)
-        )
-        workspace = workspace_result.scalar_one_or_none()
-        if source and workspace:
-            await run_fetch_pipeline(db, source=source, workspace=workspace)
+    try:
+        async with AsyncSessionLocal() as db:
+            source_result = await db.execute(
+                select(SourceConfig)
+                .options(selectinload(SourceConfig.connection))
+                .where(SourceConfig.id == source_id)
+            )
+            source = source_result.scalar_one_or_none()
+            workspace_result = await db.execute(
+                select(Workspace).where(Workspace.id == workspace_id)
+            )
+            workspace = workspace_result.scalar_one_or_none()
+            if source and workspace:
+                count = await run_fetch_pipeline(db, source=source, workspace=workspace)
+                log.info("Fetch complete for source %s: %d items ingested", source_id, count)
+    except Exception as e:
+        log.error("Fetch background task failed for source %s: %s", source_id, e, exc_info=True)
 
 
 async def _run_backfill_bg(job_id: uuid.UUID):

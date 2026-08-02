@@ -465,8 +465,8 @@ async def run_fetch_pipeline(
 ) -> int:
     try:
         connector = _build_connector(source)
-    except ValueError as e:
-        log.warning("Cannot build connector for source %s: %s", source.id, e)
+    except Exception as e:
+        log.warning("Cannot build connector for source %s: %s", source.id, e, exc_info=True)
         return 0
 
     filters = source.content_filters or {}

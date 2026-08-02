@@ -20,12 +20,10 @@ services:
   backend:
     build: ./backend
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    env_file: ./backend/.env
     environment:
       DATABASE_URL: postgresql+asyncpg://trademind:trademind@db:5432/trademind
       DATABASE_URL_SYNC: postgresql+psycopg2://trademind:trademind@db:5432/trademind
-      SECRET_KEY: change-me-in-production-use-openssl-rand-hex-32
-      ACCESS_TOKEN_EXPIRE_MINUTES: "30"
-      REFRESH_TOKEN_EXPIRE_DAYS: "7"
       CORS_ORIGINS: '["http://localhost:5173"]'
     ports:
       - "8000:8000"
