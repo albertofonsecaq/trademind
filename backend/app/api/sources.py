@@ -100,7 +100,7 @@ async def add_source(
         identifier=payload.identifier,
         fetch_cadence=payload.fetch_cadence,
         content_filters=payload.content_filters,
-        backfill_start_date=payload.backfill_start_date,
+        backfill_start_date=payload.backfill_start_date.replace(tzinfo=None) if payload.backfill_start_date else None,
         created_by_user_id=current_user.id,
     )
     db.add(source)
@@ -150,7 +150,7 @@ async def update_source(
     if payload.content_filters is not None:
         source.content_filters = payload.content_filters
     if payload.backfill_start_date is not None:
-        source.backfill_start_date = payload.backfill_start_date
+        source.backfill_start_date = payload.backfill_start_date.replace(tzinfo=None)
     await db.commit()
     await db.refresh(source)
     return source
@@ -221,8 +221,8 @@ async def trigger_backfill(
     job = BackfillJob(
         source_config_id=source_id,
         workspace_id=workspace_id,
-        date_range_start=payload.date_range_start,
-        date_range_end=payload.date_range_end,
+        date_range_start=payload.date_range_start.replace(tzinfo=None),
+        date_range_end=payload.date_range_end.replace(tzinfo=None) if payload.date_range_end else None,
         status="queued",
         triggered_by_user_id=current_user.id,
     )
