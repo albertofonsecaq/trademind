@@ -46,6 +46,6 @@ class JournalOutcome(Base):
 
     data_source: Mapped[str] = mapped_column(String(50), nullable=False, default="manual")
     checked_at: Mapped[datetime] = mapped_column(
-        default=lambda: datetime.now(timezone.utc), server_default=func.now()
+        default=datetime.utcnow, server_default=func.now()
     )
     window_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)

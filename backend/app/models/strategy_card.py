@@ -31,7 +31,7 @@ class StrategyCard(Base):
     confidence_tier: Mapped[str] = mapped_column(String(20), nullable=False, default="still_learning")
     walk_forward_result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     validation_updated_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    last_updated: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
-    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc), server_default=func.now())
+    last_updated: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
 
     plan_items: Mapped[list["PlanItem"]] = relationship("PlanItem", back_populates="card")

@@ -489,7 +489,7 @@ async def run_fetch_pipeline(
 
     if last_stable_id != source.last_fetched_id:
         source.last_fetched_id = last_stable_id
-        source.last_fetched_at = datetime.now(timezone.utc)
+        source.last_fetched_at = datetime.utcnow()
         await db.commit()
 
     return count

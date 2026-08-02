@@ -111,7 +111,7 @@ async def score_journal_entry(
         existing.max_adverse_excursion = _dec(outcome_data["max_adverse_excursion"])
         existing.max_favorable_excursion = _dec(outcome_data["max_favorable_excursion"])
         existing.data_source = data_source
-        existing.checked_at = datetime.now(timezone.utc)
+        existing.checked_at = datetime.utcnow()
         return existing
 
     outcome_row = JournalOutcome(

@@ -85,7 +85,7 @@ def upgrade() -> None:
         sa.Column("cost_usd", sa.Numeric(12, 8), nullable=False, server_default="0"),
         sa.Column("is_overage", sa.Boolean, nullable=False, server_default="false"),
         sa.Column("source_id", UUID(as_uuid=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), index=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
     op.create_index("ix_usage_events_workspace_id", "usage_events", ["workspace_id"])
     op.create_index("ix_usage_events_created_at", "usage_events", ["created_at"])

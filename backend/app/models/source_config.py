@@ -21,7 +21,7 @@ class SourceConfig(Base):
     last_fetched_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_fetched_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
 
     connection: Mapped["PlatformConnection | None"] = relationship("PlatformConnection", back_populates="sources")
     backfill_jobs: Mapped[list["BackfillJob"]] = relationship("BackfillJob", back_populates="source")

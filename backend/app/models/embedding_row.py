@@ -22,4 +22,4 @@ class EmbeddingRow(Base):
     embedding: Mapped[list[float]] = mapped_column(Vector(settings.EMBEDDING_DIM), nullable=False)
     source_language: Mapped[str | None] = mapped_column(String(10), nullable=True)
     embedding_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc), server_default=func.now(), index=True)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now(), index=True)

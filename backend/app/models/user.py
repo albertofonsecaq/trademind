@@ -17,6 +17,6 @@ class User(Base):
     default_workspace_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     preferred_language: Mapped[str] = mapped_column(String(2), default="en", nullable=False)
     platform_role: Mapped[str] = mapped_column(String(20), default="user", nullable=False)
-    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
 
     workspace_memberships: Mapped[list["WorkspaceMember"]] = relationship("WorkspaceMember", back_populates="user")

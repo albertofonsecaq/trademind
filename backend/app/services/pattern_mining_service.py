@@ -225,7 +225,7 @@ async def run_pattern_mining(
                 confidence_tier=tier,
                 version=1,
                 version_history=[],
-                last_updated=datetime.now(timezone.utc),
+                last_updated=datetime.utcnow(),
             )
             db.add(card)
         else:
@@ -260,7 +260,7 @@ async def run_pattern_mining(
             card.preliminary_confidence = confidence
             card.source_count = source_count
             card.confidence_tier = tier
-            card.last_updated = datetime.now(timezone.utc)
+            card.last_updated = datetime.utcnow()
 
         cards_touched += 1
 

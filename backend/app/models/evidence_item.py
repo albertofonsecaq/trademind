@@ -23,7 +23,7 @@ class EvidenceItem(Base):
     relevance_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     source_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     message_timestamp: Mapped[datetime | None] = mapped_column(nullable=True)
-    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
 
     source: Mapped["SourceConfig"] = relationship("SourceConfig", back_populates="evidence_items")
     trade_ideas: Mapped[list["TradeIdea"]] = relationship("TradeIdea", back_populates="evidence_item")

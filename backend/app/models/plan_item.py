@@ -17,7 +17,7 @@ class PlanItem(Base):
     user_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     risk_tolerance_match: Mapped[str | None] = mapped_column(String(20), nullable=True)  # low|medium|high
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="watching")
-    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
 
     card: Mapped["StrategyCard"] = relationship("StrategyCard", back_populates="plan_items")

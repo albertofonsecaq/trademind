@@ -18,5 +18,5 @@ class AdminAuditLog(Base):
     target_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
-        default=lambda: datetime.now(timezone.utc), server_default=func.now(), index=True
+        default=datetime.utcnow, server_default=func.now(), index=True
     )

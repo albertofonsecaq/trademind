@@ -230,7 +230,7 @@ async def add_member(
     member = WorkspaceMember(
         workspace_id=workspace_id, user_id=user.id,
         role=payload.role if payload.role in ("owner", "member") else "member",
-        joined_at=datetime.now(timezone.utc),
+        joined_at=datetime.utcnow(),
     )
     db.add(member)
     await db.flush()

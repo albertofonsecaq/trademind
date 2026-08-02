@@ -35,11 +35,11 @@ class BrokerOrder(Base):
     filled_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
-        default=lambda: datetime.now(timezone.utc), server_default=func.now()
+        default=datetime.utcnow, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
     )
 
     journal_entries: Mapped[list["JournalEntry"]] = relationship("JournalEntry", back_populates="broker_order")

@@ -132,7 +132,7 @@ async def add_plan_item(
         status=payload.status,
         user_notes=payload.user_notes,
         risk_tolerance_match=payload.risk_tolerance_match,
-        updated_at=datetime.now(timezone.utc),
+        updated_at=datetime.utcnow(),
     )
     db.add(item)
     await db.commit()
@@ -171,7 +171,7 @@ async def update_plan_item(
     if payload.risk_tolerance_match is not None:
         item.risk_tolerance_match = payload.risk_tolerance_match
 
-    item.updated_at = datetime.now(timezone.utc)
+    item.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(item)
     return item

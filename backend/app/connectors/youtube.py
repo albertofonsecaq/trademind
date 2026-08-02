@@ -210,7 +210,7 @@ class YouTubeConnector(BaseConnector):
         try:
             return datetime.fromisoformat(published_at.replace("Z", "+00:00"))
         except Exception:
-            return datetime.now(timezone.utc)
+            return datetime.utcnow()
 
     async def _yield_video_chunks(
         self, video: dict

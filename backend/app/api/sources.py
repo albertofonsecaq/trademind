@@ -284,7 +284,7 @@ async def _run_backfill_bg(job_id: uuid.UUID):
 
             job.status = "completed"
             job.items_ingested = count
-            job.completed_at = datetime.now(timezone.utc)
+            job.completed_at = datetime.utcnow()
 
         except Exception as e:
             log.error("Backfill job %s failed: %s", job_id, e)

@@ -26,6 +26,6 @@ class TradeIdea(Base):
     author: Mapped[str | None] = mapped_column(String(255), nullable=True)
     channel: Mapped[str | None] = mapped_column(String(255), nullable=True)
     message_timestamp: Mapped[datetime | None] = mapped_column(nullable=True)
-    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
 
     evidence_item: Mapped["EvidenceItem"] = relationship("EvidenceItem", back_populates="trade_ideas")

@@ -127,7 +127,7 @@ async def propose_order(
         notes=payload.notes,
         status="proposed",
         mode="paper",
-        updated_at=datetime.now(timezone.utc),
+        updated_at=datetime.utcnow(),
     )
     db.add(order)
     await db.commit()
@@ -173,8 +173,8 @@ async def confirm_order(
         raise HTTPException(status_code=409, detail=f"Order is already in '{order.status}' status")
 
     order.status = "confirmed"
-    order.confirmed_at = datetime.now(timezone.utc)
-    order.updated_at = datetime.now(timezone.utc)
+    order.confirmed_at = datetime.utcnow()
+    order.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(order)
     return order
@@ -210,7 +210,7 @@ async def submit_order(
 
     order.alpaca_order_id = result.get("id")
     order.status = "submitted"
-    order.updated_at = datetime.now(timezone.utc)
+    order.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(order)
     return order
@@ -235,7 +235,7 @@ async def cancel_order(
             raise HTTPException(status_code=503, detail=str(e))
 
     order.status = "cancelled"
-    order.updated_at = datetime.now(timezone.utc)
+    order.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(order)
     return order
@@ -265,7 +265,7 @@ async def refresh_order_status(
 
     new_status = ALPACA_TERMINAL_MAP.get(alpaca_data.get("status", ""), "submitted")
     order.status = new_status
-    order.updated_at = datetime.now(timezone.utc)
+    order.updated_at = datetime.utcnow()
 
     if new_status == "filled":
         filled_price_str = alpaca_data.get("filled_avg_price")
@@ -289,7 +289,7 @@ async def refresh_order_status(
                 size=order.size,
                 mode=order.mode,
                 notes=order.notes,
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.utcnow(),
             )
             db.add(journal)
 

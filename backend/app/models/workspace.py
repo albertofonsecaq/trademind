@@ -16,7 +16,7 @@ class Workspace(Base):
     monthly_budget_cap: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     payment_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     topic_scope: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
 
     members: Mapped[list["WorkspaceMember"]] = relationship("WorkspaceMember", back_populates="workspace")
     subscription: Mapped["Subscription | None"] = relationship("Subscription", back_populates="workspace", uselist=False)

@@ -216,7 +216,7 @@ async def check_idea_outcome(
         existing.holding_days             = outcome_data["holding_days"]
         existing.max_adverse_excursion    = outcome_data["max_adverse_excursion"]
         existing.max_favorable_excursion  = outcome_data["max_favorable_excursion"]
-        existing.checked_at               = datetime.now(timezone.utc)
+        existing.checked_at               = datetime.utcnow()
         existing.data_source              = market.data_source_name()
         return existing
 
@@ -282,7 +282,7 @@ async def validate_strategy_card(
         card.confidence_interval = None
         card.walk_forward_result = walk_forward_check(concluded)
         card.confidence_tier = compute_confidence_tier(card.sample_size, None, None)
-        card.validation_updated_at = datetime.now(timezone.utc)
+        card.validation_updated_at = datetime.utcnow()
         return
 
     # Recency-weighted win rate
@@ -303,7 +303,7 @@ async def validate_strategy_card(
 
     new_tier = compute_confidence_tier(card.sample_size, card.win_rate, card.confidence_interval)
     card.confidence_tier = new_tier
-    card.validation_updated_at = datetime.now(timezone.utc)
+    card.validation_updated_at = datetime.utcnow()
 
     # Add a version snapshot if win_rate or tier changed meaningfully
     wr_changed = prev_win_rate is None or abs(float(prev_win_rate) - weighted_p) > 0.02
@@ -317,7 +317,7 @@ async def validate_strategy_card(
             changes_parts.append(f"tier {prev_tier} → {new_tier}")
         snapshot = {
             "version": card.version,
-            "snapshot_at": datetime.now(timezone.utc).isoformat(),
+            "snapshot_at": datetime.utcnow().isoformat(),
             "change_source": "validation",
             "sample_size": card.sample_size,
             "win_rate": str(card.win_rate),

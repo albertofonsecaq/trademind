@@ -136,8 +136,8 @@ async def telegram_verify(
     # Keep api_id/api_hash in auth_metadata (needed by the connector at fetch time)
     conn.auth_metadata = {"api_id": meta["api_id"], "api_hash": meta["api_hash"]}
     conn.status = "active"
-    conn.connected_at = datetime.now(timezone.utc)
-    conn.last_verified_at = datetime.now(timezone.utc)
+    conn.connected_at = datetime.utcnow()
+    conn.last_verified_at = datetime.utcnow()
     await db.commit()
     await db.refresh(conn)
 

@@ -34,7 +34,7 @@ async def _poll_all_sources():
         )
         sources = result.scalars().all()
 
-        now = datetime.now(timezone.utc)
+        now = datetime.utcnow()
         for source in sources:
             # Telegram requires an active connection; YouTube only needs YOUTUBE_API_KEY
             if source.source_type == "telegram":

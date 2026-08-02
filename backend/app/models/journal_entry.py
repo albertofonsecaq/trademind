@@ -27,9 +27,9 @@ class JournalEntry(Base):
     size: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False)
     mode: Mapped[str] = mapped_column(String(10), nullable=False, default="paper")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    timestamp: Mapped[datetime] = mapped_column(nullable=False, default=lambda: datetime.now(timezone.utc))
+    timestamp: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
     created_at: Mapped[datetime] = mapped_column(
-        default=lambda: datetime.now(timezone.utc), server_default=func.now()
+        default=datetime.utcnow, server_default=func.now()
     )
 
     broker_order: Mapped["BrokerOrder | None"] = relationship("BrokerOrder", back_populates="journal_entries")
