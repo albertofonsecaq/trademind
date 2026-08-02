@@ -4,6 +4,7 @@ Supports text, images, URLs, and video messages.
 Content types are gated by content_filters so media is only downloaded when enabled.
 """
 from __future__ import annotations
+import logging
 import os
 import re
 import tempfile
@@ -275,26 +276,34 @@ async def list_dialogs(*, api_id: int, api_hash: str, session_string: str) -> li
 
 # ── auth helpers ──────────────────────────────────────────────────────────────
 
+_log = logging.getLogger(__name__)
+
+
 async def start_telegram_auth(
     *, api_id: int, api_hash: str, phone: str
 ) -> tuple[str, str]:
     client = TelegramClient(StringSession(), api_id, api_hash)
     await client.connect()
     sent = await client.send_code_request(phone)
+    _log.warning("OTP requested for %s — delivery type: %s, hash: %s", phone, type(sent.type).__name__, sent.phone_code_hash)
     session_string = client.session.save()
     await client.disconnect()
     return session_string, sent.phone_code_hash
 
 
 async def resend_telegram_code(
-    *, api_id: int, api_hash: str, session_string: str, phone: str
-) -> tuple[str, str]:
+    *, api_id: int, api_hash: str, session_string: str, phone: str, phone_code_hash: str
+) -> tuple[str, str, str]:
+    """Uses auth.ResendCode to cycle delivery method (App → SMS → Call)."""
+    from telethon.tl.functions.auth import ResendCodeRequest
     client = TelegramClient(StringSession(session_string), api_id, api_hash)
     await client.connect()
     try:
-        sent = await client.send_code_request(phone)
+        sent = await client(ResendCodeRequest(phone_number=phone, phone_code_hash=phone_code_hash))
+        code_type = type(sent.type).__name__
+        _log.warning("OTP resent for %s — delivery type: %s, hash: %s", phone, code_type, sent.phone_code_hash)
         new_session = client.session.save()
-        return new_session, sent.phone_code_hash
+        return new_session, sent.phone_code_hash, code_type
     finally:
         await client.disconnect()
 
@@ -304,7 +313,21 @@ async def complete_telegram_auth(
 ) -> str:
     client = TelegramClient(StringSession(session_string), api_id, api_hash)
     await client.connect()
-    await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
-    final_session = client.session.save()
-    await client.disconnect()
-    return final_session
+    try:
+        if not await client.is_user_authorized():
+            await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
+        final_session = client.session.save()
+        return final_session
+    finally:
+        await client.disconnect()
+
+
+async def check_session_authorized(*, api_id: int, api_hash: str, session_string: str) -> tuple[bool, str]:
+    """Returns (is_authorized, final_session_string)."""
+    client = TelegramClient(StringSession(session_string), api_id, api_hash)
+    await client.connect()
+    try:
+        authorized = await client.is_user_authorized()
+        return authorized, client.session.save()
+    finally:
+        await client.disconnect()

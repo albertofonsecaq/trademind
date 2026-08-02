@@ -76,11 +76,16 @@ export function TelegramConnect() {
   const resendCode = async () => {
     setResending(true); setResendMsg(""); setError("");
     try {
-      await api.post(`/workspaces/${workspaceId}/connections/telegram/${connectionId}/resend`);
+      const { data } = await api.post(`/workspaces/${workspaceId}/connections/telegram/${connectionId}/resend`);
       setCode("");
-      setResendMsg(t("telegramConnect.codeSent"));
-    } catch {
-      setError(t("telegramConnect.error"));
+      setResendMsg(`${t("telegramConnect.codeSent")} (${data.delivery_type})`);
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      if (detail === "all_methods_exhausted") {
+        setError(t("telegramConnect.allMethodsExhausted"));
+      } else {
+        setError(t("telegramConnect.error"));
+      }
     } finally {
       setResending(false);
     }
@@ -183,6 +188,22 @@ export function TelegramConnect() {
                 {resending ? t("common.loading") : t("telegramConnect.resendCode")}
               </button>
             </form>
+            <div style={{ marginTop: "1rem", paddingTop: "1rem", borderTop: "1px solid #eee" }}>
+              <p style={{ fontSize: "0.78rem", color: "#888", margin: "0 0 0.5rem" }}>{t("telegramConnect.alreadyAuthorizedHint")}</p>
+              <button style={btn(false)} disabled={submitting} onClick={async () => {
+                setSubmitting(true); setError("");
+                try {
+                  await api.post(`/workspaces/${workspaceId}/connections/telegram/${connectionId}/check-auth`);
+                  setStep("select");
+                } catch {
+                  setError(t("telegramConnect.notAuthorizedYet"));
+                } finally {
+                  setSubmitting(false);
+                }
+              }}>
+                {t("telegramConnect.checkExistingSession")}
+              </button>
+            </div>
           </>
         )}
 

@@ -175,17 +175,69 @@ async def telegram_resend(
     meta = conn.auth_metadata or {}
     session_str = decrypt_credential(conn.session_credential)
 
+    from telethon.errors import SendCodeUnavailableError
     from app.connectors.telegram import resend_telegram_code
-    new_session, new_hash = await resend_telegram_code(
-        api_id=int(meta["api_id"]),
-        api_hash=meta["api_hash"],
-        session_string=session_str,
-        phone=meta["phone"],
-    )
+    try:
+        new_session, new_hash, code_type = await resend_telegram_code(
+            api_id=int(meta["api_id"]),
+            api_hash=meta["api_hash"],
+            session_string=session_str,
+            phone=meta["phone"],
+            phone_code_hash=meta["phone_code_hash"],
+        )
+    except SendCodeUnavailableError:
+        raise HTTPException(
+            status_code=400,
+            detail="all_methods_exhausted",
+        )
     conn.session_credential = encrypt_credential(new_session)
     conn.auth_metadata = {**meta, "phone_code_hash": new_hash}
     await db.commit()
-    return {"message": "Code resent"}
+    return {"message": "Code resent", "delivery_type": code_type}
+
+
+@router.post("/{workspace_id}/connections/telegram/{connection_id}/check-auth", response_model=ConnectionOut)
+async def telegram_check_auth(
+    workspace_id: uuid.UUID,
+    connection_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """If the stored Telethon session is already authorized, mark the connection active."""
+    await _assert_owner(db, workspace_id, current_user.id)
+
+    result = await db.execute(
+        select(PlatformConnection).where(
+            PlatformConnection.id == connection_id,
+            PlatformConnection.workspace_id == workspace_id,
+        )
+    )
+    conn = result.scalar_one_or_none()
+    if not conn:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    if conn.status != "pending":
+        raise HTTPException(status_code=409, detail="Connection is not in pending state")
+
+    meta = conn.auth_metadata or {}
+    session_str = decrypt_credential(conn.session_credential)
+
+    from app.connectors.telegram import check_session_authorized
+    authorized, final_session = await check_session_authorized(
+        api_id=int(meta["api_id"]),
+        api_hash=meta["api_hash"],
+        session_string=session_str,
+    )
+    if not authorized:
+        raise HTTPException(status_code=400, detail="Session is not authorized yet")
+
+    conn.session_credential = encrypt_credential(final_session)
+    conn.auth_metadata = {"api_id": meta["api_id"], "api_hash": meta["api_hash"]}
+    conn.status = "active"
+    conn.connected_at = datetime.utcnow()
+    conn.last_verified_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(conn)
+    return conn
 
 
 @router.get("/{workspace_id}/connections/telegram/{connection_id}/dialogs", response_model=list[DialogItem])

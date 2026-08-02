@@ -445,7 +445,11 @@
     "addSelected": "Add Selected Sources",
     "adding": "Adding...",
     "skipForNow": "Skip for now",
-    "resendCode": "Resend code",
-    "codeSent": "New code sent — check your Telegram app"
+    "resendCode": "Resend via SMS/call",
+    "codeSent": "New code sent — check your Telegram app or SMS",
+    "allMethodsExhausted": "All delivery methods exhausted. Open your Telegram app and look for a message from 'Telegram' with your login code. If you still can't find it, wait 10 minutes then start over.",
+    "alreadyAuthorizedHint": "Not receiving a code? If you connected before, your session may already be active.",
+    "checkExistingSession": "Use existing session",
+    "notAuthorizedYet": "Session is not authorized yet. Please request a new code."
   }
 }

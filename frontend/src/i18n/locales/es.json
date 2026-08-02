@@ -445,7 +445,11 @@
     "addSelected": "Agregar fuentes seleccionadas",
     "adding": "Agregando...",
     "skipForNow": "Omitir por ahora",
-    "resendCode": "Reenviar código",
-    "codeSent": "Nuevo código enviado — revisa tu app de Telegram"
+    "resendCode": "Reenviar por SMS/llamada",
+    "codeSent": "Nuevo código enviado — revisa tu app de Telegram o SMS",
+    "allMethodsExhausted": "Se agotaron todos los métodos de entrega. Abre tu app de Telegram y busca un mensaje de 'Telegram' con tu código. Si no lo encuentras, espera 10 minutos y empieza de nuevo.",
+    "alreadyAuthorizedHint": "¿No recibes el código? Si conectaste antes, tu sesión puede estar activa.",
+    "checkExistingSession": "Usar sesión existente",
+    "notAuthorizedYet": "La sesión aún no está autorizada. Solicita un nuevo código."
   }
 }
