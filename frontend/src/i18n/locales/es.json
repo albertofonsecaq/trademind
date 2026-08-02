@@ -9,7 +9,9 @@
     "back": "Volver",
     "delete": "Eliminar",
     "confirm": "Confirmar",
-    "status": "Estado"
+    "status": "Estado",
+    "saved": "Guardado",
+    "collapse": "Colapsar"
   },
   "help": {
     "title": "Ayuda y documentación",
@@ -257,16 +259,27 @@
     "fetching": "Obteniendo...",
     "lastFetched": "Última actualización",
     "never": "Nunca",
-    "backfill": "Recargar historial",
+    "backfill": "Historial (backfill)",
     "backfillTitle": "Rango de fechas para historial",
     "startDate": "Desde fecha",
     "endDate": "Hasta fecha (opcional)",
-    "triggerBackfill": "Iniciar recarga",
-    "backfillJobs": "Trabajos de historial",
+    "triggerBackfill": "Ejecutar backfill",
+    "backfillJobs": "Trabajos recientes",
     "itemsIngested": "elementos ingeridos",
     "removeSource": "Eliminar fuente",
     "connection": "Cuenta de Telegram",
-    "noConnectionNeeded": "Sin cuenta requerida (usa clave API)"
+    "noConnectionNeeded": "Sin cuenta requerida (usa clave API)",
+    "backfillStartDate": "Ingerir historial desde (opcional)",
+    "backfillStartDateHint": "Vacío = historial completo disponible. Establece una fecha para limitar qué tan atrás va la ingesta inicial.",
+    "configure": "Configurar",
+    "settings": "Configuración",
+    "backfillHint": "Obtén datos históricos de un rango de fechas específico. Repetir un rango ya procesado es seguro — los ítems ya ingeridos no se duplican.",
+    "backfillFrom": "Desde fecha",
+    "backfillTo": "Hasta fecha (opcional, por defecto hasta hoy)",
+    "noJobs": "No hay trabajos de backfill aún.",
+    "now": "ahora",
+    "items": "ítems",
+    "from": "desde"
   },
   "trading": {
     "title": "Trading en papel",

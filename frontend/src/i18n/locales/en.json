@@ -9,7 +9,9 @@
     "back": "Back",
     "delete": "Delete",
     "confirm": "Confirm",
-    "status": "Status"
+    "status": "Status",
+    "saved": "Saved",
+    "collapse": "Collapse"
   },
   "help": {
     "title": "Help & Documentation",
@@ -257,16 +259,27 @@
     "fetching": "Fetching...",
     "lastFetched": "Last fetched",
     "never": "Never",
-    "backfill": "Backfill",
+    "backfill": "Backfill history",
     "backfillTitle": "Backfill date range",
     "startDate": "From date",
     "endDate": "To date (optional)",
-    "triggerBackfill": "Start backfill",
-    "backfillJobs": "Backfill jobs",
+    "triggerBackfill": "Run backfill",
+    "backfillJobs": "Recent jobs",
     "itemsIngested": "items ingested",
     "removeSource": "Remove source",
     "connection": "Telegram account",
-    "noConnectionNeeded": "No account needed (uses API key)"
+    "noConnectionNeeded": "No account needed (uses API key)",
+    "backfillStartDate": "Ingest history from (optional)",
+    "backfillStartDateHint": "Leave empty to ingest full available history. Set a date to limit how far back the initial fetch goes.",
+    "configure": "Configure",
+    "settings": "Settings",
+    "backfillHint": "Pull historical data for a specific date range. Re-running an overlapping range is safe — already-ingested items will not be duplicated.",
+    "backfillFrom": "From date",
+    "backfillTo": "To date (optional, defaults to now)",
+    "noJobs": "No backfill jobs yet.",
+    "now": "now",
+    "items": "items",
+    "from": "from"
   },
   "trading": {
     "title": "Paper Trading",

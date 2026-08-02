@@ -32,6 +32,7 @@ export function TelegramConnect() {
   const [loadingDialogs, setLoadingDialogs] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
+  const [backfillDate, setBackfillDate] = useState("");
 
   const card: React.CSSProperties = {
     background: "#fff", border: "1px solid #e0e0e0", borderRadius: "8px",
@@ -114,6 +115,7 @@ export function TelegramConnect() {
           platform_connection_id: connectionId,
           fetch_cadence: "hourly",
           content_filters: { text: true, image: false, video: false, url: false },
+          backfill_start_date: backfillDate ? new Date(backfillDate).toISOString() : null,
         })
       ));
       setStep("done");
@@ -205,7 +207,16 @@ export function TelegramConnect() {
               </div>
             )}
 
-            <p style={{ fontSize: "0.78rem", color: "#888", margin: "0 0 0.5rem" }}>
+            <div style={{ marginTop: "0.75rem", marginBottom: "0.25rem" }}>
+              <label style={{ fontSize: "0.82rem", fontWeight: 500, color: "#555", display: "block", marginBottom: "0.2rem" }}>
+                {t("sources.backfillStartDate")}
+              </label>
+              <input type="date" value={backfillDate} onChange={(e) => setBackfillDate(e.target.value)}
+                style={{ padding: "0.4rem 0.6rem", border: "1px solid #ddd", borderRadius: "4px", fontSize: "0.85rem" }} />
+              <p style={{ margin: "0.2rem 0 0", fontSize: "0.76rem", color: "#888" }}>{t("sources.backfillStartDateHint")}</p>
+            </div>
+
+            <p style={{ fontSize: "0.78rem", color: "#888", margin: "0.5rem 0 0.5rem" }}>
               {selected.size} {t("telegramConnect.selectedCount")}
             </p>
 

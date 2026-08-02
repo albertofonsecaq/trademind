@@ -122,6 +122,40 @@ async def list_sources(
     return result.scalars().all()
 
 
+class SourceUpdateRequest(BaseModel):
+    fetch_cadence: str | None = None
+    content_filters: dict | None = None
+    backfill_start_date: datetime | None = None
+
+
+@router.patch("/{workspace_id}/sources/{source_id}", response_model=SourceOut)
+async def update_source(
+    workspace_id: uuid.UUID,
+    source_id: uuid.UUID,
+    payload: SourceUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _assert_member(db, workspace_id, current_user.id)
+    result = await db.execute(
+        select(SourceConfig).where(
+            SourceConfig.id == source_id, SourceConfig.workspace_id == workspace_id
+        )
+    )
+    source = result.scalar_one_or_none()
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+    if payload.fetch_cadence is not None:
+        source.fetch_cadence = payload.fetch_cadence
+    if payload.content_filters is not None:
+        source.content_filters = payload.content_filters
+    if payload.backfill_start_date is not None:
+        source.backfill_start_date = payload.backfill_start_date
+    await db.commit()
+    await db.refresh(source)
+    return source
+
+
 @router.delete("/{workspace_id}/sources/{source_id}", status_code=204)
 async def remove_source(
     workspace_id: uuid.UUID,
