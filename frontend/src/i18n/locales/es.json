@@ -422,6 +422,14 @@
     "verify": "Verificar",
     "verifying": "Verificando...",
     "connected": "¡Cuenta conectada exitosamente!",
-    "error": "Error de conexión. Verifica tus credenciales e intenta de nuevo."
+    "error": "Error de conexión. Verifica tus credenciales e intenta de nuevo.",
+    "selectChannels": "Seleccionar canales para ingerir",
+    "selectIntro": "Elige qué canales y grupos agregar como fuentes. Puedes agregar más desde la página de Fuentes.",
+    "loadingChannels": "Cargando tus canales y grupos...",
+    "noChannels": "No se encontraron canales ni grupos en esta cuenta.",
+    "selectedCount": "seleccionados",
+    "addSelected": "Agregar fuentes seleccionadas",
+    "adding": "Agregando...",
+    "skipForNow": "Omitir por ahora"
   }
 }

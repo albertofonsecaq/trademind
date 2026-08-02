@@ -249,7 +249,31 @@ class TelegramConnector(BaseConnector):
                     yield raw
 
 
-# ── auth helpers (unchanged) ──────────────────────────────────────────────────
+# ── dialog listing ────────────────────────────────────────────────────────────
+
+async def list_dialogs(*, api_id: int, api_hash: str, session_string: str) -> list[dict]:
+    from telethon.tl.types import Channel, Chat
+    client = TelegramClient(StringSession(session_string), api_id, api_hash)
+    dialogs = []
+    await client.connect()
+    try:
+        async for dialog in client.iter_dialogs():
+            entity = dialog.entity
+            if not isinstance(entity, (Channel, Chat)):
+                continue
+            if isinstance(entity, Channel):
+                dtype = "supergroup" if entity.megagroup else "channel"
+                identifier = f"@{entity.username}" if getattr(entity, "username", None) else f"-100{entity.id}"
+            else:
+                dtype = "group"
+                identifier = f"-{entity.id}"
+            dialogs.append({"id": str(entity.id), "name": dialog.name, "type": dtype, "identifier": identifier})
+    finally:
+        await client.disconnect()
+    return dialogs
+
+
+# ── auth helpers ──────────────────────────────────────────────────────────────
 
 async def start_telegram_auth(
     *, api_id: int, api_hash: str, phone: str

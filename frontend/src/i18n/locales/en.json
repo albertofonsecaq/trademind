@@ -422,6 +422,14 @@
     "verify": "Verify",
     "verifying": "Verifying...",
     "connected": "Account connected successfully!",
-    "error": "Connection failed. Check your credentials and try again."
+    "error": "Connection failed. Check your credentials and try again.",
+    "selectChannels": "Select Channels to Ingest",
+    "selectIntro": "Choose which channels and groups to add as sources. You can add more later from the Sources page.",
+    "loadingChannels": "Loading your channels and groups...",
+    "noChannels": "No channels or groups found on this account.",
+    "selectedCount": "selected",
+    "addSelected": "Add Selected Sources",
+    "adding": "Adding...",
+    "skipForNow": "Skip for now"
   }
 }

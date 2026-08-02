@@ -47,6 +47,13 @@ class TelegramVerifyRequest(BaseModel):
     code: str
 
 
+class DialogItem(BaseModel):
+    id: str
+    name: str
+    type: str
+    identifier: str
+
+
 class ConnectionOut(BaseModel):
     id: uuid.UUID
     platform: str
@@ -142,6 +149,37 @@ async def telegram_verify(
     await db.refresh(conn)
 
     return conn
+
+
+@router.get("/{workspace_id}/connections/telegram/{connection_id}/dialogs", response_model=list[DialogItem])
+async def list_telegram_dialogs(
+    workspace_id: uuid.UUID,
+    connection_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _assert_owner(db, workspace_id, current_user.id)
+    result = await db.execute(
+        select(PlatformConnection).where(
+            PlatformConnection.id == connection_id,
+            PlatformConnection.workspace_id == workspace_id,
+        )
+    )
+    conn = result.scalar_one_or_none()
+    if not conn:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    if conn.status != "active":
+        raise HTTPException(status_code=409, detail="Connection is not active")
+
+    meta = conn.auth_metadata or {}
+    session_string = decrypt_credential(conn.session_credential)
+
+    from app.connectors.telegram import list_dialogs
+    return await list_dialogs(
+        api_id=int(meta["api_id"]),
+        api_hash=meta["api_hash"],
+        session_string=session_string,
+    )
 
 
 @router.get("/{workspace_id}/connections", response_model=list[ConnectionOut])
