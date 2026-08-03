@@ -73,7 +73,9 @@ class TelegramConnector(BaseConnector):
         return {"message_id": msg.id, "views": getattr(msg, "views", None)}
 
     def _ts(self, msg: Message) -> datetime:
-        return msg.date.replace(tzinfo=timezone.utc) if msg.date.tzinfo is None else msg.date
+        # Telegram dates are always UTC; strip tzinfo for TIMESTAMP WITHOUT TIME ZONE columns
+        dt = msg.date if msg.date.tzinfo is None else msg.date.replace(tzinfo=None)
+        return dt
 
     # ── text ─────────────────────────────────────────────────────────────────
 

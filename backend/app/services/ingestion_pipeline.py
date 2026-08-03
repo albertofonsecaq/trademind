@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.connectors.base import RawMessage
@@ -481,17 +482,22 @@ async def run_fetch_pipeline(
 
     async for msg in connector.fetch_new(since_id=last_stable_id):
         if not _content_type_allowed(msg, filters):
+            last_stable_id = msg.stable_id
             continue
         try:
             item = await process_message(db, msg, topic_scope)
             if item:
                 count += 1
-                last_stable_id = msg.stable_id
+        except IntegrityError:
+            log.info("Skipping already-ingested %s", msg.stable_id)
+            await db.rollback()
         except Exception as e:
             log.error("Pipeline error for %s: %s", msg.stable_id, e, exc_info=True)
             await db.rollback()
             continue
-        await db.commit()
+        else:
+            await db.commit()
+        last_stable_id = msg.stable_id
 
     if last_stable_id != initial_stable_id:
         result = await db.execute(select(SourceConfig).where(SourceConfig.id == source_id))
