@@ -469,27 +469,36 @@ async def run_fetch_pipeline(
         log.warning("Cannot build connector for source %s: %s", source.id, e, exc_info=True)
         return 0
 
+    # Read all ORM attributes before the loop — db.commit() expires loaded objects,
+    # so accessing them inside the loop would trigger a sync lazy-load and crash.
     filters = source.content_filters or {}
+    topic_scope = workspace.topic_scope
+    initial_stable_id = source.last_fetched_id
+    source_id = source.id
+
     count = 0
-    last_stable_id = source.last_fetched_id
+    last_stable_id = initial_stable_id
 
     async for msg in connector.fetch_new(since_id=last_stable_id):
         if not _content_type_allowed(msg, filters):
             continue
         try:
-            item = await process_message(db, msg, workspace.topic_scope)
+            item = await process_message(db, msg, topic_scope)
             if item:
                 count += 1
                 last_stable_id = msg.stable_id
         except Exception as e:
-            log.error("Pipeline error for %s: %s", msg.stable_id, e)
+            log.error("Pipeline error for %s: %s", msg.stable_id, e, exc_info=True)
             await db.rollback()
             continue
         await db.commit()
 
-    if last_stable_id != source.last_fetched_id:
-        source.last_fetched_id = last_stable_id
-        source.last_fetched_at = datetime.utcnow()
+    if last_stable_id != initial_stable_id:
+        result = await db.execute(select(SourceConfig).where(SourceConfig.id == source_id))
+        src = result.scalar_one_or_none()
+        if src:
+            src.last_fetched_id = last_stable_id
+            src.last_fetched_at = datetime.utcnow()
         await db.commit()
 
     return count

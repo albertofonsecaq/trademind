@@ -46,6 +46,21 @@ class TelegramConnector(BaseConnector):
     def _client(self) -> TelegramClient:
         return TelegramClient(StringSession(self.session_string), self.api_id, self.api_hash)
 
+    def _resolve_identifier(self):
+        """Return the entity to pass to iter_messages.
+
+        Handles three formats:
+          @username          — public channel/group, pass as-is
+          {id}/{access_hash} — private channel without username (from channel picker)
+          -{id}              — legacy numeric format, pass as-is and let Telethon try
+        """
+        ident = self.channel_identifier
+        if "/" in ident and not ident.startswith("@"):
+            from telethon.tl.types import InputChannel
+            channel_id_str, access_hash_str = ident.split("/", 1)
+            return InputChannel(int(channel_id_str), int(access_hash_str))
+        return ident
+
     def _want(self, key: str) -> bool:
         return bool(self.content_filters.get(key, False))
 
@@ -225,9 +240,10 @@ class TelegramConnector(BaseConnector):
             except (ValueError, IndexError):
                 min_id = 0
 
+        entity = self._resolve_identifier()
         async with self._client() as client:
             async for msg in client.iter_messages(
-                self.channel_identifier, min_id=min_id, reverse=True
+                entity, min_id=min_id, reverse=True
             ):
                 async for raw in self._yield_all_types(client, msg):
                     yield raw
@@ -235,9 +251,10 @@ class TelegramConnector(BaseConnector):
     async def fetch_range(
         self, date_start: datetime, date_end: datetime | None
     ) -> AsyncIterator[RawMessage]:
+        entity = self._resolve_identifier()
         async with self._client() as client:
             async for msg in client.iter_messages(
-                self.channel_identifier, reverse=True, offset_date=date_start
+                entity, reverse=True, offset_date=date_start
             ):
                 if not isinstance(msg, Message):
                     continue
@@ -264,7 +281,11 @@ async def list_dialogs(*, api_id: int, api_hash: str, session_string: str) -> li
                 continue
             if isinstance(entity, Channel):
                 dtype = "supergroup" if entity.megagroup else "channel"
-                identifier = f"@{entity.username}" if getattr(entity, "username", None) else f"-100{entity.id}"
+                if getattr(entity, "username", None):
+                    identifier = f"@{entity.username}"
+                else:
+                    # Store id/access_hash so the connector can build InputChannel directly
+                    identifier = f"{entity.id}/{entity.access_hash}"
             else:
                 dtype = "group"
                 identifier = f"-{entity.id}"
