@@ -28,10 +28,10 @@ async def hybrid_search(
         WITH vector_ranked AS (
             SELECT
                 source_id, text, embedding_metadata,
-                ROW_NUMBER() OVER (ORDER BY embedding <=> :embedding::vector) AS rank
+                ROW_NUMBER() OVER (ORDER BY embedding <=> CAST(:embedding AS vector)) AS rank
             FROM embedding_rows
             WHERE workspace_id = :workspace_id
-            ORDER BY embedding <=> :embedding::vector
+            ORDER BY embedding <=> CAST(:embedding AS vector)
             LIMIT 50
         ),
         fts_ranked AS (
