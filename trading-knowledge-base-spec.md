@@ -463,6 +463,21 @@ subscription {                -- billing state for a workspace, one active row e
 - [ ] **Behavior when payment lapses** (assumed default, confirm/adjust as needed): background ingestion and other cost-generating jobs pause immediately, mirroring the existing budget-cap pause behavior; already-ingested content stays viewable read-only rather than the workspace being locked out entirely, with a clear prompt to reactivate billing
 - [ ] Separate platform-level admin/back-office view, visible only to `super_admin` users — distinct from the regular per-workspace Admin/config view
 
+#### Workspace Clone
+
+Super admins can clone an existing workspace's full knowledge base to a new workspace owned by a different user. The workflow is two-step: first create the target user account (via the Create User panel in the admin view), then trigger the clone.
+
+**What is cloned:** topic scope, source channel definitions (identifier, source type, fetch cadence, content filters), all evidence items, embeddings, trade ideas, outcome checks, and strategy cards. Internal UUID references (evidence_item_id on trade_ideas, trade_idea_id on outcome_checks, supporting_evidence UUID list on strategy_cards) are remapped to the new workspace's IDs.
+
+**What is reset on clone:** source configs start with no platform connection (`platform_connection_id = NULL`) and no fetch state (`last_fetched_id`, `last_fetched_at`, `backfill_start_date` are NULL). The receiving user connects their own Telegram (or other platform) account and manages ingestion cadence from there.
+
+**What is not cloned:** platform credentials (`platform_connections`), subscription and billing records (`subscriptions`, `usage_events`, `backfill_jobs`), and all user-personal data (`plan_items`, `journal_entries`, `broker_orders`, `journal_outcomes`).
+
+**Invariants:**
+- The cloned workspace always starts with `payment_enabled = false` — billing is never inherited
+- Platform session credentials are never transferred across workspaces (enforces the "no shared platform account" non-goal)
+- Every create-user and clone-workspace action is recorded in `admin_audit_logs` with action strings `"create_user"` and `"clone_workspace"` respectively
+
 ---
 
 ### 16. Help & documentation

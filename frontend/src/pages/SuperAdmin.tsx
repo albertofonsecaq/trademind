@@ -51,6 +51,50 @@ const btn = (bg: string, color = "#fff"): React.CSSProperties => ({
   borderRadius: "4px", cursor: "pointer", fontWeight: 600, fontSize: "0.82rem",
 });
 
+// ── Create user panel ─────────────────────────────────────────────────────────
+
+function CreateUserPanel({ t }: { t: (k: string) => string }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [isError, setIsError] = useState(false);
+
+  const create = async () => {
+    if (!email.trim() || !password.trim()) return;
+    setBusy(true); setMsg("");
+    try {
+      await api.post("/admin/users", { email, password });
+      setMsg(`${t("admin.userCreated")}${email}`);
+      setIsError(false);
+      setEmail(""); setPassword("");
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setMsg(detail || t("common.error"));
+      setIsError(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "flex-end" }}>
+      <div style={{ flex: 1, minWidth: "180px" }}>
+        <label style={{ fontSize: "0.78rem", color: "#555", display: "block", marginBottom: "0.2rem" }}>{t("admin.userEmail")}</label>
+        <input style={inp} type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="user@example.com" />
+      </div>
+      <div style={{ flex: 1, minWidth: "160px" }}>
+        <label style={{ fontSize: "0.78rem", color: "#555", display: "block", marginBottom: "0.2rem" }}>{t("admin.userPassword")}</label>
+        <input style={inp} type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
+      </div>
+      <button onClick={create} disabled={busy} style={{ ...btn("#27ae60"), opacity: busy ? 0.65 : 1 }}>
+        {busy ? t("admin.creatingUser") : t("admin.createUserBtn")}
+      </button>
+      {msg && <span style={{ fontSize: "0.78rem", color: isError ? "#c0392b" : "#27ae60", width: "100%" }}>{msg}</span>}
+    </div>
+  );
+}
+
 // ── Create workspace panel ────────────────────────────────────────────────────
 
 function CreateWorkspacePanel({ t, onCreated }: { t: (k: string) => string; onCreated: () => void }) {
@@ -94,10 +138,11 @@ function CreateWorkspacePanel({ t, onCreated }: { t: (k: string) => string; onCr
 
 // ── Workspace row ─────────────────────────────────────────────────────────────
 
-function WorkspaceRow({ ws, t, onToggled }: {
+function WorkspaceRow({ ws, t, onToggled, onClone }: {
   ws: WorkspaceAdminView;
   t: (k: string) => string;
   onToggled: (id: string, enabled: boolean) => void;
+  onClone: (ws: WorkspaceAdminView) => void;
 }) {
   const [busy, setBusy] = useState(false);
 
@@ -137,13 +182,19 @@ function WorkspaceRow({ ws, t, onToggled }: {
           {ws.payment_enabled ? t("admin.paymentEnabled") : t("admin.paymentDisabled")}
         </span>
       </td>
-      <td style={{ padding: "0.5rem" }}>
+      <td style={{ padding: "0.5rem", display: "flex", gap: "0.4rem" }}>
         <button
           onClick={togglePayment}
           disabled={busy}
           style={{ ...btn(ws.payment_enabled ? "#c0392b11" : "#27ae6011", ws.payment_enabled ? "#c0392b" : "#27ae60"), border: `1px solid ${ws.payment_enabled ? "#c0392b33" : "#27ae6033"}`, opacity: busy ? 0.6 : 1 }}
         >
           {ws.payment_enabled ? t("admin.disable") : t("admin.enable")}
+        </button>
+        <button
+          onClick={() => onClone(ws)}
+          style={{ ...btn("#5c6bc011", "#5c6bc0"), border: "1px solid #5c6bc033" }}
+        >
+          {t("admin.cloneBtn")}
         </button>
       </td>
     </tr>
@@ -162,6 +213,14 @@ export function SuperAdmin() {
   const [profitability, setProfitability] = useState<ProfitabilityView | null>(null);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Clone modal state
+  const [cloneSource, setCloneSource] = useState<WorkspaceAdminView | null>(null);
+  const [cloneEmail, setCloneEmail] = useState("");
+  const [cloneName, setCloneName] = useState("");
+  const [cloning, setCloning] = useState(false);
+  const [cloneMsg, setCloneMsg] = useState("");
+  const [cloneIsError, setCloneIsError] = useState(false);
 
   const isSuperAdmin = user?.platform_role === "super_admin";
 
@@ -189,6 +248,27 @@ export function SuperAdmin() {
       }
     })();
   }, [isSuperAdmin]);
+
+  const handleClone = async () => {
+    if (!cloneSource || !cloneEmail.trim()) return;
+    setCloning(true); setCloneMsg("");
+    try {
+      const { data } = await api.post<WorkspaceAdminView>(
+        `/admin/workspaces/${cloneSource.id}/clone`,
+        { target_user_email: cloneEmail, new_workspace_name: cloneName || undefined }
+      );
+      setWorkspaces((prev) => [data, ...prev]);
+      setCloneMsg(t("admin.cloneSuccess"));
+      setCloneIsError(false);
+      setCloneSource(null); setCloneEmail(""); setCloneName("");
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setCloneMsg(detail || t("admin.cloneError"));
+      setCloneIsError(true);
+    } finally {
+      setCloning(false);
+    }
+  };
 
   const tabBtn = (id: TabId): React.CSSProperties => ({
     padding: "0.4rem 1.1rem", borderRadius: "20px", fontSize: "0.82rem", cursor: "pointer",
@@ -240,10 +320,43 @@ export function SuperAdmin() {
         {/* Workspaces tab */}
         {tab === "workspaces" && (
           <>
+            {/* Create user */}
+            <div style={card}>
+              <p style={sectionTitle}>{t("admin.createUser")}</p>
+              <CreateUserPanel t={t} />
+            </div>
+
+            {/* Create workspace */}
             <div style={card}>
               <p style={sectionTitle}>{t("admin.createWorkspace")}</p>
               <CreateWorkspacePanel t={t} onCreated={loadWorkspaces} />
             </div>
+
+            {/* Clone modal */}
+            {cloneSource && (
+              <div style={{ ...card, borderColor: "#5c6bc0", background: "#f8f8ff" }}>
+                <p style={{ ...sectionTitle, color: "#5c6bc0" }}>{t("admin.cloneWorkspace")}: {cloneSource.name}</p>
+                <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "flex-end" }}>
+                  <div style={{ flex: 1, minWidth: "200px" }}>
+                    <label style={{ fontSize: "0.78rem", color: "#555", display: "block", marginBottom: "0.2rem" }}>{t("admin.cloneTargetEmail")}</label>
+                    <input style={inp} type="email" value={cloneEmail} onChange={(e) => setCloneEmail(e.target.value)} placeholder="userb@example.com" autoFocus />
+                  </div>
+                  <div style={{ flex: 1, minWidth: "180px" }}>
+                    <label style={{ fontSize: "0.78rem", color: "#555", display: "block", marginBottom: "0.2rem" }}>{t("admin.cloneNewName")}</label>
+                    <input style={inp} value={cloneName} onChange={(e) => setCloneName(e.target.value)} placeholder={`${cloneSource.name} (copy)`} />
+                  </div>
+                  <button onClick={handleClone} disabled={cloning || !cloneEmail.trim()} style={{ ...btn("#5c6bc0"), opacity: cloning ? 0.65 : 1 }}>
+                    {cloning ? t("admin.cloning") : t("admin.cloneBtn")}
+                  </button>
+                  <button onClick={() => { setCloneSource(null); setCloneMsg(""); }} style={{ ...btn("transparent", "#555"), border: "1px solid #ddd" }}>
+                    {t("common.cancel")}
+                  </button>
+                </div>
+                {cloneMsg && <p style={{ fontSize: "0.78rem", color: cloneIsError ? "#c0392b" : "#27ae60", margin: "0.5rem 0 0" }}>{cloneMsg}</p>}
+              </div>
+            )}
+
+            {/* Workspace table */}
             <div style={card}>
               <p style={sectionTitle}>{t("admin.workspaces")} ({workspaces.length})</p>
               <div style={{ overflowX: "auto" }}>
@@ -265,6 +378,7 @@ export function SuperAdmin() {
                         onToggled={(id, enabled) => {
                           setWorkspaces((prev) => prev.map((w) => w.id === id ? { ...w, payment_enabled: enabled } : w));
                         }}
+                        onClone={(ws) => { setCloneSource(ws); setCloneEmail(""); setCloneName(""); setCloneMsg(""); }}
                       />
                     ))}
                   </tbody>

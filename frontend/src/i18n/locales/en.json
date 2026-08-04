@@ -403,7 +403,20 @@
     "status": "Status",
     "members": "Members",
     "owner": "Owner",
-    "notAdmin": "This view requires super admin access."
+    "notAdmin": "This view requires super admin access.",
+    "createUser": "Create user",
+    "userEmail": "Email",
+    "userPassword": "Temporary password",
+    "createUserBtn": "Create user",
+    "creatingUser": "Creating...",
+    "userCreated": "User created: ",
+    "cloneWorkspace": "Clone workspace",
+    "cloneTargetEmail": "Target user email",
+    "cloneNewName": "New workspace name (optional)",
+    "cloning": "Cloning...",
+    "cloneSuccess": "Workspace cloned successfully",
+    "cloneError": "Failed to clone workspace",
+    "cloneBtn": "Clone"
   },
   "execution": {
     "title": "My execution",

@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from app.core.database import get_db
 from app.core.dependencies import get_current_user
+from app.core.security import hash_password
 from app.models.user import User
 from app.models.workspace import Workspace
 from app.models.workspace_member import WorkspaceMember
@@ -29,6 +30,7 @@ from app.models.usage_event import UsageEvent
 from app.models.admin_audit_log import AdminAuditLog
 from app.services.billing_service import sync_budget_cap, update_seat_quantity
 from app.services.workspace_service import create_private_workspace
+from app.services.workspace_clone_service import clone_workspace as clone_workspace_service
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -109,6 +111,17 @@ class AddMemberRequest(BaseModel):
 
 class TogglePaymentRequest(BaseModel):
     payment_enabled: bool
+
+
+class CreateUserRequest(BaseModel):
+    email: str
+    password: str
+    preferred_language: str = "en"
+
+
+class WorkspaceCloneRequest(BaseModel):
+    target_user_email: str
+    new_workspace_name: str | None = None
 
 
 # ── Workspace list ─────────────────────────────────────────────────────────────
@@ -417,3 +430,81 @@ async def get_audit_log(
         .limit(min(limit, 500))
     )
     return result.scalars().all()
+
+
+# ── Create user ────────────────────────────────────────────────────────────────
+
+@router.post("/users", status_code=201)
+async def create_user(
+    payload: CreateUserRequest,
+    admin: User = Depends(_require_super_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a new user account on behalf of the platform admin."""
+    existing = await db.execute(select(User).where(User.email == payload.email))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail=f"User {payload.email!r} already exists")
+
+    user = User(
+        email=payload.email,
+        password_hash=hash_password(payload.password),
+        preferred_language=payload.preferred_language,
+        platform_role="user",
+    )
+    db.add(user)
+    await db.flush()
+
+    ws = await create_private_workspace(
+        db, owner_id=user.id,
+        name=f"{payload.email.split('@')[0]}'s workspace",
+    )
+    user.default_workspace_id = ws.id
+
+    await _audit(db, admin.id, "create_user", target_user_id=user.id,
+                 details={"email": payload.email})
+    await db.commit()
+    return {"id": str(user.id), "email": user.email}
+
+
+# ── Clone workspace ────────────────────────────────────────────────────────────
+
+@router.post("/workspaces/{workspace_id}/clone", response_model=WorkspaceAdminView, status_code=201)
+async def clone_workspace(
+    workspace_id: uuid.UUID,
+    payload: WorkspaceCloneRequest,
+    admin: User = Depends(_require_super_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Clone a workspace's knowledge base to a new workspace owned by the target user."""
+    user_result = await db.execute(select(User).where(User.email == payload.target_user_email))
+    target_user = user_result.scalar_one_or_none()
+    if not target_user:
+        raise HTTPException(status_code=404, detail=f"User {payload.target_user_email!r} not found")
+
+    new_ws = await clone_workspace_service(
+        db,
+        source_workspace_id=workspace_id,
+        target_user_id=target_user.id,
+        new_name=payload.new_workspace_name,
+    )
+
+    await _audit(db, admin.id, "clone_workspace", workspace_id=workspace_id,
+                 target_user_id=target_user.id,
+                 details={"new_workspace_id": str(new_ws.id),
+                          "target_email": payload.target_user_email})
+    await db.commit()
+
+    return WorkspaceAdminView(
+        id=new_ws.id,
+        name=new_ws.name,
+        owner_user_id=new_ws.owner_user_id,
+        owner_email=target_user.email,
+        payment_enabled=False,
+        subscription_status="inactive",
+        plan_name=None,
+        price_usd_monthly=None,
+        period_spend_usd=Decimal("0"),
+        monthly_budget_cap=None,
+        member_count=1,
+        created_at=new_ws.created_at,
+    )

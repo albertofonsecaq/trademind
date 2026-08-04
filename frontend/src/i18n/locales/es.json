@@ -403,7 +403,20 @@
     "status": "Estado",
     "members": "Miembros",
     "owner": "Propietario",
-    "notAdmin": "Esta vista requiere acceso de super administrador."
+    "notAdmin": "Esta vista requiere acceso de super administrador.",
+    "createUser": "Crear usuario",
+    "userEmail": "Correo electrónico",
+    "userPassword": "Contraseña temporal",
+    "createUserBtn": "Crear usuario",
+    "creatingUser": "Creando...",
+    "userCreated": "Usuario creado: ",
+    "cloneWorkspace": "Clonar espacio de trabajo",
+    "cloneTargetEmail": "Correo del usuario destino",
+    "cloneNewName": "Nombre del nuevo espacio (opcional)",
+    "cloning": "Clonando...",
+    "cloneSuccess": "Espacio de trabajo clonado exitosamente",
+    "cloneError": "Error al clonar el espacio de trabajo",
+    "cloneBtn": "Clonar"
   },
   "execution": {
     "title": "Mi ejecución",
