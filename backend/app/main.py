@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
+from app.core.llm_errors import install_llm_error_handlers
 from app.api import auth, users, workspaces, connections, sources, ask, strategy_cards, plan_items, validation, changelog, broker, billing, admin
 
 
@@ -23,6 +24,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+install_llm_error_handlers(app)
 
 app.include_router(auth.router)
 app.include_router(users.router)
