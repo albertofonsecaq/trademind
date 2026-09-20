@@ -22,6 +22,12 @@ log = logging.getLogger(__name__)
 # Vision uses Sonnet (same model as distillation) — it handles charts well
 _VISION_MODEL = settings.DISTILLATION_MODEL
 
+# A fully annotated chart answers this prompt in ~600 tokens; 512 truncated the
+# reply mid-JSON and the parse failure was written to the DB as "off-topic",
+# silently discarding half of all ingested images. Keep real headroom here and
+# treat stop_reason == "max_tokens" as a truncation, never as a verdict.
+_MAX_TOKENS = 2048
+
 _SYSTEM = """You are a trading chart and financial image analyst.
 
 Analyze the provided image and return ONLY valid JSON with this schema:
@@ -54,7 +60,10 @@ async def extract_image(
     """
     Analyze an image with Claude Vision.
     Returns (result_dict, token_counts).
-    result_dict keys: is_on_topic, reason, description, confidence, ocr_text
+    result_dict keys: is_on_topic, reason, description, confidence, ocr_text,
+    needs_reprocessing. is_on_topic is None when the model's verdict could not be
+    read (truncated or unparseable reply) — that is "unknown", not "off-topic",
+    and needs_reprocessing marks it for a replay once the cause is fixed.
     """
     if not settings.ANTHROPIC_API_KEY:
         raise RuntimeError("ANTHROPIC_API_KEY is not set")
@@ -67,7 +76,7 @@ async def extract_image(
 
     response = await client.messages.create(
         model=_VISION_MODEL,
-        max_tokens=512,
+        max_tokens=_MAX_TOKENS,
         system=[{"type": "text", "text": _SYSTEM, "cache_control": {"type": "ephemeral"}}],
         messages=[
             {
@@ -84,26 +93,51 @@ async def extract_image(
     )
 
     raw = response.content[0].text.strip()
+    truncated = response.stop_reason == "max_tokens"
     if raw.startswith("```"):
         raw = raw.split("```")[1].lstrip("json").strip()
 
     try:
         result = json.loads(raw)
     except json.JSONDecodeError:
-        log.warning("Vision response not valid JSON: %s…", raw[:120])
-        result = {
-            "is_on_topic": False,
-            "reason": "Could not parse vision response",
-            "description": None,
-            "confidence": 0.0,
-            "ocr_text": None,
-        }
+        if truncated:
+            log.warning(
+                "Vision reply truncated at max_tokens=%d — flagged for reprocessing, not judged: %s…",
+                _MAX_TOKENS, raw[:120],
+            )
+            reason = f"Vision reply truncated at {_MAX_TOKENS} tokens"
+        else:
+            log.warning("Vision response not valid JSON: %s…", raw[:120])
+            reason = "Could not parse vision response"
+        return _unknown(reason), _usage(response)
 
-    usage = {
+    if truncated:
+        # Parsed, but the model was cut off mid-answer: the content is partial.
+        log.warning("Vision reply hit max_tokens=%d but parsed — treating as partial", _MAX_TOKENS)
+        result["needs_reprocessing"] = True
+    else:
+        result.setdefault("needs_reprocessing", False)
+
+    return result, _usage(response)
+
+
+def _unknown(reason: str) -> dict:
+    """No usable verdict — is_on_topic stays None so it reads as unknown, not rejected."""
+    return {
+        "is_on_topic": None,
+        "reason": reason,
+        "description": None,
+        "confidence": 0.0,
+        "ocr_text": None,
+        "needs_reprocessing": True,
+    }
+
+
+def _usage(response) -> dict:
+    return {
         "input_tokens": response.usage.input_tokens,
         "output_tokens": response.usage.output_tokens,
     }
-    return result, usage
 
 
 def _maybe_resize(image_bytes: bytes, max_pixels: int = 1_500_000) -> bytes:

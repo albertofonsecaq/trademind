@@ -206,7 +206,8 @@ async def _process_image(db: AsyncSession, msg: RawMessage, topic_scope: str) ->
     image_bytes = base64.b64decode(b64)
     vision_result, vision_usage = await vision_service.extract_image(image_bytes, mime)
 
-    is_on_topic = vision_result.get("is_on_topic", False)
+    is_on_topic = vision_result.get("is_on_topic", False)  # None = verdict unreadable
+    needs_reprocessing = bool(vision_result.get("needs_reprocessing", False))
     description = vision_result.get("description") or ""
     ocr_text = vision_result.get("ocr_text") or ""
     reason = vision_result.get("reason", "")
@@ -225,6 +226,7 @@ async def _process_image(db: AsyncSession, msg: RawMessage, topic_scope: str) ->
         confidence=confidence,
         original_language=_detect_lang(content) if content else None,
         is_on_topic=is_on_topic,
+        needs_reprocessing=needs_reprocessing,
         relevance_reason=reason,
         source_metadata={"author": msg.author, "channel": msg.channel, **{k: v for k, v in meta.items() if k != "image_base64"}},
         message_timestamp=msg.timestamp,
@@ -319,11 +321,14 @@ async def _process_video(db: AsyncSession, msg: RawMessage, topic_scope: str) ->
         descriptions: list[str] = []
         total_vision_input = 0
         total_vision_output = 0
+        unreadable_frames = 0
 
         for frame_bytes in frames:
             result, usage = await vision_service.extract_image(frame_bytes)
             total_vision_input += usage["input_tokens"]
             total_vision_output += usage["output_tokens"]
+            if result.get("needs_reprocessing"):
+                unreadable_frames += 1
             if result.get("is_on_topic") and result.get("description"):
                 descriptions.append(result["description"])
 
@@ -351,7 +356,12 @@ async def _process_video(db: AsyncSession, msg: RawMessage, topic_scope: str) ->
             confidence=0.8,
             original_language=lang,
             is_on_topic=is_on_topic,
-            relevance_reason=f"{len(descriptions)}/{len(frames)} frames had trading content",
+            # Any unreadable frame means the video was judged on partial evidence.
+            needs_reprocessing=unreadable_frames > 0,
+            relevance_reason=(
+                f"{len(descriptions)}/{len(frames)} frames had trading content"
+                + (f"; {unreadable_frames} frame(s) unreadable" if unreadable_frames else "")
+            ),
             source_metadata={"author": msg.author, "channel": msg.channel, **{k: v for k, v in meta.items() if k != "video_path"}},
             message_timestamp=msg.timestamp,
         )

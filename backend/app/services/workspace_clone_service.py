@@ -106,6 +106,7 @@ async def clone_workspace(
             confidence=ei.confidence,
             original_language=ei.original_language,
             is_on_topic=ei.is_on_topic,
+            needs_reprocessing=ei.needs_reprocessing,
             relevance_reason=ei.relevance_reason,
             source_metadata=ei.source_metadata,
             message_timestamp=ei.message_timestamp,
