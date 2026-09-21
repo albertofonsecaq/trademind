@@ -21,6 +21,9 @@ class EvidenceItem(Base):
     original_language: Mapped[str | None] = mapped_column(String(10), nullable=True)
     is_on_topic: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # null = not yet checked
     relevance_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # True when an extraction failed (e.g. a truncated vision reply) and the item
+    # should be re-ingested — distinct from a genuine is_on_topic=False rejection.
+    needs_reprocessing: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     source_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     message_timestamp: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
