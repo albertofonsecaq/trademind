@@ -495,15 +495,18 @@ async def run_fetch_pipeline(
             last_stable_id = msg.stable_id
             continue
         try:
-            item = await process_message(db, msg, topic_scope)
+            # A savepoint, not a session rollback: session.rollback() expires every
+            # loaded object, including the SourceConfig rows our caller is still
+            # iterating, which then blow up on attribute access (#2). A savepoint
+            # undoes only this message.
+            async with db.begin_nested():
+                item = await process_message(db, msg, topic_scope)
             if item:
                 count += 1
         except IntegrityError:
             log.info("Skipping already-ingested %s", msg.stable_id)
-            await db.rollback()
         except Exception as e:
             log.error("Pipeline error for %s: %s", msg.stable_id, e, exc_info=True)
-            await db.rollback()
             continue
         else:
             await db.commit()

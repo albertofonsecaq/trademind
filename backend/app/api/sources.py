@@ -313,20 +313,27 @@ async def _run_backfill_bg(job_id: uuid.UUID):
                 raise ValueError("Source or workspace missing")
 
             connector = _build_connector(source)
+            # Read every ORM attribute the loop needs up front: a commit or rollback
+            # inside it can expire these objects, and re-reading them then triggers
+            # a sync lazy-load that raises MissingGreenlet (#2).
             filters = source.content_filters or {}
+            topic_scope = workspace.topic_scope
+            date_start, date_end = job.date_range_start, job.date_range_end
 
             count = 0
-            async for msg in connector.fetch_range(job.date_range_start, job.date_range_end):
+            async for msg in connector.fetch_range(date_start, date_end):
                 if not _content_type_allowed(msg, filters):
                     continue
                 try:
-                    item = await process_message(db, msg, workspace.topic_scope)
+                    # Savepoint per message — a session rollback would expire the
+                    # job and source rows this loop still depends on.
+                    async with db.begin_nested():
+                        item = await process_message(db, msg, topic_scope)
                     if item:
                         count += 1
                     await db.commit()
                 except Exception as e:
                     log.error("Backfill pipeline error: %s", e)
-                    await db.rollback()
 
             job.status = "completed"
             job.items_ingested = count

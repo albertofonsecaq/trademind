@@ -35,23 +35,38 @@ async def _poll_all_sources():
         sources = result.scalars().all()
 
         now = datetime.now(timezone.utc)
-        for source in sources:
+        # Snapshot what the loop needs before running any source: the pipeline shares
+        # this session, and an expired attribute re-read mid-loop raises
+        # MissingGreenlet, killing the whole tick and starving every later source (#2).
+        plan = [
+            (
+                src,
+                src.source_type,
+                src.fetch_cadence,
+                src.last_fetched_at,
+                src.identifier,
+                src.workspace_id,
+                (src.connection.status if src.connection else None),
+            )
+            for src in sources
+        ]
+
+        for source, source_type, fetch_cadence, last, identifier, workspace_id, conn_status in plan:
             # Telegram requires an active connection; YouTube only needs YOUTUBE_API_KEY
-            if source.source_type == "telegram":
-                if not source.connection or source.connection.status != "active":
+            if source_type == "telegram":
+                if conn_status != "active":
                     continue
-            elif source.source_type == "youtube":
+            elif source_type == "youtube":
                 from app.core.config import settings as _s
                 if not _s.YOUTUBE_API_KEY:
                     continue
 
-            cadence = _CADENCE_MAP.get(source.fetch_cadence, timedelta(hours=1))
-            last = source.last_fetched_at
+            cadence = _CADENCE_MAP.get(fetch_cadence, timedelta(hours=1))
             if last and (now - last) < cadence:
                 continue
 
             ws_result = await db.execute(
-                select(Workspace).where(Workspace.id == source.workspace_id)
+                select(Workspace).where(Workspace.id == workspace_id)
             )
             workspace = ws_result.scalar_one_or_none()
             if not workspace:
@@ -60,24 +75,24 @@ async def _poll_all_sources():
             # Gate 1: payment lapsed — skip if workspace has payment enforcement
             # but no valid subscription. Already-ingested content stays readable.
             from app.services.billing_service import is_payment_lapsed, is_budget_exhausted
-            if await is_payment_lapsed(db, source.workspace_id):
+            if await is_payment_lapsed(db, workspace_id):
                 log.debug("Skipping source %s: payment lapsed for workspace %s",
-                          source.identifier, source.workspace_id)
+                          identifier, workspace_id)
                 continue
 
             # Gate 2: budget exhausted — pause deferrable ingestion jobs.
             # The Ask view is never paused here; this only affects background fetching.
-            if await is_budget_exhausted(db, source.workspace_id):
+            if await is_budget_exhausted(db, workspace_id):
                 log.debug("Skipping source %s: budget cap reached for workspace %s",
-                          source.identifier, source.workspace_id)
+                          identifier, workspace_id)
                 continue
 
             try:
                 count = await run_fetch_pipeline(db, source=source, workspace=workspace)
                 if count:
-                    log.info("Fetched %d new items from source %s", count, source.identifier)
+                    log.info("Fetched %d new items from source %s", count, identifier)
             except Exception as e:
-                log.error("Poller error for source %s: %s", source.id, e)
+                log.error("Poller error for source %s: %s", identifier, e)
 
 
 async def _mine_all_workspaces():
