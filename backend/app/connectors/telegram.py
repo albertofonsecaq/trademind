@@ -16,7 +16,7 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.types import Message, MessageMediaPhoto, MessageMediaDocument
 
-from app.connectors.base import BaseConnector, RawMessage
+from app.connectors.base import BaseConnector, RawMessage, to_naive_utc
 
 _URL_RE = re.compile(r'https?://\S+')
 _MAX_VIDEO_BYTES = 100 * 1024 * 1024  # 100 MB
@@ -73,9 +73,9 @@ class TelegramConnector(BaseConnector):
         return {"message_id": msg.id, "views": getattr(msg, "views", None)}
 
     def _ts(self, msg: Message) -> datetime:
-        # Telegram dates are always UTC; strip tzinfo for TIMESTAMP WITHOUT TIME ZONE columns
-        dt = msg.date if msg.date.tzinfo is None else msg.date.replace(tzinfo=None)
-        return dt
+        # Telegram dates are always UTC. Connectors speak naive UTC (see
+        # base.to_naive_utc); the timestamptz columns store it as UTC either way.
+        return to_naive_utc(msg.date)
 
     # ── text ─────────────────────────────────────────────────────────────────
 
@@ -253,6 +253,8 @@ class TelegramConnector(BaseConnector):
     async def fetch_range(
         self, date_start: datetime, date_end: datetime | None
     ) -> AsyncIterator[RawMessage]:
+        date_start = to_naive_utc(date_start)
+        date_end = to_naive_utc(date_end)
         entity = self._resolve_identifier()
         async with self._client() as client:
             async for msg in client.iter_messages(

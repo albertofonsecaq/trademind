@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import AsyncIterator
 
-from app.connectors.base import BaseConnector, RawMessage
+from app.connectors.base import BaseConnector, RawMessage, to_naive_utc
 from app.core.config import settings
 
 log = logging.getLogger(__name__)
@@ -207,8 +207,10 @@ class YouTubeConnector(BaseConnector):
         return None, "0"
 
     def _parse_timestamp(self, published_at: str) -> datetime:
+        # Naive UTC, matching the connector contract — the API returns "…Z" (aware)
+        # but the fallback below is naive, so normalize both through one path.
         try:
-            return datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+            return to_naive_utc(datetime.fromisoformat(published_at.replace("Z", "+00:00")))
         except Exception:
             return datetime.utcnow()
 
@@ -294,6 +296,8 @@ class YouTubeConnector(BaseConnector):
         self, date_start: datetime, date_end: datetime | None
     ) -> AsyncIterator[RawMessage]:
         """Yield chunks for videos published within [date_start, date_end]."""
+        date_start = to_naive_utc(date_start)
+        date_end = to_naive_utc(date_end)
         videos = await self._get_videos()
 
         for video in reversed(videos):  # oldest-first

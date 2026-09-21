@@ -4,9 +4,22 @@ Adding a new source = new connector class, no changes to the pipeline.
 """
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import AsyncIterator
 import uuid
+
+
+def to_naive_utc(dt: datetime | None) -> datetime | None:
+    """Coerce a datetime to the connector contract: naive, UTC.
+
+    Connectors speak naive UTC, but the timestamp columns these bounds come from
+    are timestamptz, so a value read back from the DB arrives tz-aware. Comparing
+    the two raises TypeError, so normalize at the boundary rather than asking
+    every caller to remember (#4).
+    """
+    if dt is None or dt.tzinfo is None:
+        return dt
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 @dataclass
@@ -39,5 +52,8 @@ class BaseConnector(ABC):
     async def fetch_range(
         self, date_start: datetime, date_end: datetime | None
     ) -> AsyncIterator[RawMessage]:
-        """Yield messages in [date_start, date_end] for backfill."""
+        """Yield messages in [date_start, date_end] for backfill.
+
+        Bounds may be naive or aware; implementations normalize with to_naive_utc.
+        """
         ...

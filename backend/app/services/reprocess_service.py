@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,12 +33,6 @@ log = logging.getLogger(__name__)
 # The connector filters by date, not by id, so widen the window slightly to
 # absorb any timestamp skew between what we stored and what the source reports.
 _WINDOW_PADDING = timedelta(days=1)
-
-
-def _naive_utc(dt: datetime) -> datetime:
-    """Connectors yield naive UTC (telegram.py:_ts) but these columns are timestamptz,
-    so reads come back aware. Match the connector or the range comparison blows up."""
-    return dt.replace(tzinfo=None) if dt.tzinfo else dt
 
 
 @dataclass
@@ -93,8 +87,9 @@ async def reprocess_flagged_images(
     timestamps = [ts for ts in pending.values() if ts is not None]
     if not timestamps:
         raise ValueError("Flagged items carry no message_timestamp — cannot bound the scan")
-    date_start = _naive_utc(min(timestamps)) - _WINDOW_PADDING
-    date_end = _naive_utc(max(timestamps)) + _WINDOW_PADDING
+    # Bounds stay as read (aware, from timestamptz); the connector normalizes them.
+    date_start = min(timestamps) - _WINDOW_PADDING
+    date_end = max(timestamps) + _WINDOW_PADDING
 
     connector = _build_connector(source)
     log.info(
