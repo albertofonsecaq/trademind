@@ -11,7 +11,7 @@ type Source = {
   id: string; source_type: string; identifier: string; label: string | null;
   fetch_cadence: string; content_filters: Record<string, boolean>;
   last_fetched_at: string | null; platform_connection_id: string | null;
-  backfill_start_date: string | null;
+  backfill_start_date: string | null; is_paused: boolean;
 };
 type BackfillJob = {
   id: string; status: string; items_ingested: number;
@@ -42,9 +42,50 @@ const SOURCE_BADGE: Record<string, React.CSSProperties> = {
 };
 const JOB_COLOR: Record<string, string> = {
   queued: "#888", running: "#1565c0", completed: "#2e7d32", failed: "#c0392b",
+  cancelled: "#f57f17",
 };
 
 const PULSE_STYLE = `@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }`;
+
+// ── pause controls, shared by the YouTube list and the full source list ───────
+function PausedBadge() {
+  const { t } = useTranslation();
+  return (
+    <span style={{
+      fontSize: "0.7rem", padding: "2px 7px", borderRadius: "10px",
+      background: "#fff8e1", color: "#f57f17", border: "1px solid #ffe082", fontWeight: 600,
+    }}>
+      {t("sources.paused")}
+    </span>
+  );
+}
+
+function PauseButton({ source, busy, onToggle }: {
+  source: Source; busy: boolean; onToggle: (source: Source) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <button style={btn(false)} disabled={busy} onClick={() => onToggle(source)}>
+      {busy ? t("common.loading") : source.is_paused ? t("sources.resume") : t("sources.pause")}
+    </button>
+  );
+}
+
+function FetchButton({ source, fetching, onFetch }: {
+  source: Source; fetching: boolean; onFetch: (id: string) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <button
+      style={{ ...btn(), ...(source.is_paused ? { opacity: 0.45, cursor: "not-allowed" } : {}) }}
+      disabled={fetching || source.is_paused}
+      title={source.is_paused ? t("sources.pausedNoFetch") : undefined}
+      onClick={() => onFetch(source.id)}
+    >
+      {fetching ? t("sources.fetching") : t("sources.fetchNow")}
+    </button>
+  );
+}
 
 // ── per-source config + backfill panel ────────────────────────────────────────
 function SourcePanel({ source, workspaceId, onSaved }: {
@@ -167,18 +208,26 @@ function SourcePanel({ source, workspaceId, onSaved }: {
       {tab === "backfill" && (
         <div>
           <p style={{ fontSize: "0.82rem", color: "#555", marginTop: 0 }}>{t("sources.backfillHint")}</p>
+          {source.is_paused && (
+            <p style={{ fontSize: "0.82rem", color: "#f57f17", marginTop: 0 }}>{t("sources.pausedNoBackfill")}</p>
+          )}
           <form onSubmit={triggerBackfill} style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "flex-end", marginBottom: "1rem" }}>
             <div>
               <label style={lbl}>{t("sources.backfillFrom")} *</label>
               <input type="date" style={{ ...inp, width: "160px" }} value={bfStart}
-                onChange={(e) => setBfStart(e.target.value)} required />
+                onChange={(e) => setBfStart(e.target.value)} disabled={source.is_paused} required />
             </div>
             <div>
               <label style={lbl}>{t("sources.backfillTo")}</label>
               <input type="date" style={{ ...inp, width: "160px" }} value={bfEnd}
-                onChange={(e) => setBfEnd(e.target.value)} />
+                onChange={(e) => setBfEnd(e.target.value)} disabled={source.is_paused} />
             </div>
-            <button type="submit" style={btn()} disabled={bfLoading || !bfStart}>
+            <button
+              type="submit"
+              style={{ ...btn(), ...(source.is_paused ? { opacity: 0.45, cursor: "not-allowed" } : {}) }}
+              disabled={bfLoading || !bfStart || source.is_paused}
+              title={source.is_paused ? t("sources.pausedNoBackfill") : undefined}
+            >
               {bfLoading ? t("common.loading") : t("sources.triggerBackfill")}
             </button>
           </form>
@@ -216,6 +265,7 @@ export function AdminSources() {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [sources, setSources] = useState<Source[]>([]);
   const [fetchingId, setFetchingId] = useState<string | null>(null);
+  const [pausingId, setPausingId] = useState<string | null>(null);
   const [activeFetches, setActiveFetches] = useState<Record<string, string>>({}); // id → triggered-at ISO
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -308,6 +358,22 @@ export function AdminSources() {
     }
   };
 
+  const togglePause = async (source: Source) => {
+    if (!workspaceId) return;
+    // Pausing is the one that needs saying out loud: it stops spend but keeps
+    // every piece of evidence, and resuming picks up from the same place.
+    if (!source.is_paused && !confirm(t("sources.pauseConfirm"))) return;
+    setPausingId(source.id);
+    try {
+      await api.patch(`/workspaces/${workspaceId}/sources/${source.id}`, {
+        is_paused: !source.is_paused,
+      });
+      await load();
+    } finally {
+      setPausingId(null);
+    }
+  };
+
   const removeSource = async (sourceId: string) => {
     if (!workspaceId || !confirm(t("sources.removeSource") + "?")) return;
     await api.delete(`/workspaces/${workspaceId}/sources/${sourceId}`);
@@ -393,11 +459,11 @@ export function AdminSources() {
                   <span style={{ fontSize: "0.875rem", fontWeight: 500 }}>{s.label || s.identifier}</span>
                   {s.label && <span style={{ fontSize: "0.75rem", color: "#aaa", fontFamily: "monospace", marginLeft: "0.4rem" }}>{s.identifier}</span>}
                   <span style={{ fontSize: "0.75rem", color: "#999", marginLeft: "0.4rem" }}>{s.fetch_cadence}</span>
+                  {s.is_paused && <span style={{ marginLeft: "0.4rem" }}><PausedBadge /></span>}
                 </div>
                 <div style={{ display: "flex", gap: "0.4rem" }}>
-                  <button style={btn()} disabled={fetchingId === s.id} onClick={() => fetchNow(s.id)}>
-                    {fetchingId === s.id ? t("sources.fetching") : t("sources.fetchNow")}
-                  </button>
+                  <PauseButton source={s} busy={pausingId === s.id} onToggle={togglePause} />
+                  <FetchButton source={s} fetching={fetchingId === s.id} onFetch={fetchNow} />
                   <button style={btn(false, true)} onClick={() => removeSource(s.id)}>{t("common.delete")}</button>
                 </div>
               </div>
@@ -488,14 +554,14 @@ export function AdminSources() {
                     {s.label && <span style={{ fontSize: "0.75rem", color: "#aaa", fontFamily: "monospace" }}>{s.identifier}</span>}
                     <span style={{ fontSize: "0.7rem", padding: "2px 7px", borderRadius: "10px", ...(SOURCE_BADGE[s.source_type] || {}) }}>{s.source_type}</span>
                     <span style={{ fontSize: "0.75rem", color: "#999" }}>{s.fetch_cadence}</span>
+                    {s.is_paused && <PausedBadge />}
                   </div>
                   <div style={{ display: "flex", gap: "0.4rem" }}>
                     <button style={btn(false)} onClick={() => setExpandedId(expandedId === s.id ? null : s.id)}>
                       {expandedId === s.id ? t("common.collapse") : t("sources.configure")}
                     </button>
-                    <button style={btn()} disabled={fetchingId === s.id} onClick={() => fetchNow(s.id)}>
-                      {fetchingId === s.id ? t("sources.fetching") : t("sources.fetchNow")}
-                    </button>
+                    <PauseButton source={s} busy={pausingId === s.id} onToggle={togglePause} />
+                    <FetchButton source={s} fetching={fetchingId === s.id} onFetch={fetchNow} />
                     <button style={btn(false, true)} onClick={() => removeSource(s.id)}>{t("common.delete")}</button>
                   </div>
                 </div>
@@ -513,6 +579,11 @@ export function AdminSources() {
                 <p style={{ margin: "0.2rem 0 0", fontSize: "0.77rem", color: "#aaa" }}>
                   {t("sources.lastFetched")}: {s.last_fetched_at ? new Date(s.last_fetched_at).toLocaleString() : t("sources.never")}
                 </p>
+                {s.is_paused && (
+                  <p style={{ margin: "0.15rem 0 0", fontSize: "0.77rem", color: "#f57f17" }}>
+                    {t("sources.pausedHint")}
+                  </p>
+                )}
                 {activeFetches[s.id] && (
                   <p style={{ margin: "0.15rem 0 0", fontSize: "0.77rem", color: "#1565c0", display: "flex", alignItems: "center", gap: "0.3rem" }}>
                     <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: "#1565c0", animation: "pulse 1.2s infinite" }} />
