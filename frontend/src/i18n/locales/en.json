@@ -307,6 +307,8 @@
     "noJobs": "No backfill jobs yet.",
     "now": "now",
     "items": "items",
+    "itemsFailed_one": "1 failed",
+    "itemsFailed_other": "{{count}} failed",
     "from": "from",
     "fetchInProgress": "Fetching in background — updating when complete..."
   },

@@ -15,7 +15,7 @@ type Source = {
 };
 type ResumeMode = "catch_up" | "from_now";
 type BackfillJob = {
-  id: string; status: string; items_ingested: number;
+  id: string; status: string; items_ingested: number; items_failed: number;
   date_range_start: string; date_range_end: string | null;
   created_at: string; completed_at: string | null; error_message: string | null;
 };
@@ -47,7 +47,7 @@ const SOURCE_BADGE: Record<string, React.CSSProperties> = {
 };
 const JOB_COLOR: Record<string, string> = {
   queued: "#888", running: "#1565c0", completed: "#2e7d32", failed: "#c0392b",
-  cancelled: PAUSED_COLOR,
+  cancelled: PAUSED_COLOR, partial: PAUSED_COLOR,
 };
 
 const PULSE_STYLE = `@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }`;
@@ -362,6 +362,11 @@ function SourcePanel({ source, workspaceId, workspacePaused, onSaved }: {
                   {job.date_range_start.slice(0, 10)} → {job.date_range_end ? job.date_range_end.slice(0, 10) : t("sources.now")}
                 </span>
                 <span style={{ color: "#27ae60" }}>{job.items_ingested} {t("sources.items")}</span>
+                {job.items_failed > 0 && (
+                  <span style={{ color: "#c0392b" }}>
+                    {t("sources.itemsFailed", { count: job.items_failed })}
+                  </span>
+                )}
                 {job.error_message && <span style={{ color: "#c0392b" }}>{job.error_message}</span>}
               </div>
             ))

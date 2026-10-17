@@ -16,6 +16,32 @@ log = logging.getLogger(__name__)
 
 _UNAVAILABLE = "The AI service is temporarily unavailable. Please try again shortly."
 
+# A 400 can mean "this one message is unusable" or "this account is finished for
+# the month". Only the provider's wording tells them apart (#9).
+_ACCOUNT_LIMIT_MARKERS = ("usage limit", "credit balance", "spending limit")
+
+
+def is_fatal_for_batch(exc: BaseException) -> bool:
+    """
+    True when this failure will repeat for every remaining item in a batch.
+
+    A backfill of 1,610 messages once hit an account usage limit partway and
+    then made 1,610 more doomed calls, one per message, each rolled back and
+    logged — real wall-clock time spent learning nothing after the first (#9).
+    Those are worth abandoning the run for. A rate limit is not: it is transient
+    by definition, and the answer there is backoff, not throwing the range away.
+    An ordinary 400 is not either, or one oversized image would condemn every
+    message behind it.
+    """
+    if isinstance(exc, (anthropic.AuthenticationError, anthropic.PermissionDeniedError)):
+        return True            # our credentials: nothing will succeed
+    if isinstance(exc, anthropic.RateLimitError):
+        return False           # transient
+    if isinstance(exc, anthropic.BadRequestError):
+        message = str(exc).lower()
+        return any(marker in message for marker in _ACCOUNT_LIMIT_MARKERS)
+    return False
+
 
 def _classify(exc: anthropic.APIError) -> tuple[int, str]:
     if isinstance(exc, (anthropic.AuthenticationError, anthropic.PermissionDeniedError)):

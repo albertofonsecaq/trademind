@@ -19,6 +19,7 @@ from app.models.source_config import SourceConfig
 from app.models.backfill_job import BackfillJob
 from app.models.platform_connection import PlatformConnection
 from app.services import source_resume_service as resume_service
+from app.core.llm_errors import is_fatal_for_batch
 from app.services.ingestion_gate import SOURCE_PAUSED, WORKSPACE_PAUSED, blocked_reason
 from app.services.source_resume_service import NewestEvidenceUnknown, ResumeMode
 
@@ -113,6 +114,7 @@ class BackfillJobOut(BaseModel):
     id: uuid.UUID
     status: str
     items_ingested: int
+    items_failed: int
     date_range_start: datetime
     date_range_end: datetime | None
     created_at: datetime
@@ -394,8 +396,11 @@ async def _run_fetch_bg(source_id: uuid.UUID, workspace_id: uuid.UUID):
                     log.info("Skipping queued fetch for source %s: %s", source_id, reason)
                     return
             if source and workspace:
-                count = await run_fetch_pipeline(db, source=source, workspace=workspace)
-                log.info("Fetch complete for source %s: %d items ingested", source_id, count)
+                outcome = await run_fetch_pipeline(db, source=source, workspace=workspace)
+                log.info(
+                    "Fetch complete for source %s: %d ingested, %d failed",
+                    source_id, outcome.ingested, outcome.failed,
+                )
     except Exception as e:
         log.error("Fetch background task failed for source %s: %s", source_id, e, exc_info=True)
 
@@ -456,6 +461,10 @@ async def _run_backfill_bg(job_id: uuid.UUID):
             date_start, date_end = job.date_range_start, job.date_range_end
 
             count = 0
+            failed = 0
+            first_failure: str | None = None
+            fatal: BaseException | None = None
+
             async for msg in connector.fetch_range(date_start, date_end):
                 if not _content_type_allowed(msg, filters):
                     continue
@@ -468,11 +477,34 @@ async def _run_backfill_bg(job_id: uuid.UUID):
                         count += 1
                     await db.commit()
                 except Exception as e:
+                    failed += 1
+                    if first_failure is None:
+                        first_failure = str(e)
                     log.error("Backfill pipeline error: %s", e)
+                    if is_fatal_for_batch(e):
+                        # Every remaining message hits the same wall, so walking
+                        # the rest of the range buys nothing but wall-clock time
+                        # and a log full of the same line (#9).
+                        fatal = e
+                        break
 
-            job.status = "completed"
+            # A row has to be readable on its own: "completed" used to be written
+            # whether a run lost nothing or lost most of what it saw (#9).
+            if fatal is not None:
+                job.status = "failed"
+            elif failed:
+                job.status = "partial"
+            else:
+                job.status = "completed"
             job.items_ingested = count
+            job.items_failed = failed
+            if first_failure:
+                job.error_message = first_failure[:900]
             job.completed_at = datetime.utcnow()
+            log.info(
+                "Backfill job %s %s: %d ingested, %d failed",
+                job_id, job.status, count, failed,
+            )
 
         except Exception as e:
             log.error("Backfill job %s failed: %s", job_id, e)

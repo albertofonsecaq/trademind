@@ -20,7 +20,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from dataclasses import dataclass
+
 from app.connectors.base import FetchPosition, RawMessage
+from app.core.llm_errors import is_fatal_for_batch
 from app.models.evidence_item import EvidenceItem
 from app.models.trade_idea import TradeIdea
 from app.models.embedding_row import EmbeddingRow
@@ -468,17 +471,29 @@ def _content_type_allowed(msg: RawMessage, filters: dict) -> bool:
     return filters.get(mapping.get(msg.content_type, "text"), True)
 
 
+@dataclass(frozen=True)
+class FetchOutcome:
+    """
+    What one fetch did — both halves.
+
+    Returning only the success count let a tick that failed every message read
+    as a quiet one, which is the poller's version of #9's "completed" backfill.
+    """
+    ingested: int = 0
+    failed: int = 0
+
+
 async def run_fetch_pipeline(
     db: AsyncSession,
     *,
     source: SourceConfig,
     workspace: Workspace,
-) -> int:
+) -> FetchOutcome:
     try:
         connector = _build_connector(source)
     except Exception as e:
         log.warning("Cannot build connector for source %s: %s", source.id, e, exc_info=True)
-        return 0
+        return FetchOutcome()
 
     # Read all ORM attributes before the loop — db.commit() expires loaded objects,
     # so accessing them inside the loop would trigger a sync lazy-load and crash.
@@ -490,6 +505,7 @@ async def run_fetch_pipeline(
     )
 
     count = 0
+    failed = 0
     position = initial_position
 
     async for msg in connector.fetch_new(position):
@@ -512,7 +528,14 @@ async def run_fetch_pipeline(
         except IntegrityError:
             log.info("Skipping already-ingested %s", msg.stable_id)
         except Exception as e:
+            failed += 1
             log.error("Pipeline error for %s: %s", msg.stable_id, e, exc_info=True)
+            if is_fatal_for_batch(e):
+                # Nothing after this can succeed either, so stop rather than
+                # spend the rest of the tick proving it. Raising is how the
+                # poller reports a source's trouble (#9).
+                await _store_position(db, source_id, position, initial_position)
+                raise
             continue
         else:
             await db.commit()
@@ -527,13 +550,29 @@ async def run_fetch_pipeline(
             log.info("Repairing fetch position for source %s: %s", source_id, repaired.stable_id)
             position = repaired
 
-    if position != initial_position:
-        result = await db.execute(select(SourceConfig).where(SourceConfig.id == source_id))
-        src = result.scalar_one_or_none()
-        if src:
-            src.last_fetched_id = position.stable_id
-            src.last_fetched_item_at = position.item_at
-            src.last_fetched_at = datetime.utcnow()
-        await db.commit()
+    await _store_position(db, source_id, position, initial_position)
 
-    return count
+    if failed:
+        log.warning(
+            "Fetch for source %s: %d ingested, %d failed", source_id, count, failed
+        )
+    return FetchOutcome(ingested=count, failed=failed)
+
+
+async def _store_position(
+    db: AsyncSession,
+    source_id: uuid.UUID,
+    position: FetchPosition,
+    initial_position: FetchPosition,
+) -> None:
+    """Persist a position that moved — including on the way out of a fatal error,
+    so the work already done is not repeated on the next tick."""
+    if position == initial_position:
+        return
+    result = await db.execute(select(SourceConfig).where(SourceConfig.id == source_id))
+    src = result.scalar_one_or_none()
+    if src:
+        src.last_fetched_id = position.stable_id
+        src.last_fetched_item_at = position.item_at
+        src.last_fetched_at = datetime.utcnow()
+    await db.commit()

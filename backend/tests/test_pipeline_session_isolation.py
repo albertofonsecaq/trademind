@@ -89,10 +89,10 @@ def pipeline(monkeypatch):
 
     async def run(process):
         monkeypatch.setattr(ingestion_pipeline, "process_message", process)
-        count = await ingestion_pipeline.run_fetch_pipeline(
+        outcome = await ingestion_pipeline.run_fetch_pipeline(
             db, source=source, workspace=workspace
         )
-        return count, db
+        return outcome, db
 
     return run
 
@@ -119,14 +119,20 @@ class TestFailingMessage:
 
     async def test_keeps_processing_later_messages(self, pipeline):
         """A poisoned message must not cost us the rest of the batch."""
-        count, _ = await pipeline(_fails_on_second)
-        assert count == 2                           # 1 and 3 survived
+        outcome, _ = await pipeline(_fails_on_second)
+        assert outcome.ingested == 2                # 1 and 3 survived
+
+    async def test_counts_the_failure_rather_than_swallowing_it(self, pipeline):
+        """#9: a tick that lost a message must not read like a quiet one."""
+        outcome, _ = await pipeline(_fails_on_second)
+        assert outcome.failed == 1
 
 
 class TestHealthyRun:
     async def test_commits_each_message(self, pipeline):
-        count, db = await pipeline(_ok)
-        assert count == 3
+        outcome, db = await pipeline(_ok)
+        assert outcome.ingested == 3
+        assert outcome.failed == 0
         assert db.commits >= 3
         assert db.rollbacks == 0
 

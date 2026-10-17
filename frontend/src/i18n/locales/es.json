@@ -307,6 +307,8 @@
     "noJobs": "No hay trabajos de backfill aún.",
     "now": "ahora",
     "items": "ítems",
+    "itemsFailed_one": "1 con error",
+    "itemsFailed_other": "{{count}} con error",
     "from": "desde",
     "fetchInProgress": "Obteniendo en segundo plano — se actualizará al terminar..."
   },
