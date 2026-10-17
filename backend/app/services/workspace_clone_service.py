@@ -84,6 +84,7 @@ async def clone_workspace(
             is_paused=False,
             paused_at=None,
             last_fetched_id=None,
+            last_fetched_item_at=None,
             last_fetched_at=None,
             created_by_user_id=target_user_id,
         ))

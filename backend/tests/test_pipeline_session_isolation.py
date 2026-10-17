@@ -49,9 +49,7 @@ class _FakeSession:
         self.rollbacks += 1
 
     async def execute(self, *a, **kw):
-        # scalar() answers the "newest stored content" query the pipeline makes
-        # to hand connectors a cursor fallback (#19)
-        return SimpleNamespace(scalar_one_or_none=lambda: None, scalar=lambda: None)
+        return SimpleNamespace(scalar_one_or_none=lambda: None)
 
 
 def _msg(n: int) -> RawMessage:
@@ -74,14 +72,18 @@ def pipeline(monkeypatch):
     messages = [_msg(1), _msg(2), _msg(3)]
 
     class _Connector:
-        async def fetch_new(self, since_id=None, since_timestamp=None):
+        async def fetch_new(self, position):
             for m in messages:
                 yield m
+
+        def repaired_position(self):
+            return None
 
     monkeypatch.setattr(ingestion_pipeline, "_build_connector", lambda source: _Connector())
 
     source = SimpleNamespace(
-        id=uuid.uuid4(), content_filters={"text": True}, last_fetched_id=None,
+        id=uuid.uuid4(), content_filters={"text": True},
+        last_fetched_id=None, last_fetched_item_at=None,
     )
     workspace = SimpleNamespace(topic_scope="trading")
 

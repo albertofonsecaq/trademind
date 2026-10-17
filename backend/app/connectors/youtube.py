@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import AsyncIterator
 
-from app.connectors.base import BaseConnector, RawMessage, to_naive_utc
+from app.connectors.base import BaseConnector, FetchPosition, RawMessage, to_naive_utc
 from app.core.config import settings
 
 log = logging.getLogger(__name__)
@@ -163,6 +163,7 @@ class YouTubeConnector(BaseConnector):
         self.source_config_id = source_config_id
         self.workspace_id = workspace_id
         self.channel_identifier = channel_identifier
+        self._repaired: FetchPosition | None = None
 
     def _api_key(self) -> str:
         if not settings.YOUTUBE_API_KEY:
@@ -267,9 +268,7 @@ class YouTubeConnector(BaseConnector):
                 pre_pipeline_model=settings.WHISPER_MODEL if float(chunk_whisper_cost) > 0 else None,
             )
 
-    async def fetch_new(
-        self, since_id: str | None, since_timestamp: datetime | None = None
-    ) -> AsyncIterator[RawMessage]:
+    async def fetch_new(self, position: FetchPosition) -> AsyncIterator[RawMessage]:
         """
         Fetch recent videos, from the cursor forward.
 
@@ -287,16 +286,25 @@ class YouTubeConnector(BaseConnector):
         pipeline's stable_id dedup absorbs anything already stored.
         """
         videos = await self._get_videos()
-        marker = self._video_id_from(since_id)
+        marker = self._video_id_from(position.stable_id)
         bound: datetime | None = None
+        self._repaired = None
 
         if marker and not any(v["video_id"] == marker for v in videos):
-            bound = to_naive_utc(since_timestamp)
+            bound = to_naive_utc(position.item_at)
             log.warning(
-                "Cursor video %s is gone from %s's window; falling back to %s",
+                "Position video %s is gone from %s's window; falling back to %s",
                 marker, self.channel_identifier, bound or "the whole window",
             )
             marker = None
+            # Whatever this run yields, the dead marker must not come back next
+            # tick: the newest video in the window is where we have got to.
+            if videos:
+                newest = videos[0]
+                self._repaired = FetchPosition(
+                    stable_id=f"youtube:{newest['video_id']}:full",
+                    item_at=self._parse_timestamp(newest["published_at"]),
+                )
 
         for video in reversed(videos):                  # oldest first
             if marker is not None:
@@ -305,11 +313,24 @@ class YouTubeConnector(BaseConnector):
                 if video["video_id"] == marker:
                     marker = None
                 continue
-            if bound is not None and self._parse_timestamp(video["published_at"]) <= bound:
+            if bound is not None and self._parse_timestamp(video["published_at"]) < bound:
                 continue
 
             async for msg in self._yield_video_chunks(video):
                 yield msg
+
+    def repaired_position(self) -> FetchPosition | None:
+        """
+        Where the last fetch_new actually got to, when its own marker was dead.
+
+        Strictly `<` above rather than `<=`: a video sharing the bound's exact
+        second — YouTube publishes at second resolution, so batch uploads and
+        premieres do — would otherwise be skipped by every future tick, silently
+        and for ever. Re-offering that one second's videos costs at most a
+        transcript the pipeline's stable_id dedup then discards, which is the
+        cheaper mistake by far.
+        """
+        return self._repaired
 
     @staticmethod
     def _video_id_from(stable_id: str | None) -> str | None:

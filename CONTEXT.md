@@ -64,6 +64,10 @@ _Avoid_: Workspace disabled, frozen workspace, suspended
 How a paused source starts fetching again, chosen by the user every time: _catch up_ ingests the backlog from where the pause stopped, _from now_ moves the fetch position to the source's newest content and declines the gap. Declining a backlog never deletes anything already ingested.
 _Avoid_: Resume strategy, catch-up policy, skip
 
+**Fetch position**:
+How far through a source's content the system has already got, stored per source and advanced only forward. A platform gives it one of two shapes: a _bound_, which says "everything after this point" and survives the content it names being deleted (Telegram's message id), or a _marker_, which has to be found again in the platform's current window and is lost if that item disappears (YouTube's video id). A marker that cannot be found falls back to the timestamp of the newest evidence already stored, so a source never stalls on a deleted item.
+_Avoid_: Cursor, offset, watermark, last seen
+
 **Backlog**:
 The content a paused source has published since it was last fetched — what catching up would ingest. Measured from the fetch position, not from the pause.
 _Avoid_: Queue, pending items, lag
