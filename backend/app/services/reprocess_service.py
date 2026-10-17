@@ -180,10 +180,9 @@ async def _replay_one(db, msg, workspace_id, report, *, detect_lang, distill) ->
     item.relevance_reason = result.get("reason", "")
     item.original_language = detect_lang(content) if content else None
     item.needs_reprocessing = bool(result.get("needs_reprocessing", False))
-    await db.flush()
 
+    # Before the flush, which can raise: the vision call is already paid for (#27).
     await log_usage_event(
-        db,
         workspace_id=workspace_id,
         task_type="vision",
         provider_model=settings.DISTILLATION_MODEL,
@@ -191,6 +190,8 @@ async def _replay_one(db, msg, workspace_id, report, *, detect_lang, distill) ->
         output_units=usage["output_tokens"],
         cost_usd=vision_service.vision_cost(usage["input_tokens"], usage["output_tokens"]),
     )
+
+    await db.flush()
 
     if item.needs_reprocessing:
         report.still_unreadable += 1

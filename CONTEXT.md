@@ -147,7 +147,7 @@ _Avoid_: Performance, personal win rate
 ### Cost and billing
 
 **Usage event**:
-One billable call to an external model or service, logged with what it cost and what task it served. Every such call produces one.
+One billable call to an external model or service, logged with what it cost and what task it served. Every such call produces one, and the budget cap, the overage metering and the margin figures are all derived from them. Recorded in its own transaction, because a call that happened is owed whether or not the work it was for survived.
 _Avoid_: Metric, log entry, transaction
 
 **Included budget**:

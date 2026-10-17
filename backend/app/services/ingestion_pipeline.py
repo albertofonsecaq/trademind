@@ -110,7 +110,6 @@ async def _distill_and_embed(
     db.add(idea)
 
     await log_usage_event(
-        db,
         workspace_id=msg.workspace_id,
         task_type="distillation",
         provider_model=settings.DISTILLATION_MODEL,
@@ -142,7 +141,6 @@ async def _distill_and_embed(
     db.add(emb)
 
     await log_usage_event(
-        db,
         workspace_id=msg.workspace_id,
         task_type="embedding",
         provider_model=settings.EMBEDDING_MODEL,
@@ -179,7 +177,6 @@ async def _process_text(db: AsyncSession, msg: RawMessage, topic_scope: str) -> 
     item.relevance_reason = reason
 
     await log_usage_event(
-        db,
         workspace_id=msg.workspace_id,
         task_type="relevance_filter",
         provider_model=settings.RELEVANCE_MODEL,
@@ -233,11 +230,9 @@ async def _process_image(db: AsyncSession, msg: RawMessage, topic_scope: str) ->
         source_metadata={"author": msg.author, "channel": msg.channel, **{k: v for k, v in meta.items() if k != "image_base64"}},
         message_timestamp=msg.timestamp,
     )
-    db.add(item)
-    await db.flush()
-
+    # Before the flush: a duplicate stable_id raises there, and the vision call
+    # that produced this content has already been paid for (#27).
     await log_usage_event(
-        db,
         workspace_id=msg.workspace_id,
         task_type="vision",
         provider_model=settings.DISTILLATION_MODEL,
@@ -245,6 +240,9 @@ async def _process_image(db: AsyncSession, msg: RawMessage, topic_scope: str) ->
         output_units=vision_usage["output_tokens"],
         cost_usd=vision_service.vision_cost(vision_usage["input_tokens"], vision_usage["output_tokens"]),
     )
+
+    db.add(item)
+    await db.flush()
 
     if not is_on_topic:
         return item
@@ -288,7 +286,6 @@ async def _process_url(db: AsyncSession, msg: RawMessage, topic_scope: str) -> E
     item.relevance_reason = reason
 
     await log_usage_event(
-        db,
         workspace_id=msg.workspace_id,
         task_type="relevance_filter",
         provider_model=settings.RELEVANCE_MODEL,
@@ -329,20 +326,23 @@ async def _process_video(db: AsyncSession, msg: RawMessage, topic_scope: str) ->
             result, usage = await vision_service.extract_image(frame_bytes)
             total_vision_input += usage["input_tokens"]
             total_vision_output += usage["output_tokens"]
+            # Each frame is its own call, so each is logged as it returns: one
+            # event for the whole video lost every earlier frame's cost when a
+            # later one failed (#27).
+            await log_usage_event(
+                workspace_id=msg.workspace_id,
+                task_type="vision",
+                provider_model=settings.DISTILLATION_MODEL,
+                input_units=usage["input_tokens"],
+                output_units=usage["output_tokens"],
+                cost_usd=vision_service.vision_cost(
+                    usage["input_tokens"], usage["output_tokens"]
+                ),
+            )
             if result.get("needs_reprocessing"):
                 unreadable_frames += 1
             if result.get("is_on_topic") and result.get("description"):
                 descriptions.append(result["description"])
-
-        await log_usage_event(
-            db,
-            workspace_id=msg.workspace_id,
-            task_type="vision",
-            provider_model=settings.DISTILLATION_MODEL,
-            input_units=total_vision_input,
-            output_units=total_vision_output,
-            cost_usd=vision_service.vision_cost(total_vision_input, total_vision_output),
-        )
 
         is_on_topic = len(descriptions) > 0
         content = "\n\n".join(descriptions) if descriptions else "No trading content detected in video frames."
@@ -396,18 +396,13 @@ async def process_message(
     Returns the created EvidenceItem, or None if skipped.
     Does NOT commit — caller is responsible.
     """
-    if await _is_duplicate(db, msg.workspace_id, msg.stable_id):
-        log.debug("Skipping duplicate: %s", msg.stable_id)
-        return None
-
-    if not msg.text and msg.content_type in ("text", "video_transcript", "url"):
-        return None
-
-    # Log any pre-pipeline cost (e.g. Whisper in YouTube connector)
+    # Pre-pipeline cost (Whisper, in the YouTube connector) is logged before
+    # anything can return: the call already happened upstream to produce this
+    # message, so it is owed even if the message turns out to be a duplicate we
+    # then skip (#27).
     pre_cost = Decimal(msg.pre_pipeline_cost_usd)
     if pre_cost > 0 and msg.pre_pipeline_task_type and msg.pre_pipeline_model:
         await log_usage_event(
-            db,
             workspace_id=msg.workspace_id,
             task_type=msg.pre_pipeline_task_type,
             provider_model=msg.pre_pipeline_model,
@@ -415,6 +410,13 @@ async def process_message(
             output_units=0,
             cost_usd=pre_cost,
         )
+
+    if await _is_duplicate(db, msg.workspace_id, msg.stable_id):
+        log.debug("Skipping duplicate: %s", msg.stable_id)
+        return None
+
+    if not msg.text and msg.content_type in ("text", "video_transcript", "url"):
+        return None
 
     ct = msg.content_type
     if ct in ("text", "video_transcript"):

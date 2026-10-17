@@ -142,17 +142,6 @@ async def ask(
     # Approximate cost using Sonnet pricing
     cost = Decimal(str(0.000003 * usage["input_tokens"] + 0.000015 * usage["output_tokens"]))
 
-    event = await log_usage_event(
-        db,
-        workspace_id=workspace_id,
-        task_type="query_synthesis",
-        provider_model=settings.SYNTHESIS_MODEL,
-        input_units=usage["input_tokens"],
-        output_units=usage["output_tokens"],
-        cost_usd=cost,
-        is_overage=is_overage,
-    )
-
     # If overage, update running overage total on subscription
     if is_overage:
         sub_result = await db.execute(
@@ -163,5 +152,20 @@ async def ask(
             sub.current_period_overage_usd += cost * Decimal(str(sub.overage_rate_multiplier))
 
     await db.commit()
+
+    # Last, and in its own transaction. It used to share this request's, and now
+    # cannot roll back with it, so it is written after the subscription's running
+    # overage is safely committed rather than before — an overage row that
+    # outlived a failed request would be counted by neither the cap nor the
+    # meter (#27).
+    await log_usage_event(
+        workspace_id=workspace_id,
+        task_type="query_synthesis",
+        provider_model=settings.SYNTHESIS_MODEL,
+        input_units=usage["input_tokens"],
+        output_units=usage["output_tokens"],
+        cost_usd=cost,
+        is_overage=is_overage,
+    )
 
     return AskResponse(answer=answer, sources=sources)
