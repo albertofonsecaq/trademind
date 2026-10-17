@@ -1,0 +1,139 @@
+# TradeMind
+
+A knowledge base that ingests trading content from public channels, extracts the trade ideas inside it, mines recurring patterns across sources, checks those patterns against real market outcomes, and teaches the validated ones back to the user. It is not a signal follower: the system reports what has historically worked, with evidence and confidence, and the user decides what to act on.
+
+## Language
+
+### Tenancy and people
+
+**Workspace**:
+The unit of ownership and isolation for a knowledge base — its sources, evidence, and strategy cards. Every user gets a private one; a workspace may later gain members who share all of it.
+_Avoid_: Account, tenant, org, team
+
+**User**:
+A person with login credentials. A user belongs to one or more workspaces and owns the personal layers inside them.
+_Avoid_: Customer, account
+
+**Member**:
+A user's membership in a specific workspace, as either owner or member. Membership grants access to the workspace's knowledge base, never to another user's personal layer.
+_Avoid_: Collaborator, seat (a seat is the billing unit, not the person)
+
+**Super admin**:
+A platform-level role that sits outside every workspace's membership and can act on any workspace — create one for a user, add members, or override payment enforcement.
+_Avoid_: Admin (ambiguous with a workspace owner), staff
+
+**Topic scope**:
+A workspace's own statement of what subject matter belongs in it. Everything ingested is judged against it before any expensive processing runs.
+_Avoid_: Filter, topic, niche
+
+### Sources and ingestion
+
+**Platform connection**:
+One authenticated account on an external platform, belonging to a single workspace. Never shared across workspaces, and a workspace may hold several per platform.
+_Avoid_: Integration, account, credential
+
+**Source**:
+A single tracked origin of content — one Telegram channel, one YouTube channel. Sources belong to a workspace and carry their own fetch cadence and content-type filters.
+_Avoid_: Channel (a channel is one kind of source), feed, subscription
+
+**Evidence**:
+One captured piece of content from a source — a message, an image, a transcript, or a linked article — stored in its original language alongside anything extracted from it.
+_Avoid_: Document, item, post, message
+
+**Relevance check**:
+The judgment of whether a piece of evidence falls inside the workspace's topic scope. It is a mandatory early stage: off-topic content never reaches vision, transcription, or distillation.
+_Avoid_: Filtering, moderation, screening
+
+**Distillation**:
+Turning on-topic evidence into a structured trade idea plus bilingual summaries. Runs only on evidence that passed the relevance check.
+_Avoid_: Parsing, extraction, enrichment
+
+**Backfill**:
+A one-off catch-up fetch of a source's history over a date range, as opposed to the recurring poll of new content.
+_Avoid_: Import, sync, historical load
+
+### Knowledge
+
+**Trade idea**:
+The structured claim extracted from one piece of evidence — what instrument, what direction, and at what levels somebody proposed a trade. Ideas are what a source said, never what the system recommends.
+_Avoid_: Signal, call, recommendation, tip
+
+**Setup type**:
+The named pattern a trade idea belongs to — the recurring shape that makes ideas from different sources comparable.
+_Avoid_: Strategy (a strategy card is the mined artifact), pattern, category
+
+**Strategy card**:
+A mined pattern: a setup type on a symbol scope, described in plain language, backed by the trade ideas that evidence it and by whatever validation exists. This is the thing the system teaches.
+_Avoid_: Strategy, pattern, playbook, rule
+
+**Symbol scope**:
+What a strategy card applies to — a specific instrument, or the whole market when the pattern is instrument-independent.
+_Avoid_: Ticker, market, asset
+
+**Confidence tier**:
+How far a strategy card has earned trust, from still learning through developing to established. Derived from how much validated evidence stands behind it, and it is the tier the user sees.
+_Avoid_: Score, rating, quality, maturity
+
+### Validation
+
+**Outcome check**:
+The result of replaying one trade idea against real market prices after the fact, to see whether it reached its target or its stop first.
+_Avoid_: Backtest, result, verification
+
+**Outcome**:
+What a checked trade resolved to: won, lost, still open, expired unresolved, or inconclusive for want of data.
+_Avoid_: Result, status, P&L
+
+**Adverse excursion**:
+How far price moved against a trade before it resolved — the risk the trade actually carried, as distinct from the loss it ended with. Favorable excursion is its mirror.
+_Avoid_: Drawdown, max loss
+
+**Walk-forward check**:
+Testing whether a strategy card's win rate holds up on the ideas that arrived after the card was first mined, rather than only on the ones that produced it.
+_Avoid_: Out-of-sample test, revalidation
+
+### The user's own trading
+
+Everything in this group is scoped to one user and is never visible to other members of their workspace, however many there are.
+
+**Plan item**:
+A user's private stance on a strategy card — whether they are watching it, their own notes, how it sits against their risk tolerance.
+_Avoid_: Watchlist entry, bookmark, favorite
+
+**Broker order**:
+A proposed or placed order belonging to one user. An order cannot be submitted until the user has explicitly confirmed it; there is no automated execution anywhere in the system.
+_Avoid_: Trade, position, execution
+
+**Confirmation**:
+The explicit human approval that moves a broker order from proposed to submittable. Its absence is a hard gate, not a default that can be configured away.
+_Avoid_: Approval, authorization, ack
+
+**Mode**:
+Whether a broker order or journal entry is paper or live. Paper is the default; live is a deliberate opt-in.
+_Avoid_: Environment, sandbox, real
+
+**Journal entry**:
+The record of a trade the user actually executed, paper or live, whether it came from a broker order or was logged by hand.
+_Avoid_: Trade log, history, fill
+
+**Execution score**:
+How a user's own journalled trades performed, checked the same way trade ideas are. It measures the user's execution, where an outcome check measures a source's prediction.
+_Avoid_: Performance, personal win rate
+
+### Cost and billing
+
+**Usage event**:
+One billable call to an external model or service, logged with what it cost and what task it served. Every such call produces one.
+_Avoid_: Metric, log entry, transaction
+
+**Included budget**:
+The compute spend a workspace's plan covers in a period, scaled by seat count. It is derived from the subscription, never set by hand.
+_Avoid_: Quota, allowance, credit
+
+**Overage**:
+Metered spend past the included budget, billed rather than absorbed. It accrues only up to a hard ceiling.
+_Avoid_: Excess, extra usage
+
+**Deferrable work**:
+Work that can be paused when a budget is exhausted — backfills and recurring recomputation. What the user is actively waiting on is never deferrable, which is why it is metered as overage instead.
+_Avoid_: Background jobs, batch, low priority
