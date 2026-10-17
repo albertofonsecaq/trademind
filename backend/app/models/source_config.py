@@ -24,7 +24,12 @@ class SourceConfig(Base):
     is_paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=sa_false())
     # When the pause started — what the resume prompt measures the backlog from.
     paused_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # The fetch position: the platform's own handle on it, and the timestamp of
+    # the content that handle names — recorded, not inferred, because a position
+    # can advance without storing anything (#19). last_fetched_at is a different
+    # thing: when we last ran, which drives the cadence.
     last_fetched_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_fetched_item_at: Mapped[datetime | None] = mapped_column(nullable=True)
     last_fetched_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())

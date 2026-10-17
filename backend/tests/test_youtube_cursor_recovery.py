@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.connectors.base import RawMessage
+from app.connectors.base import FetchPosition, RawMessage
 from app.connectors.youtube import YouTubeConnector
 
 
@@ -64,22 +64,23 @@ def connector(monkeypatch):
     return c
 
 
-async def _ids(connector, **kwargs) -> list[str]:
-    return [msg.stable_id async for msg in connector.fetch_new(**kwargs)]
+async def _ids(connector, stable_id=None, item_at=None) -> list[str]:
+    position = FetchPosition(stable_id=stable_id, item_at=item_at)
+    return [msg.stable_id async for msg in connector.fetch_new(position)]
 
 
 class TestMarkerStillPresent:
     async def test_yields_only_what_came_after_it(self, connector):
         """The happy path has to keep working untouched."""
-        got = await _ids(connector, since_id="youtube:v2:full")
+        got = await _ids(connector, stable_id="youtube:v2:full")
 
         assert got == ["youtube:v3:full"]
 
     async def test_a_date_bound_does_not_override_a_found_marker(self, connector):
         got = await _ids(
             connector,
-            since_id="youtube:v1:full",
-            since_timestamp=datetime(2026, 10, 15, 12, 0),
+            stable_id="youtube:v1:full",
+            item_at=datetime(2026, 10, 15, 12, 0),
         )
 
         assert got == ["youtube:v2:full", "youtube:v3:full"]
@@ -90,31 +91,46 @@ class TestMarkerGone:
         """The bug: this used to yield nothing, for ever."""
         got = await _ids(
             connector,
-            since_id="youtube:deleted-video:full",
-            since_timestamp=datetime(2026, 10, 14, 0, 0),
+            stable_id="youtube:deleted-video:full",
+            item_at=datetime(2026, 10, 14, 0, 0),
         )
 
         assert got == ["youtube:v2:full", "youtube:v3:full"]
 
-    async def test_does_not_re_ingest_what_is_already_stored(self, connector):
+    async def test_does_not_re_ingest_the_window_it_has_already_passed(self, connector):
         """
-        The bound is the newest content already stored, so the recovery pays for
-        new videos only — no re-transcription of what the workspace holds.
+        The bound is where the position already was, so recovery pays for newer
+        videos only — no re-transcription of the window behind it.
         """
         got = await _ids(
             connector,
-            since_id="youtube:deleted-video:full",
-            since_timestamp=datetime(2026, 10, 15, 9, 0),      # v2's own date
+            stable_id="youtube:deleted-video:full",
+            item_at=datetime(2026, 10, 15, 12, 0),             # after v2, before v3
         )
 
         assert got == ["youtube:v3:full"]
+
+    async def test_keeps_a_video_published_in_the_bound_second(self, connector):
+        """
+        YouTube publishes at second resolution, so batch uploads and premieres
+        share a timestamp. Excluding the bound itself would skip those siblings
+        on every future tick, silently and for ever; re-offering that one second
+        costs at most a transcript the dedup then discards.
+        """
+        got = await _ids(
+            connector,
+            stable_id="youtube:deleted-video:full",
+            item_at=datetime(2026, 10, 15, 9, 0),              # v2's own second
+        )
+
+        assert "youtube:v2:full" in got
 
     async def test_says_so_in_the_logs(self, connector, caplog):
         with caplog.at_level(logging.WARNING):
             await _ids(
                 connector,
-                since_id="youtube:deleted-video:full",
-                since_timestamp=datetime(2026, 10, 14, 0, 0),
+                stable_id="youtube:deleted-video:full",
+                item_at=datetime(2026, 10, 14, 0, 0),
             )
 
         warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
@@ -126,62 +142,108 @@ class TestMarkerGone:
         was cleared. Ingesting the window is safe: the pipeline's stable_id
         dedup absorbs anything already held.
         """
-        got = await _ids(connector, since_id="youtube:deleted-video:full")
+        got = await _ids(connector, stable_id="youtube:deleted-video:full")
 
         assert got == ["youtube:v1:full", "youtube:v2:full", "youtube:v3:full"]
 
 
 class TestFirstEverFetch:
     async def test_takes_the_whole_window(self, connector):
-        got = await _ids(connector, since_id=None)
+        got = await _ids(connector)
 
         assert got == ["youtube:v1:full", "youtube:v2:full", "youtube:v3:full"]
 
 
-class TestThePipelineSuppliesTheBound:
-    async def test_passes_the_newest_stored_timestamp_to_the_connector(self, monkeypatch):
+class _PipelineSession:
+    """Records statements so a test can pin what the pipeline asks the DB for."""
+
+    def __init__(self, source=None):
+        self.statements: list[str] = []
+        self._source = source
+
+    async def execute(self, stmt):
+        self.statements.append(str(stmt).lower())
+        return SimpleNamespace(scalar_one_or_none=lambda: self._source, scalar=lambda: None)
+
+    async def commit(self):
+        pass
+
+    def begin_nested(self):
+        raise AssertionError("no message should be processed here")
+
+
+class TestThePipelineSuppliesThePosition:
+    async def test_hands_the_connector_the_recorded_position(self, monkeypatch):
         """
-        The connector cannot read the database, so the bound has to arrive from
-        the pipeline — the newest message_timestamp already stored for the
-        source. Without this the fallback never engages in production.
+        The connector cannot read the database, so the position arrives from the
+        pipeline — and from the source's own columns, not inferred from stored
+        evidence, which lags wherever a position advanced without storing
+        anything.
         """
         from app.services import ingestion_pipeline
 
         seen: dict = {}
 
         class _Connector:
-            async def fetch_new(self, since_id=None, since_timestamp=None):
-                seen["since_id"] = since_id
-                seen["since_timestamp"] = since_timestamp
+            async def fetch_new(self, position):
+                seen["position"] = position
                 return
                 yield       # pragma: no cover — an empty async generator
 
-        newest = datetime(2026, 10, 15, 9, 0)
+            def repaired_position(self):
+                return None
 
-        class _Session:
-            async def execute(self, _stmt):
-                return SimpleNamespace(
-                    scalar_one_or_none=lambda: newest,
-                    scalar=lambda: newest,
-                )
+        monkeypatch.setattr(ingestion_pipeline, "_build_connector", lambda source: _Connector())
 
-            async def commit(self):
-                pass
+        recorded = datetime(2026, 10, 15, 9, 0)
+        source = SimpleNamespace(
+            id=uuid.uuid4(), content_filters={"text": True}, source_type="youtube",
+            last_fetched_id="youtube:v2:full", last_fetched_item_at=recorded,
+        )
+        db = _PipelineSession()
 
-            def begin_nested(self):
-                raise AssertionError("no message should be processed here")
+        await ingestion_pipeline.run_fetch_pipeline(
+            db, source=source, workspace=SimpleNamespace(topic_scope="trading")
+        )
+
+        assert seen["position"] == FetchPosition(
+            stable_id="youtube:v2:full", item_at=recorded
+        )
+        # The retired inference: nothing should be asking evidence for a bound.
+        assert not any("evidence_items" in stmt for stmt in db.statements)
+
+    async def test_stores_a_repaired_position_so_recovery_runs_once(self, monkeypatch):
+        """
+        A connector whose own position was dead reports where it got to. Without
+        persisting that, the next tick is handed the same dead marker and the
+        recovery — and its warning — repeat every minute for ever.
+        """
+        from app.services import ingestion_pipeline
+
+        repaired = FetchPosition(
+            stable_id="youtube:v3:full", item_at=datetime(2026, 10, 16, 9, 0)
+        )
+
+        class _Connector:
+            async def fetch_new(self, position):
+                return
+                yield       # pragma: no cover — yielded nothing, as in the real case
+
+            def repaired_position(self):
+                return repaired
 
         monkeypatch.setattr(ingestion_pipeline, "_build_connector", lambda source: _Connector())
 
         source = SimpleNamespace(
-            id=uuid.uuid4(), content_filters={"text": True},
-            last_fetched_id="youtube:v2:full", source_type="youtube",
+            id=uuid.uuid4(), content_filters={"text": True}, source_type="youtube",
+            last_fetched_id="youtube:deleted:full", last_fetched_item_at=None,
+            last_fetched_at=None,
         )
-        workspace = SimpleNamespace(topic_scope="trading")
 
         await ingestion_pipeline.run_fetch_pipeline(
-            _Session(), source=source, workspace=workspace
+            _PipelineSession(source), source=source,
+            workspace=SimpleNamespace(topic_scope="trading"),
         )
 
-        assert seen["since_id"] == "youtube:v2:full"
-        assert seen["since_timestamp"] == newest
+        assert source.last_fetched_id == "youtube:v3:full"
+        assert source.last_fetched_item_at == repaired.item_at

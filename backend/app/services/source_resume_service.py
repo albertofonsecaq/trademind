@@ -98,12 +98,20 @@ async def resume_source(*, source: SourceConfig, mode: ResumeMode) -> None:
             )
             source.last_fetched_id = latest
 
-        # The cursor now sits at the newest item, so nothing before this moment
-        # is pending any more. last_fetched_at is what the resume prompt measures
-        # the backlog from, so leaving it stale would re-offer the window the
-        # user just declined — and it also spaces the next poll by one cadence,
-        # which is right when there is nothing new to collect.
-        source.last_fetched_at = datetime.utcnow()
+        # The position now sits at the newest content, so nothing published
+        # before this moment is pending any more. Both timestamps are written:
+        #
+        # last_fetched_at is what the resume prompt measures the backlog from,
+        # so leaving it stale would re-offer the window just declined — and it
+        # spaces the next poll by one cadence, right when there is nothing new.
+        #
+        # last_fetched_item_at is the declined window's far edge. Without it a
+        # connector that later loses this marker — a deleted video — would fall
+        # back to the newest *stored* evidence, behind the decline, and re-fetch
+        # and re-pay transcription for exactly what the user chose to skip (#19).
+        declined_at = datetime.utcnow()
+        source.last_fetched_at = declined_at
+        source.last_fetched_item_at = declined_at
 
     source.is_paused = False
     source.paused_at = None
