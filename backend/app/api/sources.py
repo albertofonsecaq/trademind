@@ -16,10 +16,11 @@ from app.models.user import User
 from app.models.workspace import Workspace
 from app.models.workspace_member import WorkspaceMember
 from app.models.source_config import SourceConfig
+from app.models import backfill_job as job_status
 from app.models.backfill_job import BackfillJob
 from app.models.platform_connection import PlatformConnection
 from app.services import source_resume_service as resume_service
-from app.core.llm_errors import is_fatal_for_batch
+from app.core.llm_errors import is_fatal_for_run, safe_failure_summary
 from app.services.ingestion_gate import SOURCE_PAUSED, WORKSPACE_PAUSED, blocked_reason
 from app.services.source_resume_service import NewestEvidenceUnknown, ResumeMode
 
@@ -340,7 +341,7 @@ async def trigger_backfill(
         workspace_id=workspace_id,
         date_range_start=payload.date_range_start.replace(tzinfo=None),
         date_range_end=payload.date_range_end.replace(tzinfo=None) if payload.date_range_end else None,
-        status="queued",
+        status=job_status.QUEUED,
         triggered_by_user_id=current_user.id,
     )
     db.add(job)
@@ -417,7 +418,7 @@ async def _run_backfill_bg(job_id: uuid.UUID):
         if not job:
             return
 
-        job.status = "running"
+        job.status = job_status.RUNNING
         await db.commit()
 
         try:
@@ -446,7 +447,7 @@ async def _run_backfill_bg(job_id: uuid.UUID):
                     else "Workspace ingestion was paused before this backfill ran."
                 )
                 log.info("Cancelling backfill job %s: %s", job_id, message)
-                job.status = "cancelled"
+                job.status = job_status.CANCELLED
                 job.error_message = message
                 job.completed_at = datetime.utcnow()
                 await db.commit()
@@ -463,7 +464,8 @@ async def _run_backfill_bg(job_id: uuid.UUID):
             count = 0
             failed = 0
             first_failure: str | None = None
-            fatal: BaseException | None = None
+            fatal: Exception | None = None
+            stopped_at: datetime | None = None
 
             async for msg in connector.fetch_range(date_start, date_end):
                 if not _content_type_allowed(msg, filters):
@@ -479,27 +481,36 @@ async def _run_backfill_bg(job_id: uuid.UUID):
                 except Exception as e:
                     failed += 1
                     if first_failure is None:
-                        first_failure = str(e)
-                    log.error("Backfill pipeline error: %s", e)
-                    if is_fatal_for_batch(e):
+                        first_failure = safe_failure_summary(e)
+                    log.error(
+                        "Backfill pipeline error on %s: %s", msg.stable_id, e, exc_info=True
+                    )
+                    if is_fatal_for_run(e):
                         # Every remaining message hits the same wall, so walking
                         # the rest of the range buys nothing but wall-clock time
                         # and a log full of the same line (#9).
                         fatal = e
+                        stopped_at = msg.timestamp
                         break
 
             # A row has to be readable on its own: "completed" used to be written
             # whether a run lost nothing or lost most of what it saw (#9).
             if fatal is not None:
-                job.status = "failed"
-            elif failed:
-                job.status = "partial"
+                job.status = job_status.FAILED
+                # The failure that ended the run, not the first unrelated one —
+                # and where it stopped, because the range after that point was
+                # never attempted and the row would otherwise claim it.
+                job.error_message = (
+                    f"{safe_failure_summary(fatal)} Stopped at "
+                    f"{stopped_at.isoformat() if stopped_at else 'an unknown point'}; "
+                    "the rest of the range was not attempted."
+                )[:900]
             else:
-                job.status = "completed"
+                job.status = job_status.PARTIAL if failed else job_status.COMPLETED
+                if first_failure:
+                    job.error_message = first_failure[:900]
             job.items_ingested = count
             job.items_failed = failed
-            if first_failure:
-                job.error_message = first_failure[:900]
             job.completed_at = datetime.utcnow()
             log.info(
                 "Backfill job %s %s: %d ingested, %d failed",
@@ -507,8 +518,8 @@ async def _run_backfill_bg(job_id: uuid.UUID):
             )
 
         except Exception as e:
-            log.error("Backfill job %s failed: %s", job_id, e)
-            job.status = "failed"
-            job.error_message = str(e)[:900]
+            log.error("Backfill job %s failed: %s", job_id, e, exc_info=True)
+            job.status = job_status.FAILED
+            job.error_message = safe_failure_summary(e)[:900]
 
         await db.commit()

@@ -1,9 +1,23 @@
 import uuid
 from datetime import datetime, timezone
+from typing import Literal
 from sqlalchemy import String, ForeignKey, func, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
+
+
+# Named rather than spelled out at each site, like ResumeMode and the pause
+# gate's reasons. PARTIAL and FAILED are what #9 added: a run that lost messages
+# is not "completed", and one that hit a wall every message would hit is not
+# merely partial.
+QUEUED = "queued"
+RUNNING = "running"
+COMPLETED = "completed"
+PARTIAL = "partial"
+FAILED = "failed"
+CANCELLED = "cancelled"
+BackfillStatus = Literal["queued", "running", "completed", "partial", "failed", "cancelled"]
 
 
 class BackfillJob(Base):

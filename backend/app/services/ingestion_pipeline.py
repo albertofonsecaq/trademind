@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -20,10 +21,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataclasses import dataclass
-
 from app.connectors.base import FetchPosition, RawMessage
-from app.core.llm_errors import is_fatal_for_batch
+from app.core.llm_errors import is_fatal_for_run
 from app.models.evidence_item import EvidenceItem
 from app.models.trade_idea import TradeIdea
 from app.models.embedding_row import EmbeddingRow
@@ -530,11 +529,18 @@ async def run_fetch_pipeline(
         except Exception as e:
             failed += 1
             log.error("Pipeline error for %s: %s", msg.stable_id, e, exc_info=True)
-            if is_fatal_for_batch(e):
+            if is_fatal_for_run(e):
                 # Nothing after this can succeed either, so stop rather than
                 # spend the rest of the tick proving it. Raising is how the
                 # poller reports a source's trouble (#9).
-                await _store_position(db, source_id, position, initial_position)
+                #
+                # The position is kept so the work already done is not repeated,
+                # but last_fetched_at is deliberately left alone: it drives the
+                # cadence, and stamping it here would send a daily source quiet
+                # for 24 hours over a failure it should retry.
+                await _store_position(
+                    db, source_id, position, initial_position, touch_fetched_at=False
+                )
                 raise
             continue
         else:
@@ -564,6 +570,8 @@ async def _store_position(
     source_id: uuid.UUID,
     position: FetchPosition,
     initial_position: FetchPosition,
+    *,
+    touch_fetched_at: bool = True,
 ) -> None:
     """Persist a position that moved — including on the way out of a fatal error,
     so the work already done is not repeated on the next tick."""
@@ -574,5 +582,6 @@ async def _store_position(
     if src:
         src.last_fetched_id = position.stable_id
         src.last_fetched_item_at = position.item_at
-        src.last_fetched_at = datetime.utcnow()
+        if touch_fetched_at:
+            src.last_fetched_at = datetime.utcnow()
     await db.commit()

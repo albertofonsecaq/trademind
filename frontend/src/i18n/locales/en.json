@@ -293,6 +293,14 @@
     "endDate": "To date (optional)",
     "triggerBackfill": "Run backfill",
     "backfillJobs": "Recent jobs",
+    "jobStatus": {
+      "queued": "Queued",
+      "running": "Running",
+      "completed": "Completed",
+      "partial": "Partial",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
+    },
     "itemsIngested": "items ingested",
     "removeSource": "Remove source",
     "connection": "Telegram account",

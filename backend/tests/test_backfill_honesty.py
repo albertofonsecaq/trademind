@@ -21,7 +21,7 @@ import pytest
 
 from app.api import sources as sources_api
 from app.connectors.base import RawMessage
-from app.core.llm_errors import is_fatal_for_batch
+from app.core.llm_errors import is_fatal_for_run
 from app.services import ingestion_pipeline
 
 REQUEST = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
@@ -42,47 +42,73 @@ def _status_error(cls, status, message):
 class TestFatalProviderErrors:
     def test_a_usage_limit_is_fatal(self):
         """The #9 case: every later message will hit the same wall."""
-        assert is_fatal_for_batch(
+        assert is_fatal_for_run(
             _status_error(anthropic.BadRequestError, 400, USAGE_LIMIT)
         )
 
     def test_bad_credentials_are_fatal(self):
-        assert is_fatal_for_batch(
+        assert is_fatal_for_run(
             _status_error(anthropic.AuthenticationError, 401, "API key is invalid.")
         )
-        assert is_fatal_for_batch(
+        assert is_fatal_for_run(
             _status_error(anthropic.PermissionDeniedError, 403, "forbidden")
         )
 
     def test_a_rate_limit_is_not_fatal(self):
         """Transient by definition — the answer is backoff, not abandoning the range."""
-        assert not is_fatal_for_batch(
+        assert not is_fatal_for_run(
             _status_error(anthropic.RateLimitError, 429, "slow down")
         )
 
     def test_an_ordinary_bad_request_is_not_fatal(self):
         """One oversized image must not condemn the other 1,609 messages."""
-        assert not is_fatal_for_batch(
+        assert not is_fatal_for_run(
             _status_error(anthropic.BadRequestError, 400, "image exceeds 5 MB")
         )
 
+    def test_ingested_content_cannot_trigger_a_false_positive(self):
+        """
+        A trading message discussing a credit balance is echoed back inside the
+        serialized exception. Matching on that would abandon the whole range
+        over somebody else's wording.
+        """
+        echoed = _status_error(
+            anthropic.BadRequestError, 400, "messages.0.content: invalid image"
+        )
+        echoed.body = {
+            "error": {
+                "message": "messages.0.content: invalid image",
+                "echo": "the trader wrote: watch your credit balance and usage limit",
+            }
+        }
+        assert not is_fatal_for_run(echoed)
+
     def test_a_plain_error_is_not_fatal(self):
-        assert not is_fatal_for_batch(RuntimeError("something local broke"))
+        assert not is_fatal_for_run(RuntimeError("something local broke"))
 
 
 # ── fakes ─────────────────────────────────────────────────────────────────────
 
 class _Savepoint:
+    """Records how each message's savepoint ended, as #2's fix depends on."""
+
+    def __init__(self, recorder):
+        self._recorder = recorder
+
     async def __aenter__(self):
         return self
 
-    async def __aexit__(self, *exc):
+    async def __aexit__(self, exc_type, exc, tb):
+        self._recorder.append("rollback" if exc_type else "release")
         return False            # never swallow: the caller decides
 
 
 class _Session:
     def __init__(self, rows):
         self._rows = list(rows)
+        self.savepoints: list[str] = []
+        self.commits = 0
+        self.rollbacks = 0
 
     async def __aenter__(self):
         return self
@@ -95,10 +121,13 @@ class _Session:
         return SimpleNamespace(scalar_one_or_none=lambda: value, scalar=lambda: None)
 
     def begin_nested(self):
-        return _Savepoint()
+        return _Savepoint(self.savepoints)
 
     async def commit(self):
-        pass
+        self.commits += 1
+
+    async def rollback(self):
+        self.rollbacks += 1
 
 
 def _job(**over) -> SimpleNamespace:
@@ -150,13 +179,12 @@ def backfill(monkeypatch):
 
         monkeypatch.setattr(ingestion_pipeline, "_build_connector", lambda s: _Connector())
         monkeypatch.setattr(ingestion_pipeline, "process_message", process)
-        monkeypatch.setattr(
-            sources_api, "AsyncSessionLocal", lambda: _Session([job, source, workspace])
-        )
+        db = _Session([job, source, workspace])
+        monkeypatch.setattr(sources_api, "AsyncSessionLocal", lambda: db)
 
         async def go():
             await sources_api._run_backfill_bg(job_id=job.id)
-            return SimpleNamespace(job=job, attempted=attempted)
+            return SimpleNamespace(job=job, attempted=attempted, db=db)
 
         return go()
 
@@ -227,7 +255,8 @@ class TestBackfillStopsOnAFatalError:
         result = await backfill(_fails_from(2, fatal), count=5)
 
         assert result.job.items_ingested == 1
-        assert "usage limits" in result.job.error_message
+        # Summarized, not quoted: see TestWhatTheAbortedRowSays
+        assert "limit or credit is exhausted" in result.job.error_message
 
 
 # ── the poller had the same blind spot ────────────────────────────────────────
@@ -277,3 +306,52 @@ class TestFetchPipelineReportsFailures:
             )
 
         assert attempted == ["telegram:chan:1", "telegram:chan:2"]
+
+
+class TestWhatTheAbortedRowSays:
+    """
+    The row has to name the failure that ended the run and admit how much of the
+    range it never looked at — otherwise "failed, 1 failed" reads as one bad
+    message rather than a half-covered range.
+    """
+
+    @pytest.fixture
+    def fatal(self):
+        return _status_error(anthropic.BadRequestError, 400, USAGE_LIMIT)
+
+    async def test_names_the_failure_that_stopped_it_not_the_first_one(self, backfill, fatal):
+        async def process(db, msg, topic_scope):
+            n = int(msg.stable_id.rsplit(":", 1)[1])
+            if n == 1:
+                raise RuntimeError("image exceeds 5 MB")       # unrelated, non-fatal
+            if n >= 3:
+                raise fatal
+            return SimpleNamespace(id=uuid.uuid4())
+
+        result = await backfill(process, count=5)
+
+        assert result.job.status == "failed"
+        assert "image exceeds 5 MB" not in (result.job.error_message or "")
+        assert "limit or credit is exhausted" in result.job.error_message
+
+    async def test_says_where_it_stopped(self, backfill, fatal):
+        result = await backfill(_fails_from(2, fatal), count=5)
+
+        assert "2026-02-02" in result.job.error_message
+        assert "not attempted" in result.job.error_message
+
+    async def test_never_stores_the_provider_wording(self, backfill, fatal):
+        """
+        llm_errors refuses to pass a provider's message to a caller; a row that
+        persists and displays it would be the same leak by another route.
+        """
+        result = await backfill(_fails_from(2, fatal), count=5)
+
+        assert "regain access" not in (result.job.error_message or "")
+        assert "2026-10-01" not in (result.job.error_message or "")
+
+    async def test_each_failure_rolls_back_only_its_own_savepoint(self, backfill, fatal):
+        result = await backfill(_fails_from(3, RuntimeError("boom")), count=5)
+
+        assert result.db.savepoints.count("rollback") == 3
+        assert result.db.rollbacks == 0          # never the shared session (#2)
