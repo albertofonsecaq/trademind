@@ -31,6 +31,19 @@ async def _assert_member(db: AsyncSession, workspace_id: uuid.UUID, user_id: uui
         raise HTTPException(status_code=403, detail="Not a member of this workspace")
 
 
+def _assert_not_paused(source: SourceConfig, action: str):
+    """
+    A paused source must cost nothing, so every path that would spend on it
+    refuses — the request handlers here, and the background runners below, which
+    re-read the source and can find it paused after the work was queued (#10).
+    """
+    if source.is_paused:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Source is paused. Resume it before {action}.",
+        )
+
+
 class SourceCreateRequest(BaseModel):
     source_type: str
     identifier: str
@@ -49,6 +62,7 @@ class SourceOut(BaseModel):
     fetch_cadence: str
     content_filters: dict
     backfill_start_date: datetime | None
+    is_paused: bool
     last_fetched_at: datetime | None
     platform_connection_id: uuid.UUID | None
     created_at: datetime
@@ -130,6 +144,7 @@ class SourceUpdateRequest(BaseModel):
     fetch_cadence: str | None = None
     content_filters: dict | None = None
     backfill_start_date: datetime | None = None
+    is_paused: bool | None = None
 
 
 @router.patch("/{workspace_id}/sources/{source_id}", response_model=SourceOut)
@@ -157,6 +172,11 @@ async def update_source(
         source.content_filters = payload.content_filters
     if payload.backfill_start_date is not None:
         source.backfill_start_date = payload.backfill_start_date.replace(tzinfo=None)
+    if payload.is_paused is not None:
+        # last_fetched_id / last_fetched_at are deliberately left alone: the cursor
+        # is what lets a resumed source continue exactly where it stopped, so a
+        # pause is never a reset (#10).
+        source.is_paused = payload.is_paused
     await db.commit()
     await db.refresh(source)
     return source
@@ -201,6 +221,7 @@ async def trigger_fetch(
     source = result.scalar_one_or_none()
     if not source:
         raise HTTPException(status_code=404, detail="Source not found")
+    _assert_not_paused(source, "fetching")
 
     background_tasks.add_task(_run_fetch_bg, source_id=source_id, workspace_id=workspace_id)
     return {"message": "Fetch triggered in background"}
@@ -221,8 +242,10 @@ async def trigger_backfill(
             SourceConfig.id == source_id, SourceConfig.workspace_id == workspace_id
         )
     )
-    if not result.scalar_one_or_none():
+    source = result.scalar_one_or_none()
+    if not source:
         raise HTTPException(status_code=404, detail="Source not found")
+    _assert_not_paused(source, "backfilling")
 
     job = BackfillJob(
         source_config_id=source_id,
@@ -276,6 +299,9 @@ async def _run_fetch_bg(source_id: uuid.UUID, workspace_id: uuid.UUID):
                 select(Workspace).where(Workspace.id == workspace_id)
             )
             workspace = workspace_result.scalar_one_or_none()
+            if source is not None and source.is_paused:
+                log.info("Skipping queued fetch for source %s: paused", source_id)
+                return
             if source and workspace:
                 count = await run_fetch_pipeline(db, source=source, workspace=workspace)
                 log.info("Fetch complete for source %s: %d items ingested", source_id, count)
@@ -311,6 +337,15 @@ async def _run_backfill_bg(job_id: uuid.UUID):
             workspace = workspace_result.scalar_one_or_none()
             if not source or not workspace:
                 raise ValueError("Source or workspace missing")
+            if source.is_paused:
+                # Queued while running, paused before it got here: cancel rather
+                # than spend. Nothing ingested so far is removed (#10).
+                log.info("Cancelling backfill job %s: source is paused", job_id)
+                job.status = "cancelled"
+                job.error_message = "Source was paused before this backfill ran."
+                job.completed_at = datetime.utcnow()
+                await db.commit()
+                return
 
             connector = _build_connector(source)
             # Read every ORM attribute the loop needs up front: a commit or rollback

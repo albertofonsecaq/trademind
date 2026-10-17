@@ -52,6 +52,10 @@ _Avoid_: Parsing, extraction, enrichment
 A one-off catch-up fetch of a source's history over a date range, as opposed to the recurring poll of new content.
 _Avoid_: Import, sync, historical load
 
+**Paused source**:
+A source the user has deliberately stopped fetching from. It keeps its evidence and its fetch position, so resuming continues where it stopped; only future fetching is halted. Distinct from the automatic pausing of deferrable work when a budget is exhausted.
+_Avoid_: Disabled, inactive, archived, muted
+
 ### Knowledge
 
 **Trade idea**:
