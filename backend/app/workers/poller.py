@@ -2,8 +2,9 @@
 Periodic Telegram polling worker.
 Runs inside the FastAPI process via APScheduler.
 Checks every source_config each minute and fetches new messages if its
-fetch_cadence interval has elapsed. Sources the user has paused are skipped,
-as are workspaces whose payment has lapsed or whose budget is exhausted.
+fetch_cadence interval has elapsed. Sources the user has paused are skipped, as
+are whole workspaces with ingestion paused, and workspaces whose payment has
+lapsed or whose budget is exhausted.
 """
 import logging
 import uuid
@@ -99,6 +100,15 @@ async def _poll_all_sources():
             )
             workspace = ws_result.scalar_one_or_none()
             if not workspace:
+                continue
+
+            # Gate 0b: the whole workspace is paused — one switch for a holiday
+            # or a spend freeze. Still before any connector or LLM call, and it
+            # never touches a source's own paused state, so switching back on
+            # resumes exactly the sources that were running before (#13).
+            if workspace.ingestion_paused:
+                log.debug("Skipping source %s: workspace %s has ingestion paused",
+                          identifier, workspace_id)
                 continue
 
             # Gate 1: payment lapsed — skip if workspace has payment enforcement

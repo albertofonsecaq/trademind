@@ -89,6 +89,11 @@ class _ApiSession:
         pass
 
 
+def _ingesting_workspace() -> SimpleNamespace:
+    """A workspace that is not itself paused — the #13 switch is off."""
+    return SimpleNamespace(id=uuid.uuid4(), topic_scope="trading", ingestion_paused=False)
+
+
 def _source(identifier: str, *, is_paused: bool, workspace_id: uuid.UUID) -> SimpleNamespace:
     return SimpleNamespace(
         id=uuid.uuid4(),
@@ -107,7 +112,7 @@ def _source(identifier: str, *, is_paused: bool, workspace_id: uuid.UUID) -> Sim
 def poll(monkeypatch):
     """_poll_all_sources wired to a fake session; returns what it tried to fetch."""
     workspace_id = uuid.uuid4()
-    workspace = SimpleNamespace(id=workspace_id, topic_scope="trading")
+    workspace = SimpleNamespace(id=workspace_id, topic_scope="trading", ingestion_paused=False)
     fetched: list[str] = []
     gate_checks: list[uuid.UUID] = []
 
@@ -215,7 +220,7 @@ class TestPauseKeepsEvidenceAndCursor:
 class TestPausedSourceRejectsFetchAndBackfill:
     async def test_fetch_now_is_rejected_with_409(self):
         source = _source("chan", is_paused=True, workspace_id=uuid.uuid4())
-        db = _ApiSession([SimpleNamespace(id=uuid.uuid4()), source])
+        db = _ApiSession([SimpleNamespace(id=uuid.uuid4()), _ingesting_workspace(), source])
         tasks = BackgroundTasks()
 
         with pytest.raises(HTTPException) as exc:
@@ -232,7 +237,7 @@ class TestPausedSourceRejectsFetchAndBackfill:
 
     async def test_backfill_is_rejected_with_409(self):
         source = _source("chan", is_paused=True, workspace_id=uuid.uuid4())
-        db = _ApiSession([SimpleNamespace(id=uuid.uuid4()), source])
+        db = _ApiSession([SimpleNamespace(id=uuid.uuid4()), _ingesting_workspace(), source])
 
         with pytest.raises(HTTPException) as exc:
             await sources_api.trigger_backfill(
@@ -253,7 +258,7 @@ class TestPausedSourceRejectsFetchAndBackfill:
     async def test_an_unpaused_source_still_accepts_a_fetch(self):
         """The guard must not become a blanket block."""
         source = _source("chan", is_paused=False, workspace_id=uuid.uuid4())
-        db = _ApiSession([SimpleNamespace(id=uuid.uuid4()), source])
+        db = _ApiSession([SimpleNamespace(id=uuid.uuid4()), _ingesting_workspace(), source])
         tasks = BackgroundTasks()
 
         await sources_api.trigger_fetch(

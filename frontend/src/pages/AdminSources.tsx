@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { NavBar } from "../components/NavBar";
 import { HelpLink } from "../components/HelpLink";
 import { useAuth } from "../context/AuthContext";
-import api from "../api/client";
+import api, { type Workspace } from "../api/client";
 
 type Connection = { id: string; label: string; status: string; platform: string };
 type Source = {
@@ -160,6 +160,39 @@ function FetchButton({ source, busy, onFetch }: {
     >
       {busy ? t("sources.fetching") : t("sources.fetchNow")}
     </button>
+  );
+}
+
+// ── workspace-wide ingestion switch ──────────────────────────────────────────
+function WorkspaceIngestion({ workspace, busy, error, onToggle }: {
+  workspace: Workspace; busy: boolean; error?: string; onToggle: (paused: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const paused = workspace.ingestion_paused;
+  return (
+    <div style={{ ...sec, ...(paused ? { background: "#fff8e1", borderColor: "#ffe082" } : {}) }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "1rem" }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: "1rem" }}>
+            {t("sources.workspacePauseTitle")}
+            {paused && <span style={{ marginLeft: "0.5rem" }}><PausedBadge /></span>}
+          </h2>
+          {/* Says what the pause does and does not cost, so nobody has to guess
+              whether switching it on loses the knowledge base. */}
+          <p style={{ margin: "0.3rem 0 0", fontSize: "0.8rem", color: paused ? PAUSED_COLOR : "#777", maxWidth: "52rem" }}>
+            {paused ? t("sources.workspacePausePaused") : t("sources.workspacePauseRunning")}
+          </p>
+          {error && <p style={{ margin: "0.3rem 0 0", fontSize: "0.8rem", color: "#c0392b" }}>{error}</p>}
+        </div>
+        <button
+          style={{ ...btn(!paused, false, busy), whiteSpace: "nowrap" }}
+          disabled={busy}
+          onClick={() => onToggle(!paused)}
+        >
+          {busy ? t("common.loading") : paused ? t("sources.workspaceResume") : t("sources.workspacePause")}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -337,6 +370,9 @@ export function AdminSources() {
   const navigate = useNavigate();
   const workspaceId = user?.default_workspace_id;
 
+  const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [workspaceBusy, setWorkspaceBusy] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState("");
   const [connections, setConnections] = useState<Connection[]>([]);
   const [sources, setSources] = useState<Source[]>([]);
   const [fetchingId, setFetchingId] = useState<string | null>(null);
@@ -360,12 +396,14 @@ export function AdminSources() {
 
   const load = async () => {
     if (!workspaceId) return;
-    const [c, s] = await Promise.all([
+    const [c, s, w] = await Promise.all([
       api.get<Connection[]>(`/workspaces/${workspaceId}/connections`),
       api.get<Source[]>(`/workspaces/${workspaceId}/sources`),
+      api.get<Workspace>(`/workspaces/${workspaceId}`),
     ]);
     setConnections(c.data);
     setSources(s.data);
+    setWorkspace(w.data);
     if (c.data.length > 0 && !newConnId) setNewConnId(c.data[0].id);
   };
 
@@ -432,6 +470,23 @@ export function AdminSources() {
       setActiveFetches((prev) => ({ ...prev, [sourceId]: new Date().toISOString() }));
     } finally {
       setFetchingId(null);
+    }
+  };
+
+  const toggleWorkspaceIngestion = async (paused: boolean) => {
+    if (!workspaceId) return;
+    // Pausing everything is worth confirming; resuming is not, because each
+    // source keeps its own paused state and position underneath (#13).
+    if (paused && !confirm(t("sources.workspacePauseConfirm"))) return;
+    setWorkspaceBusy(true);
+    setWorkspaceError("");
+    try {
+      await api.patch(`/workspaces/${workspaceId}/ingestion`, { paused });
+      await load();
+    } catch {
+      setWorkspaceError(t("sources.workspacePauseFailed"));
+    } finally {
+      setWorkspaceBusy(false);
     }
   };
 
@@ -502,6 +557,13 @@ export function AdminSources() {
           <h1 style={{ fontSize: "1.4rem", color: "#1a1a2e", margin: 0 }}>{t("sources.title")}</h1>
           <HelpLink section="sources" />
         </div>
+
+        {workspace && (
+          <WorkspaceIngestion
+            workspace={workspace} busy={workspaceBusy} error={workspaceError || undefined}
+            onToggle={toggleWorkspaceIngestion}
+          />
+        )}
 
         {/* Telegram Connections */}
         <div style={sec}>

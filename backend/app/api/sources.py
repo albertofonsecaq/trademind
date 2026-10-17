@@ -35,6 +35,17 @@ async def _assert_member(db: AsyncSession, workspace_id: uuid.UUID, user_id: uui
         raise HTTPException(status_code=403, detail="Not a member of this workspace")
 
 
+async def _assert_workspace_ingesting(db: AsyncSession, workspace_id: uuid.UUID, action: str):
+    """A workspace-level pause stops on-demand work too, not just the poll (#13)."""
+    result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    workspace = result.scalar_one_or_none()
+    if workspace and workspace.ingestion_paused:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Ingestion is paused for this workspace. Resume it before {action}.",
+        )
+
+
 def _assert_not_paused(source: SourceConfig, action: str):
     """
     A paused source must cost nothing, so every path that would spend on it
@@ -232,6 +243,7 @@ async def trigger_fetch(
 ):
     """Trigger an immediate fetch of new messages from this source."""
     await _assert_member(db, workspace_id, current_user.id)
+    await _assert_workspace_ingesting(db, workspace_id, "fetching")
     result = await db.execute(
         select(SourceConfig).where(
             SourceConfig.id == source_id, SourceConfig.workspace_id == workspace_id
@@ -298,6 +310,7 @@ async def trigger_backfill(
     db: AsyncSession = Depends(get_db),
 ):
     await _assert_member(db, workspace_id, current_user.id)
+    await _assert_workspace_ingesting(db, workspace_id, "backfilling")
     result = await db.execute(
         select(SourceConfig).where(
             SourceConfig.id == source_id, SourceConfig.workspace_id == workspace_id
@@ -363,6 +376,9 @@ async def _run_fetch_bg(source_id: uuid.UUID, workspace_id: uuid.UUID):
             if source is not None and source.is_paused:
                 log.info("Skipping queued fetch for source %s: paused", source_id)
                 return
+            if workspace is not None and workspace.ingestion_paused:
+                log.info("Skipping queued fetch for source %s: workspace ingestion paused", source_id)
+                return
             if source and workspace:
                 count = await run_fetch_pipeline(db, source=source, workspace=workspace)
                 log.info("Fetch complete for source %s: %d items ingested", source_id, count)
@@ -398,12 +414,17 @@ async def _run_backfill_bg(job_id: uuid.UUID):
             workspace = workspace_result.scalar_one_or_none()
             if not source or not workspace:
                 raise ValueError("Source or workspace missing")
-            if source.is_paused:
+            if source.is_paused or workspace.ingestion_paused:
                 # Queued while running, paused before it got here: cancel rather
-                # than spend. Nothing ingested so far is removed (#10).
-                log.info("Cancelling backfill job %s: source is paused", job_id)
+                # than spend. Nothing ingested so far is removed (#10, #13).
+                reason = (
+                    "Source was paused before this backfill ran."
+                    if source.is_paused
+                    else "Workspace ingestion was paused before this backfill ran."
+                )
+                log.info("Cancelling backfill job %s: %s", job_id, reason)
                 job.status = "cancelled"
-                job.error_message = "Source was paused before this backfill ran."
+                job.error_message = reason
                 job.completed_at = datetime.utcnow()
                 await db.commit()
                 return

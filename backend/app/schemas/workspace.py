@@ -12,6 +12,7 @@ class WorkspaceOut(BaseModel):
     owner_user_id: uuid.UUID
     monthly_budget_cap: Decimal | None
     payment_enabled: bool
+    ingestion_paused: bool
     topic_scope: str
     created_at: datetime
 

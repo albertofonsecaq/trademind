@@ -52,6 +52,7 @@ export type Workspace = {
   owner_user_id: string;
   monthly_budget_cap: number | null;
   payment_enabled: boolean;
+  ingestion_paused: boolean;
   topic_scope: string;
   created_at: string;
 };

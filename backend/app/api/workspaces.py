@@ -1,5 +1,6 @@
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -11,6 +12,10 @@ from app.models.workspace_member import WorkspaceMember
 from app.schemas.workspace import WorkspaceOut, WorkspaceMemberOut
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
+
+
+class IngestionPauseRequest(BaseModel):
+    paused: bool
 
 
 async def _assert_member(db: AsyncSession, workspace_id: uuid.UUID, user_id: uuid.UUID) -> WorkspaceMember:
@@ -63,3 +68,31 @@ async def list_members(
     await _assert_member(db, workspace_id, current_user.id)
     result = await db.execute(select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace_id))
     return result.scalars().all()
+
+
+@router.patch("/{workspace_id}/ingestion", response_model=WorkspaceOut)
+async def set_ingestion_paused(
+    workspace_id: uuid.UUID,
+    payload: IngestionPauseRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Pause or resume ingestion for the whole workspace.
+
+    This writes one flag and nothing else: each source keeps its own paused
+    state and its own fetch cursor underneath, so switching the workspace back
+    on resumes exactly the sources that were running before and leaves the ones
+    the user had paused by hand still paused (#13). Reading the knowledge base
+    is unaffected either way — this only gates future fetching.
+    """
+    await _assert_member(db, workspace_id, current_user.id)
+    result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    workspace = result.scalar_one_or_none()
+    if not workspace:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
+
+    workspace.ingestion_paused = payload.paused
+    await db.commit()
+    await db.refresh(workspace)
+    return workspace

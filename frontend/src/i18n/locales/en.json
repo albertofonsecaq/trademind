@@ -233,6 +233,13 @@
   },
   "sources": {
     "title": "Sources",
+    "workspacePauseTitle": "Workspace ingestion",
+    "workspacePauseRunning": "Every source below is being fetched on its own cadence.",
+    "workspacePausePaused": "Ingestion is paused for this whole workspace. No source is fetched and no backfill runs. Everything already ingested stays readable, and each source keeps its own paused state and position — switching this back on resumes exactly the sources that were running before.",
+    "workspacePause": "Pause all ingestion",
+    "workspaceResume": "Resume ingestion",
+    "workspacePauseConfirm": "Pause ingestion for this whole workspace?\n\nNo source will be fetched until you switch it back on. Everything already ingested is kept, and each source keeps its own paused state and position.",
+    "workspacePauseFailed": "Could not change workspace ingestion.",
     "addSource": "Add Channel",
     "noSources": "No sources yet. Connect a Telegram account or add a YouTube channel.",
     "connections": "Telegram Accounts",
