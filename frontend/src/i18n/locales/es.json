@@ -252,6 +252,9 @@
     "identifier": "Usuario o ID del canal",
     "youtubeIdentifier": "Handle, ID de canal o ID de playlist de YouTube",
     "youtubeNote": "Requiere YOUTUBE_API_KEY en el servidor. Ejemplos: @NombreCanal, UCxxxxxxx",
+    "youtubeNone": "Aún no hay canales de YouTube. Agrega uno aquí; aparecerá en la lista de fuentes de abajo.",
+    "youtubeTrackedBelow_one": "1 canal de YouTube en seguimiento — gestiónalo en la lista de fuentes de abajo.",
+    "youtubeTrackedBelow_other": "{{count}} canales de YouTube en seguimiento — gestiónalos en la lista de fuentes de abajo.",
     "cadence": "Frecuencia de actualización",
     "cadenceOptions": {
       "realtime": "Tiempo real (~1 min)",

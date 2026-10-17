@@ -252,6 +252,9 @@
     "identifier": "Channel username or ID",
     "youtubeIdentifier": "YouTube channel handle, ID, or playlist ID",
     "youtubeNote": "Requires YOUTUBE_API_KEY in server config. Examples: @ChannelName, UCxxxxxxx",
+    "youtubeNone": "No YouTube channels yet. Add one here; it will appear in the sources list below.",
+    "youtubeTrackedBelow_one": "1 YouTube channel tracked — manage it in the sources list below.",
+    "youtubeTrackedBelow_other": "{{count}} YouTube channels tracked — manage them in the sources list below.",
     "cadence": "Fetch cadence",
     "cadenceOptions": {
       "realtime": "Real-time (~1 min)",
