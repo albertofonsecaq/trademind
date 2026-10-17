@@ -70,6 +70,12 @@ class _ApiSession:
         self.added: list = []
         self.commits = 0
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
     async def execute(self, _stmt):
         return _Result(self._rows.pop(0) if self._rows else None)
 
@@ -93,7 +99,6 @@ def _source(identifier: str, *, is_paused: bool, workspace_id: uuid.UUID) -> Sim
         last_fetched_id=None,
         workspace_id=workspace_id,
         is_paused=is_paused,
-        paused_at=datetime(2026, 10, 1) if is_paused else None,
         connection=SimpleNamespace(status="active"),
     )
 
@@ -160,8 +165,8 @@ class TestPollSkipsPausedSources:
 
 # ── pause / resume over the API ───────────────────────────────────────────────
 
-class TestPauseLeavesDataAlone:
-    async def _patch(self, monkeypatch, source, **fields):
+class TestPauseKeepsEvidenceAndCursor:
+    async def _patch(self, source, **fields):
         user = SimpleNamespace(id=uuid.uuid4())
         db = _ApiSession([SimpleNamespace(id=uuid.uuid4()), source])   # member, source
         await sources_api.update_source(
@@ -173,45 +178,36 @@ class TestPauseLeavesDataAlone:
         )
         return db
 
-    async def test_pausing_never_moves_the_fetch_cursor(self, monkeypatch):
+    async def test_pausing_never_moves_the_fetch_cursor(self):
         source = _source("chan", is_paused=False, workspace_id=uuid.uuid4())
         source.last_fetched_id = "telegram:chan:500"
         source.last_fetched_at = datetime(2026, 10, 16, 12, 0)
 
-        await self._patch(monkeypatch, source, is_paused=True)
+        await self._patch(source, is_paused=True)
 
         assert source.is_paused is True
         assert source.last_fetched_id == "telegram:chan:500"
         assert source.last_fetched_at == datetime(2026, 10, 16, 12, 0)
 
-    async def test_resuming_never_moves_the_fetch_cursor(self, monkeypatch):
+    async def test_resuming_never_moves_the_fetch_cursor(self):
         """A pause/resume round trip has to be a no-op for the cursor."""
         source = _source("chan", is_paused=True, workspace_id=uuid.uuid4())
         source.last_fetched_id = "telegram:chan:500"
         source.last_fetched_at = datetime(2026, 10, 16, 12, 0)
 
-        await self._patch(monkeypatch, source, is_paused=False)
+        await self._patch(source, is_paused=False)
 
         assert source.is_paused is False
         assert source.last_fetched_id == "telegram:chan:500"
         assert source.last_fetched_at == datetime(2026, 10, 16, 12, 0)
 
-    async def test_records_when_the_pause_started_and_clears_it_on_resume(self, monkeypatch):
-        source = _source("chan", is_paused=False, workspace_id=uuid.uuid4())
-
-        await self._patch(monkeypatch, source, is_paused=True)
-        assert source.paused_at is not None
-
-        await self._patch(monkeypatch, source, is_paused=False)
-        assert source.paused_at is None
-
-    async def test_editing_other_fields_leaves_the_paused_state_alone(self, monkeypatch):
+    async def test_editing_other_fields_leaves_the_paused_state_alone(self):
         source = _source("chan", is_paused=True, workspace_id=uuid.uuid4())
-        await self._patch(monkeypatch, source, fetch_cadence="daily")
+        await self._patch(source, fetch_cadence="daily")
         assert source.is_paused is True
 
 
-class TestPausedSourceRejectsOnDemandWork:
+class TestPausedSourceRejectsFetchAndBackfill:
     async def test_fetch_now_is_rejected_with_409(self):
         source = _source("chan", is_paused=True, workspace_id=uuid.uuid4())
         db = _ApiSession([SimpleNamespace(id=uuid.uuid4()), source])
@@ -264,3 +260,61 @@ class TestPausedSourceRejectsOnDemandWork:
         )
 
         assert len(tasks.tasks) == 1
+
+
+class TestPauseStopsWorkAlreadyQueued:
+    """
+    The 409s above only guard the front door. A fetch task scheduled seconds
+    before the pause, or a backfill job still queued when it lands, re-reads the
+    source in a fresh session — and must find it paused and stop there, before a
+    connector is built.
+    """
+
+    async def test_a_queued_fetch_stops_once_the_source_is_paused(self, monkeypatch):
+        source = _source("chan", is_paused=True, workspace_id=uuid.uuid4())
+        workspace = SimpleNamespace(topic_scope="trading")
+        db = _ApiSession([source, workspace])
+        monkeypatch.setattr(sources_api, "AsyncSessionLocal", lambda: db)
+
+        fetched: list[str] = []
+
+        async def _fetch(db, *, source, workspace):
+            fetched.append(source.identifier)
+            return 1
+
+        from app.services import ingestion_pipeline
+        monkeypatch.setattr(ingestion_pipeline, "run_fetch_pipeline", _fetch)
+
+        await sources_api._run_fetch_bg(source_id=source.id, workspace_id=uuid.uuid4())
+
+        assert fetched == []
+
+    async def test_a_queued_backfill_is_cancelled_once_the_source_is_paused(self, monkeypatch):
+        source = _source("chan", is_paused=True, workspace_id=uuid.uuid4())
+        workspace = SimpleNamespace(topic_scope="trading")
+        job = SimpleNamespace(
+            id=uuid.uuid4(),
+            source_config_id=source.id,
+            workspace_id=uuid.uuid4(),
+            status="queued",
+            items_ingested=0,
+            date_range_start=datetime(2026, 9, 1),
+            date_range_end=None,
+            completed_at=None,
+            error_message=None,
+        )
+        db = _ApiSession([job, source, workspace])
+        monkeypatch.setattr(sources_api, "AsyncSessionLocal", lambda: db)
+
+        built: list = []
+
+        from app.services import ingestion_pipeline
+        monkeypatch.setattr(
+            ingestion_pipeline, "_build_connector", lambda src: built.append(src) or src
+        )
+
+        await sources_api._run_backfill_bg(job_id=job.id)
+
+        assert built == []                       # never reached the connector
+        assert job.status == "cancelled"
+        assert "paused" in (job.error_message or "").lower()

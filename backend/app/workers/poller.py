@@ -6,6 +6,7 @@ fetch_cadence interval has elapsed. Sources the user has paused are skipped,
 as are workspaces whose payment has lapsed or whose budget is exhausted.
 """
 import logging
+import uuid
 from datetime import datetime, timezone, timedelta
 from typing import NamedTuple
 
@@ -32,7 +33,7 @@ class _PlannedSource(NamedTuple):
     fetch_cadence: str
     last_fetched_at: datetime | None
     identifier: str
-    workspace_id: object
+    workspace_id: uuid.UUID
     connection_status: str | None
     is_paused: bool
 
@@ -70,9 +71,7 @@ async def _poll_all_sources():
         ]
 
         for planned in plan:
-            source, source_type = planned.source, planned.source_type
             identifier, workspace_id = planned.identifier, planned.workspace_id
-            last = planned.last_fetched_at
 
             # Gate 0: paused by the user — checked first, so a paused source costs
             # nothing: no connector, no workspace lookup, no relevance or
@@ -83,16 +82,16 @@ async def _poll_all_sources():
                 continue
 
             # Telegram requires an active connection; YouTube only needs YOUTUBE_API_KEY
-            if source_type == "telegram":
+            if planned.source_type == "telegram":
                 if planned.connection_status != "active":
                     continue
-            elif source_type == "youtube":
+            elif planned.source_type == "youtube":
                 from app.core.config import settings as _s
                 if not _s.YOUTUBE_API_KEY:
                     continue
 
             cadence = _CADENCE_MAP.get(planned.fetch_cadence, timedelta(hours=1))
-            if last and (now - last) < cadence:
+            if planned.last_fetched_at and (now - planned.last_fetched_at) < cadence:
                 continue
 
             ws_result = await db.execute(
@@ -118,7 +117,7 @@ async def _poll_all_sources():
                 continue
 
             try:
-                count = await run_fetch_pipeline(db, source=source, workspace=workspace)
+                count = await run_fetch_pipeline(db, source=planned.source, workspace=workspace)
                 if count:
                     log.info("Fetched %d new items from source %s", count, identifier)
             except Exception as e:

@@ -1,6 +1,6 @@
 """add paused state to source_configs
 
-Additive only: a new column with a server-side default, so existing rows keep
+Additive only: one new column with a server-side default, so existing rows keep
 every value they had — including their fetch cursor — and start out unpaused.
 The downgrade drops the column and nothing else.
 
@@ -22,12 +22,7 @@ def upgrade() -> None:
         "source_configs",
         sa.Column("is_paused", sa.Boolean(), nullable=False, server_default=sa.false()),
     )
-    op.add_column(
-        "source_configs",
-        sa.Column("paused_at", sa.DateTime(timezone=True), nullable=True),
-    )
 
 
 def downgrade() -> None:
-    op.drop_column("source_configs", "paused_at")
     op.drop_column("source_configs", "is_paused")

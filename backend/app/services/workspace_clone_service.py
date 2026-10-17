@@ -82,7 +82,6 @@ async def clone_workspace(
             content_filters=sc.content_filters,
             backfill_start_date=None,
             is_paused=False,
-            paused_at=None,
             last_fetched_id=None,
             last_fetched_at=None,
             created_by_user_id=target_user_id,
