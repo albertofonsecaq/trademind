@@ -86,25 +86,42 @@ def usage_log(monkeypatch):
 
 
 def _msg(**over) -> RawMessage:
-    return RawMessage(
-        stable_id="telegram:chan:1",
-        source_config_id=uuid.uuid4(),
-        workspace_id=uuid.uuid4(),
-        text="EURUSD looks like a breakout",
-        author="someone",
-        channel="chan",
-        timestamp=None,
-        content_type="text",
-        **over,
-    )
+    fields = {
+        "stable_id": "telegram:chan:1",
+        "source_config_id": uuid.uuid4(),
+        "workspace_id": uuid.uuid4(),
+        "text": "EURUSD looks like a breakout",
+        "author": "someone",
+        "channel": "chan",
+        "timestamp": None,
+        "content_type": "text",
+    }
+    return RawMessage(**{**fields, **over})
 
 
 # ── the write does not belong to the caller's transaction ─────────────────────
 
 class TestUsageIsWrittenOnItsOwn:
-    async def test_does_not_write_through_the_callers_session(self, usage_log):
-        caller = _Session()
+    def test_refuses_to_be_handed_a_session(self):
+        """
+        The contract, not just the behaviour: a caller cannot enlist this in a
+        transaction that might undo it, because there is nowhere to pass one.
+        """
+        import inspect
 
+        params = inspect.signature(usage_service.log_usage_event).parameters
+        assert "db" not in params and "session" not in params
+        assert all(p.kind is p.KEYWORD_ONLY for p in params.values())
+
+        with pytest.raises(TypeError):
+            usage_service.log_usage_event(
+                _Session(),                       # a positional session
+                workspace_id=uuid.uuid4(),
+                task_type="relevance_filter",
+                provider_model="claude-haiku-4-5-20251001",
+            )
+
+    async def test_commits_through_its_own_session(self, usage_log):
         await usage_service.log_usage_event(
             workspace_id=uuid.uuid4(),
             task_type="relevance_filter",
@@ -114,9 +131,29 @@ class TestUsageIsWrittenOnItsOwn:
             cost_usd=Decimal("0.00004"),
         )
 
-        assert caller.added == []            # nothing the caller can roll back
         assert len(usage_log.added) == 1
-        assert usage_log.commits == 1        # and it is committed, not left pending
+        assert usage_log.commits == 1        # committed, not left pending
+
+    async def test_a_write_that_fails_does_not_take_the_work_with_it(self, monkeypatch):
+        """
+        If this write cannot happen the call goes unrecorded either way, so
+        failing the caller would only add losing the work — and in a run of many
+        messages it would fail every remaining one in turn (#9's shape).
+        """
+        class _Broken:
+            async def __aenter__(self):
+                raise RuntimeError("pool timeout")
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(usage_service, "AsyncSessionLocal", lambda: _Broken())
+
+        await usage_service.log_usage_event(        # must not raise
+            workspace_id=uuid.uuid4(),
+            task_type="relevance_filter",
+            provider_model="claude-haiku-4-5-20251001",
+        )
 
     async def test_survives_a_savepoint_rollback_around_it(self, usage_log):
         """The shape of the bug, in miniature."""
@@ -191,3 +228,93 @@ class TestAFailedMessageStillRecordsWhatItSpent:
             await ingestion_pipeline.process_message(caller, msg, "forex and indices")
 
         assert [e.task_type for e in usage_log.added] == ["transcription", "relevance_filter"]
+
+
+class TestEveryPaidCallIsRecordedBeforeAnythingCanSkipIt:
+    """
+    Each of these was paid for upstream of the thing that can go wrong, so the
+    order of the logging call against that thing is the whole fix.
+    """
+
+    async def test_a_duplicate_still_records_the_transcription_it_paid_for(self, usage_log):
+        """
+        The connector transcribes to produce the message, so by the time the
+        pipeline notices it already has this content, Whisper has been billed.
+        """
+        caller = _Session(duplicate=True)
+        msg = _msg(
+            pre_pipeline_cost_usd="0.006",
+            pre_pipeline_task_type="transcription",
+            pre_pipeline_model="whisper-1",
+        )
+
+        item = await ingestion_pipeline.process_message(caller, msg, "forex")
+
+        assert item is None                                  # skipped as duplicate
+        assert [e.task_type for e in usage_log.added] == ["transcription"]
+        assert usage_log.added[0].cost_usd == Decimal("0.006")
+
+    async def test_the_vision_call_is_recorded_before_the_row_is_flushed(self, usage_log, monkeypatch):
+        """
+        The flush raises on a duplicate stable_id, and the vision call that
+        produced the content has already been paid for by then.
+        """
+        from sqlalchemy.exc import IntegrityError
+
+        async def _extract(image_bytes, mime=None):
+            return (
+                {"is_on_topic": True, "description": "a EURUSD chart", "confidence": 0.9},
+                {"input_tokens": 900, "output_tokens": 200},
+            )
+
+        monkeypatch.setattr(ingestion_pipeline.vision_service, "extract_image", _extract)
+
+        class _FlushFails(_Session):
+            async def flush(self):
+                raise IntegrityError("duplicate stable_id", None, Exception())
+
+        caller = _FlushFails()
+        msg = _msg(content_type="image", text=None)
+        msg.metadata = {"image_base64": "Zm9v"}
+
+        with pytest.raises(IntegrityError):
+            await ingestion_pipeline.process_message(caller, msg, "forex")
+
+        assert [e.task_type for e in usage_log.added] == ["vision"]
+        assert usage_log.added[0].input_units == 900
+
+    async def test_each_video_frame_is_recorded_as_it_returns(self, usage_log, monkeypatch, tmp_path):
+        """
+        One event per video lost every earlier frame's cost when a later frame
+        failed — and the earlier frames were already paid for.
+        """
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(b"not really a video")
+
+        async def _frames(path):
+            return [b"frame1", b"frame2", b"frame3"]
+
+        calls = {"n": 0}
+
+        async def _extract(frame_bytes, mime=None):
+            calls["n"] += 1
+            if calls["n"] == 3:
+                raise RuntimeError("vision provider failed")
+            return (
+                {"is_on_topic": True, "description": f"frame {calls['n']}"},
+                {"input_tokens": 500, "output_tokens": 100},
+            )
+
+        monkeypatch.setattr(ingestion_pipeline.keyframe_service, "extract_keyframes", _frames)
+        monkeypatch.setattr(ingestion_pipeline.vision_service, "extract_image", _extract)
+
+        caller = _Session()
+        msg = _msg(content_type="video", text=None)
+        msg.metadata = {"video_path": str(video)}
+
+        with pytest.raises(RuntimeError):
+            await ingestion_pipeline.process_message(caller, msg, "forex")
+
+        # the two frames that succeeded are both on the record
+        assert [e.task_type for e in usage_log.added] == ["vision", "vision"]
+        assert sum(e.input_units for e in usage_log.added) == 1000

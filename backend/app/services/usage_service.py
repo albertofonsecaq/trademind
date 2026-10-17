@@ -40,7 +40,15 @@ async def log_usage_event(
     Record one provider call, in a transaction of its own.
 
     Deliberately takes no session: a caller cannot accidentally enlist this in a
-    transaction that might undo it, which was the bug.
+    transaction that might undo it, which was the bug. That makes this the one
+    service that opens its own session — every other one is handed the caller's
+    — and the exception is the whole point rather than an oversight.
+
+    A failure here is logged and swallowed. Letting it propagate would abort
+    work that had already succeeded and, in a run of many messages, would fail
+    every remaining one in turn: the #9 shape, over bookkeeping. And it would
+    not save the record either — if this write cannot happen, the call goes
+    unrecorded whether or not the caller also dies. The loud log is the trail.
     """
     event = UsageEvent(
         workspace_id=workspace_id,
@@ -52,6 +60,12 @@ async def log_usage_event(
         is_overage=is_overage,
         source_id=source_id,
     )
-    async with AsyncSessionLocal() as db:
-        db.add(event)
-        await db.commit()
+    try:
+        async with AsyncSessionLocal() as db:
+            db.add(event)
+            await db.commit()
+    except Exception as e:
+        log.error(
+            "Could not record a %s usage event for workspace %s (%s): %s",
+            task_type, workspace_id, provider_model, e, exc_info=True,
+        )

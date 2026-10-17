@@ -76,10 +76,6 @@ _Avoid_: Cursor, offset, watermark, last seen
 The content a paused source has published since it was last fetched — what catching up would ingest. Measured from the fetch position, not from the pause.
 _Avoid_: Queue, pending items, lag
 
-**Usage event**:
-The record that one paid provider call happened — which model, how many units, what it cost, and whether it counts as overage. Every LLM, vision, transcription and embedding call writes one, and the budget cap, the overage metering and the margin figures are all derived from them. Written in its own transaction, because a call that happened is owed whether or not the work it was for survived.
-_Avoid_: Log entry, metric, telemetry, audit row
-
 ### Knowledge
 
 **Trade idea**:
@@ -151,7 +147,7 @@ _Avoid_: Performance, personal win rate
 ### Cost and billing
 
 **Usage event**:
-One billable call to an external model or service, logged with what it cost and what task it served. Every such call produces one.
+One billable call to an external model or service, logged with what it cost and what task it served. Every such call produces one, and the budget cap, the overage metering and the margin figures are all derived from them. Recorded in its own transaction, because a call that happened is owed whether or not the work it was for survived.
 _Avoid_: Metric, log entry, transaction
 
 **Included budget**:
