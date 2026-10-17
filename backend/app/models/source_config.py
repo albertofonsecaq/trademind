@@ -22,6 +22,8 @@ class SourceConfig(Base):
     backfill_start_date: Mapped[datetime | None] = mapped_column(nullable=True)
     # Paused only stops future fetching; the cursor below is left untouched.
     is_paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=sa_false())
+    # When the pause started — what the resume prompt measures the backlog from.
+    paused_at: Mapped[datetime | None] = mapped_column(nullable=True)
     last_fetched_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_fetched_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)

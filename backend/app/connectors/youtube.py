@@ -292,6 +292,16 @@ class YouTubeConnector(BaseConnector):
             async for msg in self._yield_video_chunks(video):
                 yield msg
 
+    async def latest_stable_id(self) -> str | None:
+        """
+        Newest video, no transcript work: fetch_new only reads the video id out
+        of the cursor, so the suffix here just has to be a shape it recognizes.
+        """
+        videos = await self._get_videos()
+        if not videos:
+            return None
+        return f"youtube:{videos[0]['video_id']}:full"
+
     async def fetch_range(
         self, date_start: datetime, date_end: datetime | None
     ) -> AsyncIterator[RawMessage]:

@@ -189,17 +189,22 @@ class TestPauseKeepsEvidenceAndCursor:
         assert source.last_fetched_id == "telegram:chan:500"
         assert source.last_fetched_at == datetime(2026, 10, 16, 12, 0)
 
-    async def test_resuming_never_moves_the_fetch_cursor(self):
-        """A pause/resume round trip has to be a no-op for the cursor."""
+    async def test_this_field_cannot_resume_a_source(self):
+        """
+        Resuming moved to its own endpoint in #12, because it needs a mode:
+        catch up on the backlog, or skip to the newest item. Unpausing through
+        this field would be the silent default that ticket exists to prevent.
+        The round trip's effect on the cursor is covered in test_resume_mode.py.
+        """
         source = _source("chan", is_paused=True, workspace_id=uuid.uuid4())
         source.last_fetched_id = "telegram:chan:500"
-        source.last_fetched_at = datetime(2026, 10, 16, 12, 0)
 
-        await self._patch(source, is_paused=False)
+        with pytest.raises(HTTPException) as exc:
+            await self._patch(source, is_paused=False)
 
-        assert source.is_paused is False
+        assert exc.value.status_code == 400
+        assert source.is_paused is True
         assert source.last_fetched_id == "telegram:chan:500"
-        assert source.last_fetched_at == datetime(2026, 10, 16, 12, 0)
 
     async def test_editing_other_fields_leaves_the_paused_state_alone(self):
         source = _source("chan", is_paused=True, workspace_id=uuid.uuid4())

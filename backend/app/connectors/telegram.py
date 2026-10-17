@@ -250,6 +250,14 @@ class TelegramConnector(BaseConnector):
                 async for raw in self._yield_all_types(client, msg):
                     yield raw
 
+    async def latest_stable_id(self) -> str | None:
+        """Newest message id only — iter_messages is newest-first, so one item."""
+        entity = self._resolve_identifier()
+        async with self._client() as client:
+            async for msg in client.iter_messages(entity, limit=1):
+                return f"telegram:{self.channel_identifier}:{msg.id}"
+        return None
+
     async def fetch_range(
         self, date_start: datetime, date_end: datetime | None
     ) -> AsyncIterator[RawMessage]:
