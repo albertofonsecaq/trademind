@@ -11,7 +11,7 @@ type Source = {
   id: string; source_type: string; identifier: string; label: string | null;
   fetch_cadence: string; content_filters: Record<string, boolean>;
   last_fetched_at: string | null; platform_connection_id: string | null;
-  backfill_start_date: string | null; is_paused: boolean;
+  backfill_start_date: string | null; is_paused: boolean; paused_at: string | null;
 };
 type BackfillJob = {
   id: string; status: string; items_ingested: number;
@@ -75,6 +75,50 @@ function PausedNotes({ source, error }: { source: Source; error?: string }) {
         </p>
       )}
     </>
+  );
+}
+
+function ResumeDialog({ source, busy, onChoose, onCancel }: {
+  source: Source; busy: boolean;
+  onChoose: (mode: "catch_up" | "from_now") => void; onCancel: () => void;
+}) {
+  const { t } = useTranslation();
+  const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : null);
+  const pausedSince = when(source.paused_at);
+  const fetchedSince = when(source.last_fetched_at);
+
+  const choice = (
+    mode: "catch_up" | "from_now", label: string, hint: string,
+  ) => (
+    <div style={{ marginTop: "0.6rem" }}>
+      <button style={btn(mode === "catch_up", false, busy)} disabled={busy} onClick={() => onChoose(mode)}>
+        {label}
+      </button>
+      <p style={{ margin: "0.25rem 0 0", fontSize: "0.77rem", color: "#666" }}>{hint}</p>
+    </div>
+  );
+
+  return (
+    <div style={{ background: "#fff8e1", border: "1px solid #ffe082", borderRadius: "6px", padding: "0.9rem", marginTop: "0.5rem" }}>
+      <h4 style={{ margin: "0 0 0.35rem", fontSize: "0.9rem", color: "#1a1a2e" }}>{t("sources.resumeTitle")}</h4>
+      {/* The backlog is what makes the choice informed: an hour paused and three
+          weeks paused cost very different amounts to catch up on. */}
+      {pausedSince && (
+        <p style={{ margin: 0, fontSize: "0.8rem", color: "#555" }}>
+          {t("sources.resumePausedFor", { since: pausedSince })}
+        </p>
+      )}
+      <p style={{ margin: "0.15rem 0 0", fontSize: "0.8rem", color: "#555" }}>
+        {fetchedSince
+          ? t("sources.resumeBacklog", { since: fetchedSince })
+          : t("sources.resumeBacklogNever")}
+      </p>
+      {choice("catch_up", t("sources.resumeCatchUp"), t("sources.resumeCatchUpHint"))}
+      {choice("from_now", t("sources.resumeFromNow"), t("sources.resumeFromNowHint"))}
+      <button style={{ ...btn(false), marginTop: "0.7rem" }} disabled={busy} onClick={onCancel}>
+        {t("common.cancel")}
+      </button>
+    </div>
   );
 }
 
@@ -283,6 +327,7 @@ export function AdminSources() {
   const [fetchingId, setFetchingId] = useState<string | null>(null);
   const [pausingId, setPausingId] = useState<string | null>(null);
   const [pauseErrors, setPauseErrors] = useState<Record<string, string>>({});
+  const [resumingId, setResumingId] = useState<string | null>(null);
   const [activeFetches, setActiveFetches] = useState<Record<string, string>>({}); // id → triggered-at ISO
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -377,14 +422,18 @@ export function AdminSources() {
 
   const togglePause = async (source: Source) => {
     if (!workspaceId) return;
-    // Pausing is the one that needs saying out loud: it stops spend but keeps
-    // every piece of evidence, and resuming picks up from the same place.
-    if (!source.is_paused && !confirm(t("sources.pauseConfirm"))) return;
+    // Resuming asks how — catch up, or skip to now — so it opens the prompt
+    // rather than acting (#12). Pausing acts, and says what it keeps.
+    if (source.is_paused) {
+      setResumingId(source.id);
+      return;
+    }
+    if (!confirm(t("sources.pauseConfirm"))) return;
     setPausingId(source.id);
     setPauseErrors((prev) => ({ ...prev, [source.id]: "" }));
     try {
       await api.patch(`/workspaces/${workspaceId}/sources/${source.id}`, {
-        is_paused: !source.is_paused,
+        is_paused: true,
       });
       // A pause cancels queued work, so last_fetched_at will never advance and
       // the fetch-in-progress line would otherwise pulse forever.
@@ -400,6 +449,26 @@ export function AdminSources() {
         [source.id]:
           (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
           ?? t("common.error"),
+      }));
+    } finally {
+      setPausingId(null);
+    }
+  };
+
+  const resume = async (source: Source, mode: "catch_up" | "from_now") => {
+    if (!workspaceId) return;
+    setPausingId(source.id);
+    setPauseErrors((prev) => ({ ...prev, [source.id]: "" }));
+    try {
+      await api.post(`/workspaces/${workspaceId}/sources/${source.id}/resume`, { mode });
+      setResumingId(null);
+      await load();
+    } catch (err: unknown) {
+      setPauseErrors((prev) => ({
+        ...prev,
+        [source.id]:
+          (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+          ?? t("sources.resumeFailed"),
       }));
     } finally {
       setPausingId(null);
@@ -501,6 +570,13 @@ export function AdminSources() {
                 </div>
                 </div>
                 <PausedNotes source={s} error={pauseErrors[s.id]} />
+                {resumingId === s.id && (
+                  <ResumeDialog
+                    source={s} busy={pausingId === s.id}
+                    onChoose={(mode) => resume(s, mode)}
+                    onCancel={() => setResumingId(null)}
+                  />
+                )}
               </div>
             ))
           )}
@@ -620,6 +696,13 @@ export function AdminSources() {
                     <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: "#1565c0", animation: "pulse 1.2s infinite" }} />
                     {t("sources.fetchInProgress")}
                   </p>
+                )}
+                {resumingId === s.id && (
+                  <ResumeDialog
+                    source={s} busy={pausingId === s.id}
+                    onChoose={(mode) => resume(s, mode)}
+                    onCancel={() => setResumingId(null)}
+                  />
                 )}
 
                 {expandedId === s.id && workspaceId && (

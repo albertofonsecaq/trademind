@@ -49,6 +49,17 @@ class BaseConnector(ABC):
         ...
 
     @abstractmethod
+    async def latest_stable_id(self) -> str | None:
+        """The newest available item's stable_id, without ingesting anything.
+
+        Used to skip a backlog: the fetch cursor is moved to this id, so the
+        next poll starts after it. Returns None when the source has nothing to
+        report, which callers must treat as "unknown" rather than "start over" —
+        clearing a cursor would re-ingest the source's whole history.
+        """
+        ...
+
+    @abstractmethod
     async def fetch_range(
         self, date_start: datetime, date_end: datetime | None
     ) -> AsyncIterator[RawMessage]:

@@ -3,10 +3,13 @@ Source management (tracked channels) + backfill job control.
 """
 import uuid
 from datetime import datetime, timezone
+from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
+
+from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db, AsyncSessionLocal
 from app.core.dependencies import get_current_user
@@ -16,6 +19,12 @@ from app.models.workspace_member import WorkspaceMember
 from app.models.source_config import SourceConfig
 from app.models.backfill_job import BackfillJob
 from app.models.platform_connection import PlatformConnection
+from app.services.source_resume_service import (
+    CATCH_UP,
+    FROM_NOW,
+    LatestItemUnknown,
+    resume_source as _resume_source,
+)
 
 router = APIRouter(prefix="/workspaces", tags=["sources"])
 
@@ -63,11 +72,18 @@ class SourceOut(BaseModel):
     content_filters: dict
     backfill_start_date: datetime | None
     is_paused: bool
+    paused_at: datetime | None
     last_fetched_at: datetime | None
     platform_connection_id: uuid.UUID | None
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ResumeRequest(BaseModel):
+    # No default: a resume that picks for the user is the thing #12 exists to
+    # prevent, so an omitted mode is a 422, not a guess.
+    mode: Literal["catch_up", "from_now"]
 
 
 class BackfillRequest(BaseModel):
@@ -173,10 +189,18 @@ async def update_source(
     if payload.backfill_start_date is not None:
         source.backfill_start_date = payload.backfill_start_date.replace(tzinfo=None)
     if payload.is_paused is not None:
+        if not payload.is_paused:
+            # Resuming needs a mode, and this field cannot carry one (#12).
+            raise HTTPException(
+                status_code=400,
+                detail="Resuming needs a mode. POST .../resume with catch_up or from_now.",
+            )
         # last_fetched_id / last_fetched_at are deliberately left alone: the cursor
         # is what lets a resumed source continue exactly where it stopped, so a
         # pause is never a reset (#10).
-        source.is_paused = payload.is_paused
+        if not source.is_paused:
+            source.is_paused = True
+            source.paused_at = datetime.utcnow()
     await db.commit()
     await db.refresh(source)
     return source
@@ -225,6 +249,48 @@ async def trigger_fetch(
 
     background_tasks.add_task(_run_fetch_bg, source_id=source_id, workspace_id=workspace_id)
     return {"message": "Fetch triggered in background"}
+
+
+@router.post("/{workspace_id}/sources/{source_id}/resume", response_model=SourceOut)
+async def resume_source(
+    workspace_id: uuid.UUID,
+    source_id: uuid.UUID,
+    payload: ResumeRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Resume a paused source, either catching up on the backlog or skipping to the
+    newest item. The mode is required; see ResumeRequest (#12).
+    """
+    await _assert_member(db, workspace_id, current_user.id)
+    result = await db.execute(
+        select(SourceConfig)
+        .options(selectinload(SourceConfig.connection))
+        .where(SourceConfig.id == source_id, SourceConfig.workspace_id == workspace_id)
+    )
+    source = result.scalar_one_or_none()
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+    if not source.is_paused:
+        raise HTTPException(status_code=409, detail="Source is not paused.")
+
+    try:
+        await _resume_source(db, source=source, mode=payload.mode)
+    except LatestItemUnknown:
+        # Left paused on purpose: guessing a cursor here could re-ingest the
+        # whole history, and ignoring the request would be a silent catch-up.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Could not read the newest item for this source, so it stays paused. "
+                "Try again, or resume with catch_up."
+            ),
+        )
+
+    await db.commit()
+    await db.refresh(source)
+    return source
 
 
 @router.post("/{workspace_id}/sources/{source_id}/backfill", response_model=BackfillJobOut, status_code=201)
