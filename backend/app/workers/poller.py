@@ -2,8 +2,9 @@
 Periodic Telegram polling worker.
 Runs inside the FastAPI process via APScheduler.
 Checks every source_config each minute and fetches new messages if its
-fetch_cadence interval has elapsed. Sources the user has paused are skipped,
-as are workspaces whose payment has lapsed or whose budget is exhausted.
+fetch_cadence interval has elapsed. Sources the user has paused are skipped, as
+are whole workspaces with ingestion paused, and workspaces whose payment has
+lapsed or whose budget is exhausted.
 """
 import logging
 import uuid
@@ -17,6 +18,7 @@ from sqlalchemy.orm import selectinload
 from app.core.database import AsyncSessionLocal
 from app.models.source_config import SourceConfig
 from app.models.workspace import Workspace
+from app.services.ingestion_gate import blocked_reason
 
 log = logging.getLogger(__name__)
 
@@ -73,11 +75,13 @@ async def _poll_all_sources():
         for planned in plan:
             identifier, workspace_id = planned.identifier, planned.workspace_id
 
-            # Gate 0: paused by the user — checked first, so a paused source costs
-            # nothing: no connector, no workspace lookup, no relevance or
-            # distillation spend. Its fetch cursor is left untouched, so resuming
-            # continues exactly where it stopped (#10).
-            if planned.is_paused:
+            # Gate 0: the user's own pause, source-level — checked first, so a
+            # paused source costs nothing: no connector, no workspace lookup, no
+            # relevance or distillation spend. Its fetch cursor is left
+            # untouched, so resuming continues where it stopped (#10). The
+            # workspace-level half of the question needs the workspace row, so
+            # it is asked below, still before any spend (#13).
+            if blocked_reason(source_paused=planned.is_paused, workspace_paused=False):
                 log.debug("Skipping source %s: paused", identifier)
                 continue
 
@@ -99,6 +103,18 @@ async def _poll_all_sources():
             )
             workspace = ws_result.scalar_one_or_none()
             if not workspace:
+                continue
+
+            # Gate 0b: the whole workspace is paused — one switch for a holiday
+            # or a spend freeze. Still before any connector or LLM call, and it
+            # never touches a source's own paused state, so switching back on
+            # resumes exactly the sources that were running before (#13).
+            reason = blocked_reason(
+                source_paused=planned.is_paused,
+                workspace_paused=workspace.ingestion_paused,
+            )
+            if reason:
+                log.debug("Skipping source %s: %s", identifier, reason)
                 continue
 
             # Gate 1: payment lapsed — skip if workspace has payment enforcement

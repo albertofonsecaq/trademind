@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { NavBar } from "../components/NavBar";
 import { HelpLink } from "../components/HelpLink";
 import { useAuth } from "../context/AuthContext";
-import api from "../api/client";
+import api, { type Workspace } from "../api/client";
 
 type Connection = { id: string; label: string; status: string; platform: string };
 type Source = {
@@ -62,9 +62,11 @@ function PausedBadge() {
   );
 }
 
-function PausedNotes({ source, error }: { source: Source; error?: string }) {
+function PausedNotes({ source, error, workspacePaused }: {
+  source: Source; error?: string; workspacePaused?: boolean;
+}) {
   const { t } = useTranslation();
-  if (!source.is_paused && !error) return null;
+  if (!source.is_paused && !error && !workspacePaused) return null;
   return (
     <>
       {error && (
@@ -73,6 +75,11 @@ function PausedNotes({ source, error }: { source: Source; error?: string }) {
       {source.is_paused && (
         <p style={{ margin: "0.15rem 0 0", fontSize: "0.77rem", color: PAUSED_COLOR }}>
           {t("sources.pausedHint")}
+        </p>
+      )}
+      {!source.is_paused && workspacePaused && (
+        <p style={{ margin: "0.15rem 0 0", fontSize: "0.77rem", color: PAUSED_COLOR }}>
+          {t("sources.workspacePausedNoFetch")}
         </p>
       )}
     </>
@@ -148,24 +155,54 @@ function PauseButton({ source, busy, onToggle }: {
   );
 }
 
-function FetchButton({ source, busy, onFetch }: {
-  source: Source; busy: boolean; onFetch: (id: string) => void;
+function FetchButton({ source, busy, blocked, onFetch }: {
+  source: Source; busy: boolean; blocked: boolean; onFetch: (id: string) => void;
 }) {
   const { t } = useTranslation();
+  const off = busy || source.is_paused || blocked;
   return (
-    <button
-      style={btn(true, false, busy || source.is_paused)}
-      disabled={busy || source.is_paused}
-      onClick={() => onFetch(source.id)}
-    >
+    <button style={btn(true, false, off)} disabled={off} onClick={() => onFetch(source.id)}>
       {busy ? t("sources.fetching") : t("sources.fetchNow")}
     </button>
   );
 }
 
+// ── workspace-wide ingestion switch ──────────────────────────────────────────
+function WorkspaceIngestion({ workspace, busy, error, onToggle }: {
+  workspace: Workspace; busy: boolean; error?: string; onToggle: (paused: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const paused = workspace.ingestion_paused;
+  return (
+    <div style={{ ...sec, ...(paused ? { background: "#fff8e1", borderColor: "#ffe082" } : {}) }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "1rem" }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: "1rem" }}>
+            {t("sources.workspacePauseTitle")}
+            {paused && <span style={{ marginLeft: "0.5rem" }}><PausedBadge /></span>}
+          </h2>
+          {/* Says what the pause does and does not cost, so nobody has to guess
+              whether switching it on loses the knowledge base. */}
+          <p style={{ margin: "0.3rem 0 0", fontSize: "0.8rem", color: paused ? PAUSED_COLOR : "#777", maxWidth: "52rem" }}>
+            {paused ? t("sources.workspacePausePaused") : t("sources.workspacePauseRunning")}
+          </p>
+          {error && <p style={{ margin: "0.3rem 0 0", fontSize: "0.8rem", color: "#c0392b" }}>{error}</p>}
+        </div>
+        <button
+          style={{ ...btn(!paused, false, busy), whiteSpace: "nowrap" }}
+          disabled={busy}
+          onClick={() => onToggle(!paused)}
+        >
+          {busy ? t("common.loading") : paused ? t("sources.workspaceResume") : t("sources.workspacePause")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── per-source config + backfill panel ────────────────────────────────────────
-function SourcePanel({ source, workspaceId, onSaved }: {
-  source: Source; workspaceId: string; onSaved: () => void;
+function SourcePanel({ source, workspaceId, workspacePaused, onSaved }: {
+  source: Source; workspaceId: string; workspacePaused: boolean; onSaved: () => void;
 }) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<"settings" | "backfill">("settings");
@@ -235,6 +272,8 @@ function SourcePanel({ source, workspaceId, onSaved }: {
     }
   };
 
+  const backfillOff = source.is_paused || workspacePaused;
+
   const tabBtn = (id: "settings" | "backfill"): React.CSSProperties => ({
     padding: "0.35rem 0.85rem", borderRadius: "4px", cursor: "pointer", fontSize: "0.82rem",
     fontWeight: 500, border: "none",
@@ -287,21 +326,24 @@ function SourcePanel({ source, workspaceId, onSaved }: {
           {source.is_paused && (
             <p style={{ fontSize: "0.82rem", color: PAUSED_COLOR, marginTop: 0 }}>{t("sources.pausedNoBackfill")}</p>
           )}
+          {!source.is_paused && workspacePaused && (
+            <p style={{ fontSize: "0.82rem", color: PAUSED_COLOR, marginTop: 0 }}>{t("sources.workspacePausedNoFetch")}</p>
+          )}
           <form onSubmit={triggerBackfill} style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "flex-end", marginBottom: "1rem" }}>
             <div>
               <label style={lbl}>{t("sources.backfillFrom")} *</label>
               <input type="date" style={{ ...inp, width: "160px" }} value={bfStart}
-                onChange={(e) => setBfStart(e.target.value)} disabled={source.is_paused} required />
+                onChange={(e) => setBfStart(e.target.value)} disabled={backfillOff} required />
             </div>
             <div>
               <label style={lbl}>{t("sources.backfillTo")}</label>
               <input type="date" style={{ ...inp, width: "160px" }} value={bfEnd}
-                onChange={(e) => setBfEnd(e.target.value)} disabled={source.is_paused} />
+                onChange={(e) => setBfEnd(e.target.value)} disabled={backfillOff} />
             </div>
             <button
               type="submit"
-              style={btn(true, false, bfLoading || !bfStart || source.is_paused)}
-              disabled={bfLoading || !bfStart || source.is_paused}
+              style={btn(true, false, backfillOff || bfLoading || !bfStart)}
+              disabled={backfillOff || bfLoading || !bfStart}
             >
               {bfLoading ? t("common.loading") : t("sources.triggerBackfill")}
             </button>
@@ -337,6 +379,9 @@ export function AdminSources() {
   const navigate = useNavigate();
   const workspaceId = user?.default_workspace_id;
 
+  const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [workspaceBusy, setWorkspaceBusy] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState("");
   const [connections, setConnections] = useState<Connection[]>([]);
   const [sources, setSources] = useState<Source[]>([]);
   const [fetchingId, setFetchingId] = useState<string | null>(null);
@@ -360,12 +405,14 @@ export function AdminSources() {
 
   const load = async () => {
     if (!workspaceId) return;
-    const [c, s] = await Promise.all([
+    const [c, s, w] = await Promise.all([
       api.get<Connection[]>(`/workspaces/${workspaceId}/connections`),
       api.get<Source[]>(`/workspaces/${workspaceId}/sources`),
+      api.get<Workspace>(`/workspaces/${workspaceId}`),
     ]);
     setConnections(c.data);
     setSources(s.data);
+    setWorkspace(w.data);
     if (c.data.length > 0 && !newConnId) setNewConnId(c.data[0].id);
   };
 
@@ -427,11 +474,33 @@ export function AdminSources() {
   const fetchNow = async (sourceId: string) => {
     if (!workspaceId) return;
     setFetchingId(sourceId);
+    setPauseErrors((prev) => ({ ...prev, [sourceId]: "" }));
     try {
       await api.post(`/workspaces/${workspaceId}/sources/${sourceId}/fetch`);
       setActiveFetches((prev) => ({ ...prev, [sourceId]: new Date().toISOString() }));
+    } catch {
+      // The backend refuses a paused source or a paused workspace; the buttons
+      // are disabled for both, so this is the race, not the normal path.
+      setPauseErrors((prev) => ({ ...prev, [sourceId]: t("sources.fetchFailed") }));
     } finally {
       setFetchingId(null);
+    }
+  };
+
+  const toggleWorkspaceIngestion = async (paused: boolean) => {
+    if (!workspaceId) return;
+    // Pausing everything is worth confirming; resuming is not, because each
+    // source keeps its own paused state and position underneath (#13).
+    if (paused && !confirm(t("sources.workspacePauseConfirm"))) return;
+    setWorkspaceBusy(true);
+    setWorkspaceError("");
+    try {
+      await api.patch(`/workspaces/${workspaceId}/ingestion`, { paused });
+      await load();
+    } catch {
+      setWorkspaceError(t("sources.workspacePauseFailed"));
+    } finally {
+      setWorkspaceBusy(false);
     }
   };
 
@@ -502,6 +571,13 @@ export function AdminSources() {
           <h1 style={{ fontSize: "1.4rem", color: "#1a1a2e", margin: 0 }}>{t("sources.title")}</h1>
           <HelpLink section="sources" />
         </div>
+
+        {workspace && (
+          <WorkspaceIngestion
+            workspace={workspace} busy={workspaceBusy} error={workspaceError || undefined}
+            onToggle={toggleWorkspaceIngestion}
+          />
+        )}
 
         {/* Telegram Connections */}
         <div style={sec}>
@@ -575,11 +651,11 @@ export function AdminSources() {
                 </div>
                 <div style={{ display: "flex", gap: "0.4rem" }}>
                   <PauseButton source={s} busy={pausingId === s.id} onToggle={togglePause} />
-                  <FetchButton source={s} busy={fetchingId === s.id} onFetch={fetchNow} />
+                  <FetchButton source={s} busy={fetchingId === s.id} blocked={!!workspace?.ingestion_paused} onFetch={fetchNow} />
                   <button style={btn(false, true)} onClick={() => removeSource(s.id)}>{t("common.delete")}</button>
                 </div>
                 </div>
-                <PausedNotes source={s} error={pauseErrors[s.id]} />
+                <PausedNotes source={s} error={pauseErrors[s.id]} workspacePaused={!!workspace?.ingestion_paused} />
                 {resumingId === s.id && (
                   <ResumeDialog
                     source={s} busy={pausingId === s.id}
@@ -682,7 +758,7 @@ export function AdminSources() {
                       {expandedId === s.id ? t("common.collapse") : t("sources.configure")}
                     </button>
                     <PauseButton source={s} busy={pausingId === s.id} onToggle={togglePause} />
-                    <FetchButton source={s} busy={fetchingId === s.id} onFetch={fetchNow} />
+                    <FetchButton source={s} busy={fetchingId === s.id} blocked={!!workspace?.ingestion_paused} onFetch={fetchNow} />
                     <button style={btn(false, true)} onClick={() => removeSource(s.id)}>{t("common.delete")}</button>
                   </div>
                 </div>
@@ -700,7 +776,7 @@ export function AdminSources() {
                 <p style={{ margin: "0.2rem 0 0", fontSize: "0.77rem", color: "#aaa" }}>
                   {t("sources.lastFetched")}: {s.last_fetched_at ? new Date(s.last_fetched_at).toLocaleString() : t("sources.never")}
                 </p>
-                <PausedNotes source={s} error={pauseErrors[s.id]} />
+                <PausedNotes source={s} error={pauseErrors[s.id]} workspacePaused={!!workspace?.ingestion_paused} />
                 {activeFetches[s.id] && (
                   <p style={{ margin: "0.15rem 0 0", fontSize: "0.77rem", color: "#1565c0", display: "flex", alignItems: "center", gap: "0.3rem" }}>
                     <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: "#1565c0", animation: "pulse 1.2s infinite" }} />
@@ -716,7 +792,10 @@ export function AdminSources() {
                 )}
 
                 {expandedId === s.id && workspaceId && (
-                  <SourcePanel source={s} workspaceId={workspaceId} onSaved={load} />
+                  <SourcePanel
+                    source={s} workspaceId={workspaceId}
+                    workspacePaused={!!workspace?.ingestion_paused} onSaved={load}
+                  />
                 )}
               </div>
             ))

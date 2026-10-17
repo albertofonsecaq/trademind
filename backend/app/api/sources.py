@@ -19,9 +19,19 @@ from app.models.source_config import SourceConfig
 from app.models.backfill_job import BackfillJob
 from app.models.platform_connection import PlatformConnection
 from app.services import source_resume_service as resume_service
+from app.services.ingestion_gate import SOURCE_PAUSED, WORKSPACE_PAUSED, blocked_reason
 from app.services.source_resume_service import NewestEvidenceUnknown, ResumeMode
 
 router = APIRouter(prefix="/workspaces", tags=["sources"])
+
+# One sentence per reason, so the API says the same thing everywhere it refuses.
+# The UI shows its own translated copy; these are for API clients and logs.
+_PAUSE_DETAIL = {
+    SOURCE_PAUSED: "This source is paused. Resume it before fetching or backfilling.",
+    WORKSPACE_PAUSED: (
+        "Ingestion is paused for this workspace. Resume it before fetching or backfilling."
+    ),
+}
 
 
 async def _assert_member(db: AsyncSession, workspace_id: uuid.UUID, user_id: uuid.UUID):
@@ -35,17 +45,30 @@ async def _assert_member(db: AsyncSession, workspace_id: uuid.UUID, user_id: uui
         raise HTTPException(status_code=403, detail="Not a member of this workspace")
 
 
-def _assert_not_paused(source: SourceConfig, action: str):
+async def _load_ingesting_workspace(db: AsyncSession, workspace_id: uuid.UUID) -> Workspace:
+    """
+    The workspace, refusing if its ingestion switch is on.
+
+    A workspace-level pause stops on-demand work too, not just the poll (#13),
+    and a workspace that does not exist is a 404 rather than a silent pass.
+    """
+    result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    workspace = result.scalar_one_or_none()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    if workspace.ingestion_paused:
+        raise HTTPException(status_code=409, detail=_PAUSE_DETAIL[WORKSPACE_PAUSED])
+    return workspace
+
+
+def _assert_not_paused(source: SourceConfig):
     """
     A paused source must cost nothing, so every path that would spend on it
     refuses — the request handlers here, and the background runners below, which
     re-read the source and can find it paused after the work was queued (#10).
     """
-    if source.is_paused:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Source is paused. Resume it before {action}.",
-        )
+    if blocked_reason(source_paused=source.is_paused, workspace_paused=False):
+        raise HTTPException(status_code=409, detail=_PAUSE_DETAIL[SOURCE_PAUSED])
 
 
 class SourceCreateRequest(BaseModel):
@@ -232,6 +255,7 @@ async def trigger_fetch(
 ):
     """Trigger an immediate fetch of new messages from this source."""
     await _assert_member(db, workspace_id, current_user.id)
+    await _load_ingesting_workspace(db, workspace_id)
     result = await db.execute(
         select(SourceConfig).where(
             SourceConfig.id == source_id, SourceConfig.workspace_id == workspace_id
@@ -240,7 +264,7 @@ async def trigger_fetch(
     source = result.scalar_one_or_none()
     if not source:
         raise HTTPException(status_code=404, detail="Source not found")
-    _assert_not_paused(source, "fetching")
+    _assert_not_paused(source)
 
     background_tasks.add_task(_run_fetch_bg, source_id=source_id, workspace_id=workspace_id)
     return {"message": "Fetch triggered in background"}
@@ -298,6 +322,7 @@ async def trigger_backfill(
     db: AsyncSession = Depends(get_db),
 ):
     await _assert_member(db, workspace_id, current_user.id)
+    await _load_ingesting_workspace(db, workspace_id)
     result = await db.execute(
         select(SourceConfig).where(
             SourceConfig.id == source_id, SourceConfig.workspace_id == workspace_id
@@ -306,7 +331,7 @@ async def trigger_backfill(
     source = result.scalar_one_or_none()
     if not source:
         raise HTTPException(status_code=404, detail="Source not found")
-    _assert_not_paused(source, "backfilling")
+    _assert_not_paused(source)
 
     job = BackfillJob(
         source_config_id=source_id,
@@ -360,9 +385,14 @@ async def _run_fetch_bg(source_id: uuid.UUID, workspace_id: uuid.UUID):
                 select(Workspace).where(Workspace.id == workspace_id)
             )
             workspace = workspace_result.scalar_one_or_none()
-            if source is not None and source.is_paused:
-                log.info("Skipping queued fetch for source %s: paused", source_id)
-                return
+            if source is not None and workspace is not None:
+                reason = blocked_reason(
+                    source_paused=source.is_paused,
+                    workspace_paused=workspace.ingestion_paused,
+                )
+                if reason:
+                    log.info("Skipping queued fetch for source %s: %s", source_id, reason)
+                    return
             if source and workspace:
                 count = await run_fetch_pipeline(db, source=source, workspace=workspace)
                 log.info("Fetch complete for source %s: %d items ingested", source_id, count)
@@ -398,12 +428,21 @@ async def _run_backfill_bg(job_id: uuid.UUID):
             workspace = workspace_result.scalar_one_or_none()
             if not source or not workspace:
                 raise ValueError("Source or workspace missing")
-            if source.is_paused:
+            reason = blocked_reason(
+                source_paused=source.is_paused,
+                workspace_paused=workspace.ingestion_paused,
+            )
+            if reason:
                 # Queued while running, paused before it got here: cancel rather
-                # than spend. Nothing ingested so far is removed (#10).
-                log.info("Cancelling backfill job %s: source is paused", job_id)
+                # than spend. Nothing ingested so far is removed (#10, #13).
+                message = (
+                    "Source was paused before this backfill ran."
+                    if reason == SOURCE_PAUSED
+                    else "Workspace ingestion was paused before this backfill ran."
+                )
+                log.info("Cancelling backfill job %s: %s", job_id, message)
                 job.status = "cancelled"
-                job.error_message = "Source was paused before this backfill ran."
+                job.error_message = message
                 job.completed_at = datetime.utcnow()
                 await db.commit()
                 return
