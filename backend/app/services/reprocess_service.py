@@ -183,7 +183,6 @@ async def _replay_one(db, msg, workspace_id, report, *, detect_lang, distill) ->
     await db.flush()
 
     await log_usage_event(
-        db,
         workspace_id=workspace_id,
         task_type="vision",
         provider_model=settings.DISTILLATION_MODEL,

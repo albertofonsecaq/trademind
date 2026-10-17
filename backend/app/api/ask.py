@@ -142,8 +142,7 @@ async def ask(
     # Approximate cost using Sonnet pricing
     cost = Decimal(str(0.000003 * usage["input_tokens"] + 0.000015 * usage["output_tokens"]))
 
-    event = await log_usage_event(
-        db,
+    await log_usage_event(
         workspace_id=workspace_id,
         task_type="query_synthesis",
         provider_model=settings.SYNTHESIS_MODEL,

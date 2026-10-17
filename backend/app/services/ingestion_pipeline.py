@@ -110,7 +110,6 @@ async def _distill_and_embed(
     db.add(idea)
 
     await log_usage_event(
-        db,
         workspace_id=msg.workspace_id,
         task_type="distillation",
         provider_model=settings.DISTILLATION_MODEL,
@@ -142,7 +141,6 @@ async def _distill_and_embed(
     db.add(emb)
 
     await log_usage_event(
-        db,
         workspace_id=msg.workspace_id,
         task_type="embedding",
         provider_model=settings.EMBEDDING_MODEL,
@@ -179,7 +177,6 @@ async def _process_text(db: AsyncSession, msg: RawMessage, topic_scope: str) -> 
     item.relevance_reason = reason
 
     await log_usage_event(
-        db,
         workspace_id=msg.workspace_id,
         task_type="relevance_filter",
         provider_model=settings.RELEVANCE_MODEL,
@@ -237,7 +234,6 @@ async def _process_image(db: AsyncSession, msg: RawMessage, topic_scope: str) ->
     await db.flush()
 
     await log_usage_event(
-        db,
         workspace_id=msg.workspace_id,
         task_type="vision",
         provider_model=settings.DISTILLATION_MODEL,
@@ -288,7 +284,6 @@ async def _process_url(db: AsyncSession, msg: RawMessage, topic_scope: str) -> E
     item.relevance_reason = reason
 
     await log_usage_event(
-        db,
         workspace_id=msg.workspace_id,
         task_type="relevance_filter",
         provider_model=settings.RELEVANCE_MODEL,
@@ -335,7 +330,6 @@ async def _process_video(db: AsyncSession, msg: RawMessage, topic_scope: str) ->
                 descriptions.append(result["description"])
 
         await log_usage_event(
-            db,
             workspace_id=msg.workspace_id,
             task_type="vision",
             provider_model=settings.DISTILLATION_MODEL,
@@ -407,7 +401,6 @@ async def process_message(
     pre_cost = Decimal(msg.pre_pipeline_cost_usd)
     if pre_cost > 0 and msg.pre_pipeline_task_type and msg.pre_pipeline_model:
         await log_usage_event(
-            db,
             workspace_id=msg.workspace_id,
             task_type=msg.pre_pipeline_task_type,
             provider_model=msg.pre_pipeline_model,

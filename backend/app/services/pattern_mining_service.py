@@ -270,7 +270,6 @@ async def run_pattern_mining(
     if total_input_tokens > 0:
         cost = Decimal(str(0.000003 * total_input_tokens + 0.000015 * total_output_tokens))
         await log_usage_event(
-            db,
             workspace_id=workspace_id,
             task_type="pattern_mining",
             provider_model=settings.DISTILLATION_MODEL,
