@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -487,10 +487,23 @@ async def run_fetch_pipeline(
     initial_stable_id = source.last_fetched_id
     source_id = source.id
 
+    # The newest content already stored for this source. A connector cannot read
+    # the database, so this is handed to it as the bound to fall back on when its
+    # cursor id cannot be resolved — a YouTube marker video that has been deleted
+    # would otherwise stop the source ingesting for good (#19).
+    newest_result = await db.execute(
+        select(func.max(EvidenceItem.message_timestamp)).where(
+            EvidenceItem.source_config_id == source_id
+        )
+    )
+    newest_stored = newest_result.scalar()
+
     count = 0
     last_stable_id = initial_stable_id
 
-    async for msg in connector.fetch_new(since_id=last_stable_id):
+    async for msg in connector.fetch_new(
+        since_id=last_stable_id, since_timestamp=newest_stored
+    ):
         if not _content_type_allowed(msg, filters):
             last_stable_id = msg.stable_id
             continue

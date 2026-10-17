@@ -44,8 +44,18 @@ class RawMessage:
 
 class BaseConnector(ABC):
     @abstractmethod
-    async def fetch_new(self, since_id: str | None) -> AsyncIterator[RawMessage]:
-        """Yield new messages since the last fetched stable_id."""
+    async def fetch_new(
+        self, since_id: str | None, since_timestamp: datetime | None = None
+    ) -> AsyncIterator[RawMessage]:
+        """Yield new messages since the last fetched stable_id.
+
+        `since_timestamp` is the timestamp of the newest content already stored
+        for this source — a bound to fall back on when `since_id` cannot be
+        resolved. A connector whose cursor is a marker it has to find in a
+        window (YouTube) loses that marker when the video is deleted, and would
+        otherwise stop yielding for good; a connector whose cursor is already a
+        bound (Telegram's min_id) can ignore it (#19).
+        """
         ...
 
     @abstractmethod
