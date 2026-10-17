@@ -16,11 +16,11 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.connectors.base import RawMessage
+from app.connectors.base import FetchPosition, RawMessage
 from app.models.evidence_item import EvidenceItem
 from app.models.trade_idea import TradeIdea
 from app.models.embedding_row import EmbeddingRow
@@ -484,28 +484,21 @@ async def run_fetch_pipeline(
     # so accessing them inside the loop would trigger a sync lazy-load and crash.
     filters = source.content_filters or {}
     topic_scope = workspace.topic_scope
-    initial_stable_id = source.last_fetched_id
     source_id = source.id
-
-    # The newest content already stored for this source. A connector cannot read
-    # the database, so this is handed to it as the bound to fall back on when its
-    # cursor id cannot be resolved — a YouTube marker video that has been deleted
-    # would otherwise stop the source ingesting for good (#19).
-    newest_result = await db.execute(
-        select(func.max(EvidenceItem.message_timestamp)).where(
-            EvidenceItem.source_config_id == source_id
-        )
+    initial_position = FetchPosition(
+        stable_id=source.last_fetched_id, item_at=source.last_fetched_item_at
     )
-    newest_stored = newest_result.scalar()
 
     count = 0
-    last_stable_id = initial_stable_id
+    position = initial_position
 
-    async for msg in connector.fetch_new(
-        since_id=last_stable_id, since_timestamp=newest_stored
-    ):
+    async for msg in connector.fetch_new(position):
+        # The position advances for everything we have seen, not only what we
+        # store: content that fails a filter or the relevance check is still
+        # content we have got past, and a position that lags behind would make a
+        # recovering connector re-fetch — and re-pay for — all of it (#19).
         if not _content_type_allowed(msg, filters):
-            last_stable_id = msg.stable_id
+            position = FetchPosition(stable_id=msg.stable_id, item_at=msg.timestamp)
             continue
         try:
             # A savepoint, not a session rollback: session.rollback() expires every
@@ -523,13 +516,23 @@ async def run_fetch_pipeline(
             continue
         else:
             await db.commit()
-        last_stable_id = msg.stable_id
+        position = FetchPosition(stable_id=msg.stable_id, item_at=msg.timestamp)
 
-    if last_stable_id != initial_stable_id:
+    # A connector whose own position was unusable reports where it actually got
+    # to, so the next tick is not handed the same dead handle — and does not
+    # re-run and re-log the recovery every minute (#19).
+    if position == initial_position:
+        repaired = connector.repaired_position()
+        if repaired and repaired != initial_position:
+            log.info("Repairing fetch position for source %s: %s", source_id, repaired.stable_id)
+            position = repaired
+
+    if position != initial_position:
         result = await db.execute(select(SourceConfig).where(SourceConfig.id == source_id))
         src = result.scalar_one_or_none()
         if src:
-            src.last_fetched_id = last_stable_id
+            src.last_fetched_id = position.stable_id
+            src.last_fetched_item_at = position.item_at
             src.last_fetched_at = datetime.utcnow()
         await db.commit()
 

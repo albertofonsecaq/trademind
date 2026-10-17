@@ -22,6 +22,31 @@ def to_naive_utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(timezone.utc).replace(tzinfo=None)
 
 
+@dataclass(frozen=True)
+class FetchPosition:
+    """
+    How far through a source we have already got — see CONTEXT.md.
+
+    Two fields because platforms hand it to us in two shapes. `stable_id` is the
+    platform's own handle on the position; `item_at` is the timestamp of the
+    content that handle names. A platform whose handle is a bound (Telegram's
+    message id) needs only the first. A platform whose handle is a marker it has
+    to find again (YouTube's video id) loses it when that item is deleted, and
+    falls back to the timestamp — which nothing can delete (#19).
+
+    `item_at` is recorded wherever the position is written, including when a
+    position is advanced without ingesting anything: skipping a backlog, or
+    content that failed a filter. Inferring it afterwards from stored evidence
+    would get those cases wrong.
+    """
+    stable_id: str | None = None
+    item_at: datetime | None = None
+
+    @property
+    def is_empty(self) -> bool:
+        return self.stable_id is None and self.item_at is None
+
+
 @dataclass
 class RawMessage:
     """Normalized output of any connector's fetch step."""
@@ -44,19 +69,27 @@ class RawMessage:
 
 class BaseConnector(ABC):
     @abstractmethod
-    async def fetch_new(
-        self, since_id: str | None, since_timestamp: datetime | None = None
-    ) -> AsyncIterator[RawMessage]:
-        """Yield new messages since the last fetched stable_id.
+    async def fetch_new(self, position: FetchPosition) -> AsyncIterator[RawMessage]:
+        """Yield new content after `position`.
 
-        `since_timestamp` is the timestamp of the newest content already stored
-        for this source — a bound to fall back on when `since_id` cannot be
-        resolved. A connector whose cursor is a marker it has to find in a
-        window (YouTube) loses that marker when the video is deleted, and would
-        otherwise stop yielding for good; a connector whose cursor is already a
-        bound (Telegram's min_id) can ignore it (#19).
+        No default on purpose: a connector whose position is a marker it must
+        find again stops yielding for good when that item is deleted, so a new
+        implementer has to decide what it does with the fallback rather than
+        inherit a silent None (#19).
         """
         ...
+
+    def repaired_position(self) -> FetchPosition | None:
+        """
+        A position to store instead, after a fetch whose own position was
+        unusable — read once, after iterating `fetch_new`.
+
+        Without it a connector that recovered from a deleted marker would be
+        handed the same dead marker on the next tick, re-running the recovery
+        and re-logging it every minute for ever. The default is None: a
+        connector whose position is a bound can never be in this state.
+        """
+        return None
 
     @abstractmethod
     async def latest_stable_id(self) -> str | None:

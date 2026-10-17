@@ -88,6 +88,7 @@ def _paused_source() -> object:
         is_paused=True,
         paused_at=datetime(2026, 10, 1, 9, 0),
         last_fetched_id=CURSOR,
+        last_fetched_item_at=datetime(2026, 9, 28, 8, 0),
         last_fetched_at=datetime(2026, 9, 28, 8, 0),
     )
 
@@ -320,6 +321,21 @@ class TestResumeFromNowNeverGoesBackwards:
         await _resume(source, "from_now")
 
         assert source.last_fetched_id == "telegram:chan:501"
+
+    async def test_records_the_declined_window_so_it_is_never_re_fetched(self, connector):
+        """
+        The position's timestamp marks the far edge of what was declined. If the
+        marker this resume wrote is later deleted, the connector falls back to
+        this — not to the newest stored evidence, which sits behind the decline
+        and would re-fetch, and re-pay for, the skipped window (#19).
+        """
+        connector("telegram:chan:900")
+        source = _paused_source()
+        before = source.last_fetched_item_at
+
+        await _resume(source, "from_now")
+
+        assert source.last_fetched_item_at > before
 
     async def test_moves_the_fetch_timestamp_so_the_backlog_is_not_re_offered(self, connector):
         """

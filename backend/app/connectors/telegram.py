@@ -16,7 +16,7 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.types import Message, MessageMediaPhoto, MessageMediaDocument
 
-from app.connectors.base import BaseConnector, RawMessage, to_naive_utc
+from app.connectors.base import BaseConnector, FetchPosition, RawMessage, to_naive_utc
 
 _URL_RE = re.compile(r'https?://\S+')
 _MAX_VIDEO_BYTES = 100 * 1024 * 1024  # 100 MB
@@ -232,11 +232,10 @@ class TelegramConnector(BaseConnector):
 
     # ── public interface ──────────────────────────────────────────────────────
 
-    async def fetch_new(
-        self, since_id: str | None, since_timestamp: datetime | None = None
-    ) -> AsyncIterator[RawMessage]:
-        # since_timestamp is unused on purpose: min_id is an exclusive numeric
+    async def fetch_new(self, position: FetchPosition) -> AsyncIterator[RawMessage]:
+        # position.item_at is unused on purpose: min_id is an exclusive numeric
         # bound, so a deleted message costs this connector nothing (#19).
+        since_id = position.stable_id
         min_id = 0
         if since_id:
             try:
