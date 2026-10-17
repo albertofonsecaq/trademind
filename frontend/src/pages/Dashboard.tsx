@@ -2,13 +2,11 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { NavBar } from "../components/NavBar";
-import { useAuth } from "../context/AuthContext";
 import { OnboardingModal, useOnboarding } from "../components/OnboardingModal";
 import api, { type Workspace } from "../api/client";
 
 export function Dashboard() {
   const { t } = useTranslation();
-  const { user } = useAuth();
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const { isDone, markDone } = useOnboarding();
   const [showOnboarding, setShowOnboarding] = useState(false);
