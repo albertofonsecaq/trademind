@@ -52,7 +52,7 @@ const JOB_COLOR: Record<string, string> = {
 
 const PULSE_STYLE = `@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }`;
 
-// ── pause controls, shared by the YouTube list and the full source list ───────
+// ── pause controls, shared by the source row and its config panel ────────────
 function PausedBadge() {
   const { t } = useTranslation();
   return (
@@ -372,6 +372,96 @@ function SourcePanel({ source, workspaceId, workspacePaused, onSaved }: {
   );
 }
 
+// ── one source, one row ───────────────────────────────────────────────────────
+// Every per-source affordance lives here. Two lists used to render their own
+// copy, so a YouTube channel appeared twice with two sets of controls — and two
+// resume prompts at once — and anything new had to be written into both (#18).
+function SourceRow({
+  source, workspaceId, workspacePaused,
+  expanded, busy, fetching, fetchInProgress, resumePromptOpen, pauseError,
+  onToggleExpanded, onTogglePause, onFetch, onResume, onCancelResume, onDelete, onSaved,
+}: {
+  source: Source;
+  workspaceId: string | null | undefined;
+  workspacePaused: boolean;
+  expanded: boolean;
+  busy: boolean;                        // a pause or resume request is in flight
+  fetching: boolean;                    // a Fetch now request is in flight
+  fetchInProgress: boolean;             // a fetch is running in the background
+  resumePromptOpen: boolean;            // the resume prompt is showing, not a request
+  pauseError?: string;
+  onToggleExpanded: () => void;
+  onTogglePause: () => void;
+  onFetch: () => void;
+  onResume: (mode: ResumeMode) => void;
+  onCancelResume: () => void;
+  onDelete: () => void;
+  onSaved: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div style={{ borderBottom: "1px solid #f0f0f0", padding: "0.75rem 0" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+          <span style={{ fontWeight: 600, fontSize: "0.9rem" }}>{source.label || source.identifier}</span>
+          {source.label && <span style={{ fontSize: "0.75rem", color: "#aaa", fontFamily: "monospace" }}>{source.identifier}</span>}
+          <span style={{ ...pill, ...(SOURCE_BADGE[source.source_type] || {}) }}>{source.source_type}</span>
+          {/* The cadence and the filters below are translated here as they are
+              in the config panel; the row used to print the raw values (#18). */}
+          <span style={{ fontSize: "0.75rem", color: "#999" }}>
+            {t(`sources.cadenceOptions.${source.fetch_cadence}`, source.fetch_cadence)}
+          </span>
+          {source.is_paused && <PausedBadge />}
+        </div>
+        <div style={{ display: "flex", gap: "0.4rem" }}>
+          <button style={btn(false)} onClick={onToggleExpanded}>
+            {expanded ? t("common.collapse") : t("sources.configure")}
+          </button>
+          <PauseButton source={source} busy={busy} onToggle={onTogglePause} />
+          <FetchButton source={source} busy={fetching} blocked={workspacePaused} onFetch={onFetch} />
+          <button style={btn(false, true)} onClick={onDelete}>{t("common.delete")}</button>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: "0.3rem", marginTop: "0.3rem", flexWrap: "wrap" }}>
+        {(["text", "image", "video", "url"] as const).filter((k) => source.content_filters?.[k]).map((k) => (
+          <span key={k} style={{ ...pill, padding: "1px 6px", background: "#f0f4ff", color: "#1a1a2e", border: "1px solid #d0d8ff" }}>
+            {t(`sources.${k}`)}
+          </span>
+        ))}
+        {source.backfill_start_date && (
+          <span style={{ ...pill, padding: "1px 6px", background: "#fff8e1", color: PAUSED_COLOR, border: "1px solid #ffe082" }}>
+            {t("sources.from")} {source.backfill_start_date.slice(0, 10)}
+          </span>
+        )}
+      </div>
+      <p style={{ margin: "0.2rem 0 0", fontSize: "0.77rem", color: "#aaa" }}>
+        {t("sources.lastFetched")}: {source.last_fetched_at ? new Date(source.last_fetched_at).toLocaleString() : t("sources.never")}
+      </p>
+      <PausedNotes source={source} error={pauseError} workspacePaused={workspacePaused} />
+      {fetchInProgress && (
+        <p style={{ margin: "0.15rem 0 0", fontSize: "0.77rem", color: "#1565c0", display: "flex", alignItems: "center", gap: "0.3rem" }}>
+          <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: "#1565c0", animation: "pulse 1.2s infinite" }} />
+          {t("sources.fetchInProgress")}
+        </p>
+      )}
+      {resumePromptOpen && (
+        <ResumeDialog
+          source={source} busy={busy}
+          onChoose={onResume} onCancel={onCancelResume}
+        />
+      )}
+
+      {expanded && workspaceId && (
+        <SourcePanel
+          source={source} workspaceId={workspaceId}
+          workspacePaused={workspacePaused} onSaved={onSaved}
+        />
+      )}
+    </div>
+  );
+}
+
 // ── main page ─────────────────────────────────────────────────────────────────
 export function AdminSources() {
   const { t } = useTranslation();
@@ -561,6 +651,7 @@ export function AdminSources() {
   };
 
   const activeTelegramConns = connections.filter((c) => c.status === "active");
+  const youtubeCount = sources.filter((s) => s.source_type === "youtube").length;
 
   return (
     <div style={{ minHeight: "100vh", background: "#f5f5f5", fontFamily: "system-ui, sans-serif" }}>
@@ -637,34 +728,16 @@ export function AdminSources() {
             </form>
           )}
 
-          {sources.filter((s) => s.source_type === "youtube").length === 0 && !showAddYoutube ? (
-            <p style={{ color: "#aaa", fontSize: "0.85rem", margin: 0 }}>—</p>
-          ) : (
-            sources.filter((s) => s.source_type === "youtube").map((s) => (
-              <div key={s.id} style={{ padding: "0.45rem 0", borderBottom: "1px solid #f5f5f5" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div>
-                  <span style={{ fontSize: "0.875rem", fontWeight: 500 }}>{s.label || s.identifier}</span>
-                  {s.label && <span style={{ fontSize: "0.75rem", color: "#aaa", fontFamily: "monospace", marginLeft: "0.4rem" }}>{s.identifier}</span>}
-                  <span style={{ fontSize: "0.75rem", color: "#999", marginLeft: "0.4rem" }}>{s.fetch_cadence}</span>
-                  {s.is_paused && <span style={{ marginLeft: "0.4rem" }}><PausedBadge /></span>}
-                </div>
-                <div style={{ display: "flex", gap: "0.4rem" }}>
-                  <PauseButton source={s} busy={pausingId === s.id} onToggle={togglePause} />
-                  <FetchButton source={s} busy={fetchingId === s.id} blocked={!!workspace?.ingestion_paused} onFetch={fetchNow} />
-                  <button style={btn(false, true)} onClick={() => removeSource(s.id)}>{t("common.delete")}</button>
-                </div>
-                </div>
-                <PausedNotes source={s} error={pauseErrors[s.id]} workspacePaused={!!workspace?.ingestion_paused} />
-                {resumingId === s.id && (
-                  <ResumeDialog
-                    source={s} busy={pausingId === s.id}
-                    onChoose={(mode) => resume(s, mode)}
-                    onCancel={() => setResumingId(null)}
-                  />
-                )}
-              </div>
-            ))
+          {/* Deliberately no list here: a channel's controls live once, in the
+              sources list below (#18). This says where to find them. */}
+          {/* The empty-state hint stays out of the way while the form is open,
+              as it did before the lists were consolidated. */}
+          {(youtubeCount > 0 || !showAddYoutube) && (
+            <p style={{ color: "#888", fontSize: "0.82rem", margin: 0 }}>
+              {youtubeCount === 0
+                ? t("sources.youtubeNone")
+                : t("sources.youtubeTrackedBelow", { count: youtubeCount })}
+            </p>
           )}
         </div>
 
@@ -744,60 +817,25 @@ export function AdminSources() {
             <p style={{ color: "#888", fontSize: "0.875rem", margin: 0 }}>{t("sources.noSources")}</p>
           ) : (
             sources.map((s) => (
-              <div key={s.id} style={{ borderBottom: "1px solid #f0f0f0", padding: "0.75rem 0" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
-                    <span style={{ fontWeight: 600, fontSize: "0.9rem" }}>{s.label || s.identifier}</span>
-                    {s.label && <span style={{ fontSize: "0.75rem", color: "#aaa", fontFamily: "monospace" }}>{s.identifier}</span>}
-                    <span style={{ ...pill, ...(SOURCE_BADGE[s.source_type] || {}) }}>{s.source_type}</span>
-                    <span style={{ fontSize: "0.75rem", color: "#999" }}>{s.fetch_cadence}</span>
-                    {s.is_paused && <PausedBadge />}
-                  </div>
-                  <div style={{ display: "flex", gap: "0.4rem" }}>
-                    <button style={btn(false)} onClick={() => setExpandedId(expandedId === s.id ? null : s.id)}>
-                      {expandedId === s.id ? t("common.collapse") : t("sources.configure")}
-                    </button>
-                    <PauseButton source={s} busy={pausingId === s.id} onToggle={togglePause} />
-                    <FetchButton source={s} busy={fetchingId === s.id} blocked={!!workspace?.ingestion_paused} onFetch={fetchNow} />
-                    <button style={btn(false, true)} onClick={() => removeSource(s.id)}>{t("common.delete")}</button>
-                  </div>
-                </div>
-
-                <div style={{ display: "flex", gap: "0.3rem", marginTop: "0.3rem", flexWrap: "wrap" }}>
-                  {(["text", "image", "video", "url"] as const).filter((k) => s.content_filters?.[k]).map((k) => (
-                    <span key={k} style={{ fontSize: "0.7rem", padding: "1px 6px", background: "#f0f4ff", color: "#1a1a2e", borderRadius: "10px", border: "1px solid #d0d8ff" }}>{k}</span>
-                  ))}
-                  {s.backfill_start_date && (
-                    <span style={{ fontSize: "0.7rem", padding: "1px 6px", background: "#fff8e1", color: "#f57f17", borderRadius: "10px", border: "1px solid #ffe082" }}>
-                      {t("sources.from")} {s.backfill_start_date.slice(0, 10)}
-                    </span>
-                  )}
-                </div>
-                <p style={{ margin: "0.2rem 0 0", fontSize: "0.77rem", color: "#aaa" }}>
-                  {t("sources.lastFetched")}: {s.last_fetched_at ? new Date(s.last_fetched_at).toLocaleString() : t("sources.never")}
-                </p>
-                <PausedNotes source={s} error={pauseErrors[s.id]} workspacePaused={!!workspace?.ingestion_paused} />
-                {activeFetches[s.id] && (
-                  <p style={{ margin: "0.15rem 0 0", fontSize: "0.77rem", color: "#1565c0", display: "flex", alignItems: "center", gap: "0.3rem" }}>
-                    <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: "#1565c0", animation: "pulse 1.2s infinite" }} />
-                    {t("sources.fetchInProgress")}
-                  </p>
-                )}
-                {resumingId === s.id && (
-                  <ResumeDialog
-                    source={s} busy={pausingId === s.id}
-                    onChoose={(mode) => resume(s, mode)}
-                    onCancel={() => setResumingId(null)}
-                  />
-                )}
-
-                {expandedId === s.id && workspaceId && (
-                  <SourcePanel
-                    source={s} workspaceId={workspaceId}
-                    workspacePaused={!!workspace?.ingestion_paused} onSaved={load}
-                  />
-                )}
-              </div>
+              <SourceRow
+                key={s.id}
+                source={s}
+                workspaceId={workspaceId}
+                workspacePaused={!!workspace?.ingestion_paused}
+                expanded={expandedId === s.id}
+                busy={pausingId === s.id}
+                fetching={fetchingId === s.id}
+                fetchInProgress={!!activeFetches[s.id]}
+                resumePromptOpen={resumingId === s.id}
+                pauseError={pauseErrors[s.id]}
+                onToggleExpanded={() => setExpandedId(expandedId === s.id ? null : s.id)}
+                onTogglePause={() => togglePause(s)}
+                onFetch={() => fetchNow(s.id)}
+                onResume={(mode) => resume(s, mode)}
+                onCancelResume={() => setResumingId(null)}
+                onDelete={() => removeSource(s.id)}
+                onSaved={load}
+              />
             ))
           )}
         </div>
