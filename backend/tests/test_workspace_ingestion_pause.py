@@ -20,6 +20,8 @@ from fastapi import BackgroundTasks, HTTPException
 
 from app.api import sources as sources_api
 from app.api import workspaces as workspaces_api
+from app.models.source_config import SourceConfig
+from app.schemas.workspace import IngestionPauseRequest
 from app.workers import poller
 
 
@@ -38,13 +40,21 @@ class _Result:
 
 
 class _PollSession:
-    """Sources first, then the workspace each source asks for, by id."""
+    """
+    Answers by what the statement asks for, never by call order.
+
+    Positional fakes lie here: the poll skips the workspace lookup entirely for
+    a source that is itself paused, or whose cadence has not elapsed, so a
+    call-counting stub silently hands back the wrong workspace and the test
+    passes for the wrong reason. Looking up the id in the statement's own
+    parameters keeps the fake honest, and `workspace_lookups` lets a test prove
+    the skip came from the workspace gate rather than from a missing row.
+    """
 
     def __init__(self, sources, workspaces):
         self._sources = sources
         self._workspaces = {ws.id: ws for ws in workspaces}
-        self._order = [src.workspace_id for src in sources]
-        self.calls = 0
+        self.workspace_lookups: list[uuid.UUID] = []
 
     async def __aenter__(self):
         return self
@@ -52,13 +62,15 @@ class _PollSession:
     async def __aexit__(self, *exc):
         return False
 
-    async def execute(self, _stmt):
-        self.calls += 1
-        if self.calls == 1:
+    async def execute(self, stmt):
+        entity = stmt.column_descriptions[0]["entity"]
+        if entity is SourceConfig:
             return _Result(self._sources)
-        # the loop looks a workspace up per source, in source order
-        wanted = self._order.pop(0) if self._order else None
-        return _Result(self._workspaces.get(wanted))
+        for value in stmt.compile().params.values():
+            if value in self._workspaces:
+                self.workspace_lookups.append(value)
+                return _Result(self._workspaces[value])
+        return _Result(None)
 
     async def commit(self):
         pass
@@ -93,7 +105,12 @@ class _ApiSession:
         pass
 
     def touched_sources(self) -> bool:
-        return any("update source_configs" in s for s in self.statements)
+        """
+        Any mention at all, not just an UPDATE: the switch has no business
+        reading sources either, and a handler that loaded them could mutate
+        them through the ORM without ever issuing an UPDATE of its own.
+        """
+        return any("source_configs" in s for s in self.statements)
 
 
 def _workspace(*, paused: bool) -> SimpleNamespace:
@@ -133,7 +150,7 @@ def poll(monkeypatch):
         session = _PollSession(sources, workspaces)
         monkeypatch.setattr(poller, "AsyncSessionLocal", lambda: session)
         await poller._poll_all_sources()
-        return fetched
+        return SimpleNamespace(fetched=fetched, session=session)
 
     return run
 
@@ -149,9 +166,9 @@ class TestPollSkipsPausedWorkspaces:
             _source("live-chan", workspace_id=live_ws.id),
         ]
 
-        fetched = await poll(sources, [paused_ws, live_ws])
+        result = await poll(sources, [paused_ws, live_ws])
 
-        assert fetched == ["live-chan"]
+        assert result.fetched == ["live-chan"]
 
     async def test_skips_every_source_in_the_paused_workspace(self, poll):
         paused_ws = _workspace(paused=True)
@@ -160,9 +177,31 @@ class TestPollSkipsPausedWorkspaces:
             _source("chan-b", workspace_id=paused_ws.id),
         ]
 
-        fetched = await poll(sources, [paused_ws])
+        result = await poll(sources, [paused_ws])
 
-        assert fetched == []
+        assert result.fetched == []
+        # Both sources reached the workspace gate and were turned back there,
+        # rather than falling out earlier on a lookup that returned nothing.
+        assert result.session.workspace_lookups == [paused_ws.id, paused_ws.id]
+
+
+class TestTheTwoSwitchesTogether:
+    async def test_a_source_paused_by_hand_stays_paused_when_the_workspace_resumes(self, poll):
+        """
+        The ticket's premise, in one tick: with the workspace switch off, the
+        source the user paused by hand is still skipped while its neighbour runs.
+        """
+        ws = _workspace(paused=False)
+        sources = [
+            _source("paused-by-hand", workspace_id=ws.id, is_paused=True),
+            _source("running", workspace_id=ws.id),
+        ]
+
+        result = await poll(sources, [ws])
+
+        assert result.fetched == ["running"]
+        # The paused source never even needed its workspace read.
+        assert result.session.workspace_lookups == [ws.id]
 
 
 # ── the switch leaves everything underneath it alone ──────────────────────────
@@ -172,33 +211,30 @@ class TestSwitchKeepsPerSourceState:
         db = _ApiSession([object(), workspace])      # membership row, then workspace
         await workspaces_api.set_ingestion_paused(
             workspace_id=workspace.id,
-            payload=workspaces_api.IngestionPauseRequest(paused=paused),
+            payload=IngestionPauseRequest(paused=paused),
             current_user=SimpleNamespace(id=uuid.uuid4()),
             db=db,
         )
         return db
 
-    async def test_a_round_trip_leaves_per_source_states_untouched(self):
+    async def test_a_round_trip_touches_nothing_but_the_workspace_flag(self):
         """
-        The point of the ticket: a source the user paused by hand must still be
-        paused after the workspace is switched off and on again.
+        Per-source state survives because the switch never goes near it. The
+        handler is never handed a source, so the honest assertion is about what
+        it is allowed to touch: the membership check, the workspace, and nothing
+        else. Anything that read or wrote source_configs would fail here.
         """
         ws = _workspace(paused=False)
-        by_hand = _source("paused-by-hand", workspace_id=ws.id, is_paused=True)
-        running = _source("running", workspace_id=ws.id, is_paused=False)
-        cursors = (by_hand.last_fetched_id, running.last_fetched_id)
 
         db = await self._toggle(ws, True)
         assert ws.ingestion_paused is True
         assert not db.touched_sources()
+        assert len(db.statements) == 2                # membership, workspace
 
         db = await self._toggle(ws, False)
         assert ws.ingestion_paused is False
         assert not db.touched_sources()
-
-        assert by_hand.is_paused is True             # still paused on its own
-        assert running.is_paused is False
-        assert (by_hand.last_fetched_id, running.last_fetched_id) == cursors
+        assert len(db.statements) == 2
 
 
 # ── on-demand work refuses while the workspace is paused ──────────────────────

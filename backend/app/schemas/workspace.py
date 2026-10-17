@@ -17,6 +17,10 @@ class WorkspaceOut(BaseModel):
     created_at: datetime
 
 
+class IngestionPauseRequest(BaseModel):
+    paused: bool
+
+
 class WorkspaceMemberOut(BaseModel):
     model_config = {"from_attributes": True}
 

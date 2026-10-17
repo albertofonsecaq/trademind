@@ -1,6 +1,5 @@
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -9,13 +8,9 @@ from app.core.dependencies import get_current_user
 from app.models.user import User
 from app.models.workspace import Workspace
 from app.models.workspace_member import WorkspaceMember
-from app.schemas.workspace import WorkspaceOut, WorkspaceMemberOut
+from app.schemas.workspace import IngestionPauseRequest, WorkspaceOut, WorkspaceMemberOut
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
-
-
-class IngestionPauseRequest(BaseModel):
-    paused: bool
 
 
 async def _assert_member(db: AsyncSession, workspace_id: uuid.UUID, user_id: uuid.UUID) -> WorkspaceMember:

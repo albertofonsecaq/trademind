@@ -282,7 +282,7 @@ class TestPauseStopsWorkAlreadyQueued:
 
     async def test_a_queued_fetch_stops_once_the_source_is_paused(self, monkeypatch):
         source = _source("chan", is_paused=True, workspace_id=uuid.uuid4())
-        workspace = SimpleNamespace(topic_scope="trading")
+        workspace = SimpleNamespace(topic_scope="trading", ingestion_paused=False)
         db = _ApiSession([source, workspace])
         monkeypatch.setattr(sources_api, "AsyncSessionLocal", lambda: db)
 
@@ -301,7 +301,7 @@ class TestPauseStopsWorkAlreadyQueued:
 
     async def test_a_queued_backfill_is_cancelled_once_the_source_is_paused(self, monkeypatch):
         source = _source("chan", is_paused=True, workspace_id=uuid.uuid4())
-        workspace = SimpleNamespace(topic_scope="trading")
+        workspace = SimpleNamespace(topic_scope="trading", ingestion_paused=False)
         job = SimpleNamespace(
             id=uuid.uuid4(),
             source_config_id=source.id,
