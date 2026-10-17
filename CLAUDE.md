@@ -1,5 +1,12 @@
 # TradeMind
 
+## Tests
+
+`cd backend && pytest` runs offline — no database, network or API keys — and is
+meant to be fast enough for every change. Tests that need a real database are
+marked `db` and skipped unless `TEST_DATABASE_URL` is set; `backend/tests/conftest.py`
+has the commands, including the `alembic upgrade head` those tests assume.
+
 ## Agent skills
 
 ### Issue tracker

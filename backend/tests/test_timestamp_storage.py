@@ -5,22 +5,24 @@ Every timestamp column is `timestamptz`, and no model declares
 `DateTime(timezone=True)`, so SQLAlchemy binds writes as TIMESTAMP WITHOUT TIME
 ZONE. These tests record the consequences rather than the intention:
 
-- a naive value round-trips, and comes back aware, because the session's time
-  zone is UTC and Postgres interprets the naive input in it;
-- an aware value is rejected outright, which is the DataError in #8.
+- the column really is `timestamptz`, which is the premise everything else rests
+  on;
+- a naive write round-trips and comes back aware, because the session's time zone
+  is UTC and Postgres reads the naive input in it;
+- an aware write is rejected outright, which is the DataError in #8.
 
-Both are green now. #34 and the batches after it invert the second one — that is
-the point: the behaviour change will be visible as a diff here, rather than
-asserted in a commit message.
+All green now. #34 inverts the third one — that is the point: the behaviour
+change will be visible as a diff here rather than asserted in a commit message.
 
 These need a real database, so they are skipped unless one is configured. See
 conftest.py for how to run them.
 """
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
 
 from app.models.backfill_job import BackfillJob
 from app.models.source_config import SourceConfig
@@ -29,39 +31,71 @@ from app.models.workspace import Workspace
 
 pytestmark = pytest.mark.db
 
-AN_INSTANT = datetime(2026, 1, 22, 14, 30, 5, tzinfo=timezone.utc)
+# Microseconds on purpose: a round trip that silently truncated sub-second
+# precision would still satisfy a whole-second instant.
+AN_INSTANT = datetime(2026, 1, 22, 14, 30, 5, 123456, tzinfo=timezone.utc)
 
 
-async def _a_source(db) -> SourceConfig:
+async def _a_source(session) -> SourceConfig:
     """
     A user, a workspace and a source — the minimum a backfill job needs.
 
-    Flushed in turn rather than together: these models carry foreign keys
-    without matching relationships, so the unit of work has no dependency to
-    order the inserts by and would otherwise send the child first.
+    Flushed in turn rather than together: these three carry foreign keys to each
+    other with no matching relationships, so the unit of work has no dependency
+    to order the inserts by and would otherwise send a child first. (The job
+    below is fine either way — a source does declare its backfill jobs.)
     """
     user = User(
         id=uuid.uuid4(),
         email=f"timestamps-{uuid.uuid4().hex[:8]}@example.com",
         password_hash="x",
     )
-    db.add(user)
-    await db.flush()
+    session.add(user)
+    await session.flush()
 
     workspace = Workspace(
         id=uuid.uuid4(), name="timestamp check", owner_user_id=user.id,
         topic_scope="forex",
     )
-    db.add(workspace)
-    await db.flush()
+    session.add(workspace)
+    await session.flush()
 
     source = SourceConfig(
         id=uuid.uuid4(), workspace_id=workspace.id, source_type="telegram",
         identifier="chan", created_by_user_id=user.id,
     )
-    db.add(source)
-    await db.flush()
+    session.add(source)
+    await session.flush()
     return source
+
+
+def _a_job(source: SourceConfig, starting: datetime) -> BackfillJob:
+    return BackfillJob(
+        id=uuid.uuid4(),
+        source_config_id=source.id,
+        workspace_id=source.workspace_id,
+        date_range_start=starting,
+        triggered_by_user_id=source.created_by_user_id,
+    )
+
+
+class TestThePremise:
+    async def test_the_column_stores_a_time_zone(self, db_session):
+        """
+        Everything in #8 follows from the schema and the mapping disagreeing, so
+        the schema half is asserted rather than assumed.
+        """
+        column_type = (
+            await db_session.execute(
+                text(
+                    "SELECT data_type FROM information_schema.columns "
+                    "WHERE table_name = 'backfill_jobs' "
+                    "AND column_name = 'date_range_start'"
+                )
+            )
+        ).scalar_one()
+
+        assert column_type == "timestamp with time zone"
 
 
 class TestTheSessionsTimeZone:
@@ -79,16 +113,9 @@ class TestTheSessionsTimeZone:
 class TestANaiveWrite:
     async def test_round_trips_without_losing_the_instant(self, db_session):
         source = await _a_source(db_session)
-        naive = AN_INSTANT.replace(tzinfo=None)          # what the ORM binds today
-
-        job = BackfillJob(
-            id=uuid.uuid4(), source_config_id=source.id,
-            workspace_id=source.workspace_id, date_range_start=naive,
-            triggered_by_user_id=source.created_by_user_id,
-        )
+        job = _a_job(source, AN_INSTANT.replace(tzinfo=None))   # what the ORM binds today
         db_session.add(job)
         await db_session.flush()
-        db_session.expunge_all()                         # force a real read back
 
         stored = (
             await db_session.execute(
@@ -96,51 +123,20 @@ class TestANaiveWrite:
             )
         ).scalar_one()
 
-        assert stored.tzinfo is not None                 # timestamptz, so aware
-        assert stored == AN_INSTANT                      # and the same instant
-
-    async def test_comes_back_as_the_same_instant_in_another_offset(self, db_session):
-        """
-        The round trip is about instants, not wall clocks: 14:30Z is 09:30 in
-        New York, and the value that comes back must compare equal to both.
-        """
-        source = await _a_source(db_session)
-        job = BackfillJob(
-            id=uuid.uuid4(), source_config_id=source.id,
-            workspace_id=source.workspace_id,
-            date_range_start=AN_INSTANT.replace(tzinfo=None),
-            triggered_by_user_id=source.created_by_user_id,
-        )
-        db_session.add(job)
-        await db_session.flush()
-        db_session.expunge_all()
-
-        stored = (
-            await db_session.execute(
-                select(BackfillJob.date_range_start).where(BackfillJob.id == job.id)
-            )
-        ).scalar_one()
-
-        assert stored == AN_INSTANT.astimezone(timezone(timedelta(hours=-5)))
+        assert stored.tzinfo is not None     # timestamptz, so it comes back aware
+        assert stored == AN_INSTANT          # same instant, microseconds included
 
 
 class TestAnAwareWrite:
     async def test_is_rejected_today(self, db_session):
         """
-        #8's DataError, pinned: the ORM binds TIMESTAMP WITHOUT TIME ZONE
-        against a timestamptz column, so an aware value cannot be sent at all.
-        This is the assertion #34 inverts.
+        #8's error, pinned: the ORM binds TIMESTAMP WITHOUT TIME ZONE against a
+        timestamptz column, so an aware value cannot be sent at all. This is the
+        assertion #34 inverts — when it does, this class should assert the write
+        succeeds, not that a different error is raised.
         """
         source = await _a_source(db_session)
-        job = BackfillJob(
-            id=uuid.uuid4(), source_config_id=source.id,
-            workspace_id=source.workspace_id,
-            date_range_start=AN_INSTANT,                 # aware
-            triggered_by_user_id=source.created_by_user_id,
-        )
-        db_session.add(job)
+        db_session.add(_a_job(source, AN_INSTANT))              # aware
 
-        with pytest.raises(Exception) as exc:
+        with pytest.raises(DBAPIError, match="offset-naive and offset-aware"):
             await db_session.flush()
-
-        assert "offset-naive and offset-aware" in str(exc.value)
