@@ -299,6 +299,14 @@
     "endDate": "Hasta fecha (opcional)",
     "triggerBackfill": "Ejecutar backfill",
     "backfillJobs": "Trabajos recientes",
+    "jobStatus": {
+      "queued": "En cola",
+      "running": "En curso",
+      "completed": "Completado",
+      "partial": "Parcial",
+      "failed": "Con error",
+      "cancelled": "Cancelado"
+    },
     "itemsIngested": "elementos ingeridos",
     "removeSource": "Eliminar fuente",
     "connection": "Cuenta de Telegram",
@@ -313,6 +321,8 @@
     "noJobs": "No hay trabajos de backfill aún.",
     "now": "ahora",
     "items": "ítems",
+    "itemsFailed_one": "1 con error",
+    "itemsFailed_other": "{{count}} con error",
     "from": "desde",
     "fetchInProgress": "Obteniendo en segundo plano — se actualizará al terminar..."
   },

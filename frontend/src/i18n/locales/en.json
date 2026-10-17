@@ -299,6 +299,14 @@
     "endDate": "To date (optional)",
     "triggerBackfill": "Run backfill",
     "backfillJobs": "Recent jobs",
+    "jobStatus": {
+      "queued": "Queued",
+      "running": "Running",
+      "completed": "Completed",
+      "partial": "Partial",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
+    },
     "itemsIngested": "items ingested",
     "removeSource": "Remove source",
     "connection": "Telegram account",
@@ -313,6 +321,8 @@
     "noJobs": "No backfill jobs yet.",
     "now": "now",
     "items": "items",
+    "itemsFailed_one": "1 failed",
+    "itemsFailed_other": "{{count}} failed",
     "from": "from",
     "fetchInProgress": "Fetching in background — updating when complete..."
   },

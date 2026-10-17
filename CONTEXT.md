@@ -52,6 +52,10 @@ _Avoid_: Parsing, extraction, enrichment
 A one-off catch-up fetch of a source's history over a date range, as opposed to the recurring poll of new content.
 _Avoid_: Import, sync, historical load
 
+**Backfill outcome**:
+How a backfill ended, recorded on the job and readable without the logs: _completed_ lost nothing, _partial_ ingested some and lost some, _failed_ hit a failure that would repeat for every remaining message and stopped, _cancelled_ was called off by a pause before it ran. A failure that will repeat — an exhausted account, rejected credentials — ends the run; a rate limit or one unusable message does not.
+_Avoid_: Success/error, done, aborted, batch
+
 **Paused source**:
 A source the user has deliberately stopped fetching from. It keeps its evidence and its fetch position, so resuming continues where it stopped; only future fetching is halted. Distinct from the automatic pausing of deferrable work when a budget is exhausted.
 _Avoid_: Disabled, inactive, archived, muted

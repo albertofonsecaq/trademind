@@ -133,10 +133,16 @@ async def _poll_all_sources():
                 continue
 
             try:
-                count = await run_fetch_pipeline(db, source=planned.source, workspace=workspace)
-                if count:
-                    log.info("Fetched %d new items from source %s", count, identifier)
+                outcome = await run_fetch_pipeline(db, source=planned.source, workspace=workspace)
+                if outcome.ingested or outcome.failed:
+                    log.info(
+                        "Source %s: %d ingested, %d failed",
+                        identifier, outcome.ingested, outcome.failed,
+                    )
             except Exception as e:
+                # Includes the failures a connector or provider cannot recover
+                # from, which now abort the source's tick rather than being
+                # retried per message for the rest of the range (#9).
                 log.error("Poller error for source %s: %s", identifier, e)
 
 
