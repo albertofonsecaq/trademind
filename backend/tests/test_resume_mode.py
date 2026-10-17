@@ -21,6 +21,7 @@ from pydantic import ValidationError
 
 from app.api import sources as sources_api
 from app.services import source_resume_service as resume_service
+from app.services.source_resume_service import NewestEvidenceUnknown
 
 
 class _Result:
@@ -32,16 +33,31 @@ class _Result:
 
 
 class _Session:
-    """Returns queued rows in order, and records every write it is asked for."""
+    """
+    Returns queued rows in order, and records every write it is asked for.
 
-    def __init__(self, rows):
+    `evidence` stands in for what the workspace already holds, so a test can
+    compare the count before and after. `statements` catches the hole a
+    delete-recording stub leaves open: a bulk `execute(delete(EvidenceItem))`
+    writes nothing through .delete() and would otherwise pass unnoticed.
+    """
+
+    def __init__(self, rows, evidence=3):
         self._rows = list(rows)
         self.added: list = []
         self.deleted: list = []
+        self.statements: list[str] = []
+        self.evidence = evidence
         self.commits = 0
 
-    async def execute(self, _stmt):
+    async def execute(self, stmt):
+        self.statements.append(str(stmt).lower())
         return _Result(self._rows.pop(0) if self._rows else None)
+
+    def wrote_anything_destructive(self) -> bool:
+        return any(
+            verb in stmt for stmt in self.statements for verb in ("delete", "update")
+        )
 
     def add(self, obj):
         self.added.append(obj)
@@ -147,17 +163,20 @@ class TestCatchUp:
     async def test_removes_nothing(self, connector):
         connector(None)
         source = _paused_source()
+        db = _Session([object(), source], evidence=3)
 
-        db = await _resume(source, "catch_up")
+        await _resume(source, "catch_up", db=db)
 
-        assert db.deleted == []                   # no evidence, ideas or cards touched
+        assert db.evidence == 3                   # the workspace's evidence is untouched
+        assert db.deleted == []
         assert db.added == []
+        assert not db.wrote_anything_destructive()
 
 
 # ── resume from now: the cursor moves forward, and only forward ───────────────
 
 class TestResumeFromNow:
-    async def test_advances_the_cursor_to_the_newest_item(self, connector):
+    async def test_advances_the_cursor_to_the_newest_evidence(self, connector):
         connector("telegram:chan:900")
         source = _paused_source()
 
@@ -169,11 +188,14 @@ class TestResumeFromNow:
     async def test_removes_nothing(self, connector):
         connector("telegram:chan:900")
         source = _paused_source()
+        db = _Session([object(), source], evidence=3)
 
-        db = await _resume(source, "from_now")
+        await _resume(source, "from_now", db=db)
 
+        assert db.evidence == 3                   # declining a backlog is not deleting it
         assert db.deleted == []
         assert db.added == []
+        assert not db.wrote_anything_destructive()
 
     async def test_never_clears_the_cursor_when_the_newest_is_unknown(self, connector):
         """
@@ -272,3 +294,58 @@ class TestConnectorsReportTheirNewestItem:
         monkeypatch.setattr(connector, "_get_videos", _videos)
 
         assert await connector.latest_stable_id() is None
+
+
+class TestResumeFromNowNeverGoesBackwards:
+    """
+    The cursor is the only thing from_now may move, and only forward. A deleted
+    channel head, or a cursor a backfill pushed ahead, can make the "newest"
+    item report behind it — writing that would re-walk the window the user just
+    declined.
+    """
+
+    async def test_keeps_a_cursor_that_is_already_ahead(self, connector):
+        connector("telegram:chan:120")            # behind the stored 500
+        source = _paused_source()
+
+        await _resume(source, "from_now")
+
+        assert source.last_fetched_id == CURSOR
+        assert source.is_paused is False          # still resumed, just not rewound
+
+    async def test_takes_the_newest_when_it_is_ahead(self, connector):
+        connector("telegram:chan:501")
+        source = _paused_source()
+
+        await _resume(source, "from_now")
+
+        assert source.last_fetched_id == "telegram:chan:501"
+
+    async def test_moves_the_fetch_timestamp_so_the_backlog_is_not_re_offered(self, connector):
+        """
+        The prompt measures the backlog from last_fetched_at. Leaving it stale
+        would offer the same declined weeks again on the next pause.
+        """
+        connector("telegram:chan:900")
+        source = _paused_source()
+        before = source.last_fetched_at
+
+        await _resume(source, "from_now")
+
+        assert source.last_fetched_at > before
+
+
+class TestUnreachableSource:
+    async def test_a_connector_that_cannot_be_built_leaves_the_source_paused(self, monkeypatch):
+        """A revoked connection is not a reason to guess a cursor — or to catch up."""
+        def _explode(source):
+            raise RuntimeError("no active platform connection")
+
+        monkeypatch.setattr(resume_service, "_build_connector", _explode)
+        source = _paused_source()
+
+        with pytest.raises(NewestEvidenceUnknown):
+            await resume_service.resume_source(source=source, mode="from_now")
+
+        assert source.is_paused is True
+        assert source.last_fetched_id == CURSOR

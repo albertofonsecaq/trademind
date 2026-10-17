@@ -50,7 +50,7 @@ class BaseConnector(ABC):
 
     @abstractmethod
     async def latest_stable_id(self) -> str | None:
-        """The newest available item's stable_id, without ingesting anything.
+        """The newest available evidence's stable_id, without ingesting anything.
 
         Used to skip a backlog: the fetch cursor is moved to this id, so the
         next poll starts after it. Returns None when the source has nothing to

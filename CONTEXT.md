@@ -56,6 +56,14 @@ _Avoid_: Import, sync, historical load
 A source the user has deliberately stopped fetching from. It keeps its evidence and its fetch position, so resuming continues where it stopped; only future fetching is halted. Distinct from the automatic pausing of deferrable work when a budget is exhausted.
 _Avoid_: Disabled, inactive, archived, muted
 
+**Resume mode**:
+How a paused source starts fetching again, chosen by the user every time: _catch up_ ingests the backlog from where the pause stopped, _from now_ moves the fetch position to the source's newest content and declines the gap. Declining a backlog never deletes anything already ingested.
+_Avoid_: Resume strategy, catch-up policy, skip
+
+**Backlog**:
+The content a paused source has published since it was last fetched — what catching up would ingest. Measured from the fetch position, not from the pause.
+_Avoid_: Queue, pending items, lag
+
 ### Knowledge
 
 **Trade idea**:

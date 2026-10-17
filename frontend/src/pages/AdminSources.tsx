@@ -13,6 +13,7 @@ type Source = {
   last_fetched_at: string | null; platform_connection_id: string | null;
   backfill_start_date: string | null; is_paused: boolean; paused_at: string | null;
 };
+type ResumeMode = "catch_up" | "from_now";
 type BackfillJob = {
   id: string; status: string; items_ingested: number;
   date_range_start: string; date_range_end: string | null;
@@ -80,18 +81,32 @@ function PausedNotes({ source, error }: { source: Source; error?: string }) {
 
 function ResumeDialog({ source, busy, onChoose, onCancel }: {
   source: Source; busy: boolean;
-  onChoose: (mode: "catch_up" | "from_now") => void; onCancel: () => void;
+  onChoose: (mode: ResumeMode) => void; onCancel: () => void;
 }) {
   const { t } = useTranslation();
   const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : null);
+
+  // The choice is only informed if the cost is legible, so say how much backlog
+  // is waiting rather than printing two timestamps and leaving the subtraction
+  // to the reader.
+  const span = (iso: string | null): string | null => {
+    if (!iso) return null;
+    const minutes = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+    if (minutes >= 1440) return t("sources.resumeSpanDays", { count: Math.round(minutes / 1440) });
+    if (minutes >= 60) return t("sources.resumeSpanHours", { count: Math.round(minutes / 60) });
+    return t("sources.resumeSpanMinutes", { count: minutes });
+  };
+
   const pausedSince = when(source.paused_at);
+  const pausedSpan = span(source.paused_at);
   const fetchedSince = when(source.last_fetched_at);
+  const fetchedSpan = span(source.last_fetched_at);
 
   const choice = (
-    mode: "catch_up" | "from_now", label: string, hint: string,
+    mode: ResumeMode, primary: boolean, label: string, hint: string,
   ) => (
     <div style={{ marginTop: "0.6rem" }}>
-      <button style={btn(mode === "catch_up", false, busy)} disabled={busy} onClick={() => onChoose(mode)}>
+      <button style={btn(primary, false, busy)} disabled={busy} onClick={() => onChoose(mode)}>
         {label}
       </button>
       <p style={{ margin: "0.25rem 0 0", fontSize: "0.77rem", color: "#666" }}>{hint}</p>
@@ -103,18 +118,18 @@ function ResumeDialog({ source, busy, onChoose, onCancel }: {
       <h4 style={{ margin: "0 0 0.35rem", fontSize: "0.9rem", color: "#1a1a2e" }}>{t("sources.resumeTitle")}</h4>
       {/* The backlog is what makes the choice informed: an hour paused and three
           weeks paused cost very different amounts to catch up on. */}
-      {pausedSince && (
-        <p style={{ margin: 0, fontSize: "0.8rem", color: "#555" }}>
-          {t("sources.resumePausedFor", { since: pausedSince })}
-        </p>
-      )}
+      <p style={{ margin: 0, fontSize: "0.8rem", color: "#555" }}>
+        {pausedSince && pausedSpan
+          ? t("sources.resumePausedSince", { span: pausedSpan, since: pausedSince })
+          : t("sources.resumePausedUnknown")}
+      </p>
       <p style={{ margin: "0.15rem 0 0", fontSize: "0.8rem", color: "#555" }}>
-        {fetchedSince
-          ? t("sources.resumeBacklog", { since: fetchedSince })
+        {fetchedSince && fetchedSpan
+          ? t("sources.resumeBacklog", { span: fetchedSpan, since: fetchedSince })
           : t("sources.resumeBacklogNever")}
       </p>
-      {choice("catch_up", t("sources.resumeCatchUp"), t("sources.resumeCatchUpHint"))}
-      {choice("from_now", t("sources.resumeFromNow"), t("sources.resumeFromNowHint"))}
+      {choice("catch_up", true, t("sources.resumeCatchUp"), t("sources.resumeCatchUpHint"))}
+      {choice("from_now", false, t("sources.resumeFromNow"), t("sources.resumeFromNowHint"))}
       <button style={{ ...btn(false), marginTop: "0.7rem" }} disabled={busy} onClick={onCancel}>
         {t("common.cancel")}
       </button>
@@ -455,7 +470,7 @@ export function AdminSources() {
     }
   };
 
-  const resume = async (source: Source, mode: "catch_up" | "from_now") => {
+  const resume = async (source: Source, mode: ResumeMode) => {
     if (!workspaceId) return;
     setPausingId(source.id);
     setPauseErrors((prev) => ({ ...prev, [source.id]: "" }));
@@ -463,13 +478,8 @@ export function AdminSources() {
       await api.post(`/workspaces/${workspaceId}/sources/${source.id}/resume`, { mode });
       setResumingId(null);
       await load();
-    } catch (err: unknown) {
-      setPauseErrors((prev) => ({
-        ...prev,
-        [source.id]:
-          (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-          ?? t("sources.resumeFailed"),
-      }));
+    } catch {
+      setPauseErrors((prev) => ({ ...prev, [source.id]: t("sources.resumeFailed") }));
     } finally {
       setPausingId(null);
     }

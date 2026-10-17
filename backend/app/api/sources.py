@@ -3,7 +3,6 @@ Source management (tracked channels) + backfill job control.
 """
 import uuid
 from datetime import datetime, timezone
-from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -19,12 +18,8 @@ from app.models.workspace_member import WorkspaceMember
 from app.models.source_config import SourceConfig
 from app.models.backfill_job import BackfillJob
 from app.models.platform_connection import PlatformConnection
-from app.services.source_resume_service import (
-    CATCH_UP,
-    FROM_NOW,
-    LatestItemUnknown,
-    resume_source as _resume_source,
-)
+from app.services import source_resume_service as resume_service
+from app.services.source_resume_service import NewestEvidenceUnknown, ResumeMode
 
 router = APIRouter(prefix="/workspaces", tags=["sources"])
 
@@ -83,7 +78,7 @@ class SourceOut(BaseModel):
 class ResumeRequest(BaseModel):
     # No default: a resume that picks for the user is the thing #12 exists to
     # prevent, so an omitted mode is a 422, not a guess.
-    mode: Literal["catch_up", "from_now"]
+    mode: ResumeMode
 
 
 class BackfillRequest(BaseModel):
@@ -276,14 +271,14 @@ async def resume_source(
         raise HTTPException(status_code=409, detail="Source is not paused.")
 
     try:
-        await _resume_source(db, source=source, mode=payload.mode)
-    except LatestItemUnknown:
+        await resume_service.resume_source(source=source, mode=payload.mode)
+    except NewestEvidenceUnknown:
         # Left paused on purpose: guessing a cursor here could re-ingest the
         # whole history, and ignoring the request would be a silent catch-up.
         raise HTTPException(
             status_code=409,
             detail=(
-                "Could not read the newest item for this source, so it stays paused. "
+                "Could not read the newest content for this source, so it stays paused. "
                 "Try again, or resume with catch_up."
             ),
         )

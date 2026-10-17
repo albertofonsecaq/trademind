@@ -16,8 +16,8 @@ and it only ever moves forward:
   workspace already holds stays exactly as it is.
 """
 import logging
-
-from sqlalchemy.ext.asyncio import AsyncSession
+from datetime import datetime
+from typing import Literal
 
 from app.models.source_config import SourceConfig
 from app.services.ingestion_pipeline import _build_connector
@@ -26,29 +26,84 @@ log = logging.getLogger(__name__)
 
 CATCH_UP = "catch_up"
 FROM_NOW = "from_now"
-RESUME_MODES = (CATCH_UP, FROM_NOW)
+# One definition of the set, imported by the API so the two cannot drift.
+ResumeMode = Literal["catch_up", "from_now"]
 
 
-class LatestItemUnknown(Exception):
+class NewestEvidenceUnknown(Exception):
     """
-    The connector could not name the source's newest item, so there is nothing
-    safe to move the cursor to. Clearing it instead would re-ingest the source's
-    entire history, which is the opposite of what FROM_NOW was asked to do.
+    We could not learn the source's newest item — the connector said nothing, or
+    could not be reached at all. There is then nothing safe to move the cursor
+    to: clearing it would re-ingest the source's entire history, the opposite of
+    what FROM_NOW asked for. Callers leave the source paused.
     """
 
 
-async def resume_source(db: AsyncSession, *, source: SourceConfig, mode: str) -> None:
+def _telegram_message_id(stable_id: str | None) -> int | None:
+    """The numeric id inside a telegram cursor, when it is one."""
+    if not stable_id or not stable_id.startswith("telegram:"):
+        return None
+    parts = stable_id.split(":")
+    if len(parts) < 3:
+        return None
+    try:
+        return int(parts[2])
+    except ValueError:
+        return None
+
+
+def _moves_backwards(current: str | None, latest: str) -> bool:
+    """
+    True when the 'newest' item is actually behind the cursor we already hold.
+
+    It can happen: the head of a Telegram channel gets deleted, or a backfill
+    left a cursor ahead of what the channel will now report. Writing it anyway
+    would re-walk the very window the user just declined, so we keep the cursor
+    instead. Only telegram ids are comparable; for anything else we trust the
+    connector's "newest".
+    """
+    current_id = _telegram_message_id(current)
+    latest_id = _telegram_message_id(latest)
+    if current_id is None or latest_id is None:
+        return False
+    return latest_id <= current_id
+
+
+async def resume_source(*, source: SourceConfig, mode: ResumeMode) -> None:
     """Clear the paused state, moving the cursor only if the mode says to."""
     if mode == FROM_NOW:
-        connector = _build_connector(source)
-        latest = await connector.latest_stable_id()
+        try:
+            connector = _build_connector(source)
+            latest = await connector.latest_stable_id()
+        except Exception as e:
+            # A revoked connection or an unreachable platform is not a reason to
+            # guess a cursor, and silently catching up would spend the money the
+            # user just declined. Stay paused and say so.
+            log.warning(
+                "Cannot read newest item for source %s: %s", source.identifier, e, exc_info=True
+            )
+            raise NewestEvidenceUnknown(source.identifier) from e
         if not latest:
-            raise LatestItemUnknown(source.identifier)
-        log.info(
-            "Resuming source %s from now: cursor %s → %s",
-            source.identifier, source.last_fetched_id, latest,
-        )
-        source.last_fetched_id = latest
+            raise NewestEvidenceUnknown(source.identifier)
+
+        if _moves_backwards(source.last_fetched_id, latest):
+            log.info(
+                "Resuming source %s from now: keeping cursor %s, newest %s is not ahead of it",
+                source.identifier, source.last_fetched_id, latest,
+            )
+        else:
+            log.info(
+                "Resuming source %s from now: cursor %s → %s",
+                source.identifier, source.last_fetched_id, latest,
+            )
+            source.last_fetched_id = latest
+
+        # The cursor now sits at the newest item, so nothing before this moment
+        # is pending any more. last_fetched_at is what the resume prompt measures
+        # the backlog from, so leaving it stale would re-offer the window the
+        # user just declined — and it also spaces the next poll by one cadence,
+        # which is right when there is nothing new to collect.
+        source.last_fetched_at = datetime.utcnow()
 
     source.is_paused = False
     source.paused_at = None
