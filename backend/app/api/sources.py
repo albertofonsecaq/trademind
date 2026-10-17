@@ -49,6 +49,8 @@ class SourceOut(BaseModel):
     fetch_cadence: str
     content_filters: dict
     backfill_start_date: datetime | None
+    is_paused: bool
+    paused_at: datetime | None
     last_fetched_at: datetime | None
     platform_connection_id: uuid.UUID | None
     created_at: datetime
@@ -130,6 +132,7 @@ class SourceUpdateRequest(BaseModel):
     fetch_cadence: str | None = None
     content_filters: dict | None = None
     backfill_start_date: datetime | None = None
+    is_paused: bool | None = None
 
 
 @router.patch("/{workspace_id}/sources/{source_id}", response_model=SourceOut)
@@ -157,6 +160,12 @@ async def update_source(
         source.content_filters = payload.content_filters
     if payload.backfill_start_date is not None:
         source.backfill_start_date = payload.backfill_start_date.replace(tzinfo=None)
+    if payload.is_paused is not None and payload.is_paused != source.is_paused:
+        # last_fetched_id / last_fetched_at are deliberately left alone: the cursor
+        # is what lets a resumed source continue exactly where it stopped, so a
+        # pause is never a reset (#10).
+        source.is_paused = payload.is_paused
+        source.paused_at = datetime.utcnow() if payload.is_paused else None
     await db.commit()
     await db.refresh(source)
     return source
@@ -201,6 +210,11 @@ async def trigger_fetch(
     source = result.scalar_one_or_none()
     if not source:
         raise HTTPException(status_code=404, detail="Source not found")
+    if source.is_paused:
+        raise HTTPException(
+            status_code=409,
+            detail="Source is paused. Resume it before fetching.",
+        )
 
     background_tasks.add_task(_run_fetch_bg, source_id=source_id, workspace_id=workspace_id)
     return {"message": "Fetch triggered in background"}
@@ -221,8 +235,14 @@ async def trigger_backfill(
             SourceConfig.id == source_id, SourceConfig.workspace_id == workspace_id
         )
     )
-    if not result.scalar_one_or_none():
+    source = result.scalar_one_or_none()
+    if not source:
         raise HTTPException(status_code=404, detail="Source not found")
+    if source.is_paused:
+        raise HTTPException(
+            status_code=409,
+            detail="Source is paused. Resume it before backfilling.",
+        )
 
     job = BackfillJob(
         source_config_id=source_id,

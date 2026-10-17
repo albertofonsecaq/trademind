@@ -1,11 +1,13 @@
 """
 Periodic Telegram polling worker.
 Runs inside the FastAPI process via APScheduler.
-Checks all active source_configs every minute and fetches new messages
-if their fetch_cadence interval has elapsed.
+Checks every source_config each minute and fetches new messages if its
+fetch_cadence interval has elapsed. Sources the user has paused are skipped,
+as are workspaces whose payment has lapsed or whose budget is exhausted.
 """
 import logging
 from datetime import datetime, timezone, timedelta
+from typing import NamedTuple
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
@@ -16,6 +18,24 @@ from app.models.source_config import SourceConfig
 from app.models.workspace import Workspace
 
 log = logging.getLogger(__name__)
+
+
+class _PlannedSource(NamedTuple):
+    """
+    One source plus every attribute this tick needs, read before any fetching
+    starts: the pipeline shares our session, and re-reading an expired attribute
+    mid-loop raises MissingGreenlet, killing the tick and starving every later
+    source (#2).
+    """
+    source: SourceConfig
+    source_type: str
+    fetch_cadence: str
+    last_fetched_at: datetime | None
+    identifier: str
+    workspace_id: object
+    connection_status: str | None
+    is_paused: bool
+
 
 _CADENCE_MAP = {
     "realtime": timedelta(minutes=1),
@@ -35,33 +55,43 @@ async def _poll_all_sources():
         sources = result.scalars().all()
 
         now = datetime.now(timezone.utc)
-        # Snapshot what the loop needs before running any source: the pipeline shares
-        # this session, and an expired attribute re-read mid-loop raises
-        # MissingGreenlet, killing the whole tick and starving every later source (#2).
         plan = [
-            (
-                src,
-                src.source_type,
-                src.fetch_cadence,
-                src.last_fetched_at,
-                src.identifier,
-                src.workspace_id,
-                (src.connection.status if src.connection else None),
+            _PlannedSource(
+                source=src,
+                source_type=src.source_type,
+                fetch_cadence=src.fetch_cadence,
+                last_fetched_at=src.last_fetched_at,
+                identifier=src.identifier,
+                workspace_id=src.workspace_id,
+                connection_status=(src.connection.status if src.connection else None),
+                is_paused=src.is_paused,
             )
             for src in sources
         ]
 
-        for source, source_type, fetch_cadence, last, identifier, workspace_id, conn_status in plan:
+        for planned in plan:
+            source, source_type = planned.source, planned.source_type
+            identifier, workspace_id = planned.identifier, planned.workspace_id
+            last = planned.last_fetched_at
+
+            # Gate 0: paused by the user — checked first, so a paused source costs
+            # nothing: no connector, no workspace lookup, no relevance or
+            # distillation spend. Its fetch cursor is left untouched, so resuming
+            # continues exactly where it stopped (#10).
+            if planned.is_paused:
+                log.debug("Skipping source %s: paused", identifier)
+                continue
+
             # Telegram requires an active connection; YouTube only needs YOUTUBE_API_KEY
             if source_type == "telegram":
-                if conn_status != "active":
+                if planned.connection_status != "active":
                     continue
             elif source_type == "youtube":
                 from app.core.config import settings as _s
                 if not _s.YOUTUBE_API_KEY:
                     continue
 
-            cadence = _CADENCE_MAP.get(fetch_cadence, timedelta(hours=1))
+            cadence = _CADENCE_MAP.get(planned.fetch_cadence, timedelta(hours=1))
             if last and (now - last) < cadence:
                 continue
 

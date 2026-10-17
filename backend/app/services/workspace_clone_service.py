@@ -57,6 +57,10 @@ async def clone_workspace(
     ))
 
     # ── 3. Source configs (reset fetch state, no platform connection) ──────────
+    # Cloned sources start unpaused: a pause is the sending workspace owner's
+    # decision about their own ingestion, and it would be opaque to inherit it
+    # here. Nothing fetches until the receiving user attaches their own platform
+    # connection, which is already a deliberate gate (#10).
     sc_result = await db.execute(
         select(SourceConfig).where(SourceConfig.workspace_id == source_workspace_id)
     )
@@ -77,6 +81,8 @@ async def clone_workspace(
             fetch_cadence=sc.fetch_cadence,
             content_filters=sc.content_filters,
             backfill_start_date=None,
+            is_paused=False,
+            paused_at=None,
             last_fetched_id=None,
             last_fetched_at=None,
             created_by_user_id=target_user_id,

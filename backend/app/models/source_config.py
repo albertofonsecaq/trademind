@@ -1,8 +1,9 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, ForeignKey, func, Date
+from sqlalchemy import String, Boolean, ForeignKey, func, Date
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.sql import false as sa_false
 from app.core.database import Base
 
 
@@ -19,6 +20,10 @@ class SourceConfig(Base):
     # {text: true, image: false, video: false, url: false}
     content_filters: Mapped[dict] = mapped_column(JSONB, nullable=False, default=lambda: {"text": True, "image": False, "video": False, "url": False})
     backfill_start_date: Mapped[datetime | None] = mapped_column(nullable=True)
+    # Paused sources keep every row they ingested and their fetch cursor below:
+    # pausing only stops future fetching, so a resume continues where it stopped.
+    is_paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=sa_false())
+    paused_at: Mapped[datetime | None] = mapped_column(nullable=True)
     last_fetched_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_fetched_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
