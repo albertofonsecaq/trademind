@@ -232,7 +232,11 @@ class TelegramConnector(BaseConnector):
 
     # ── public interface ──────────────────────────────────────────────────────
 
-    async def fetch_new(self, since_id: str | None) -> AsyncIterator[RawMessage]:
+    async def fetch_new(
+        self, since_id: str | None, since_timestamp: datetime | None = None
+    ) -> AsyncIterator[RawMessage]:
+        # since_timestamp is unused on purpose: min_id is an exclusive numeric
+        # bound, so a deleted message costs this connector nothing (#19).
         min_id = 0
         if since_id:
             try:

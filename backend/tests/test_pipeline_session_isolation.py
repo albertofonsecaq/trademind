@@ -49,7 +49,9 @@ class _FakeSession:
         self.rollbacks += 1
 
     async def execute(self, *a, **kw):
-        return SimpleNamespace(scalar_one_or_none=lambda: None)
+        # scalar() answers the "newest stored content" query the pipeline makes
+        # to hand connectors a cursor fallback (#19)
+        return SimpleNamespace(scalar_one_or_none=lambda: None, scalar=lambda: None)
 
 
 def _msg(n: int) -> RawMessage:
@@ -72,7 +74,7 @@ def pipeline(monkeypatch):
     messages = [_msg(1), _msg(2), _msg(3)]
 
     class _Connector:
-        async def fetch_new(self, since_id=None):
+        async def fetch_new(self, since_id=None, since_timestamp=None):
             for m in messages:
                 yield m
 

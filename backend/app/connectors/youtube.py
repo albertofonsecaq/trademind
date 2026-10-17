@@ -267,30 +267,57 @@ class YouTubeConnector(BaseConnector):
                 pre_pipeline_model=settings.WHISPER_MODEL if float(chunk_whisper_cost) > 0 else None,
             )
 
-    async def fetch_new(self, since_id: str | None) -> AsyncIterator[RawMessage]:
+    async def fetch_new(
+        self, since_id: str | None, since_timestamp: datetime | None = None
+    ) -> AsyncIterator[RawMessage]:
         """
-        Fetch recent videos. Dedup is handled by the pipeline (stable_id check),
-        so we simply yield everything and let it skip already-ingested items.
-        since_id is used to skip videos published before the last processed one.
+        Fetch recent videos, from the cursor forward.
+
+        The cursor is a marker: the id of the last video processed, which has to
+        be found in the channel's current window for "everything after it" to
+        mean anything. Delete that video, make it private, or publish enough
+        videos to push it out of the window, and the marker is unfindable — this
+        used to skip the whole window and the source stopped ingesting silently,
+        for good (#19).
+
+        So a missing marker falls back to `since_timestamp`, the newest content
+        already stored for this source. A date cannot be deleted, and because
+        the bound is what we already hold, recovery pays for new videos only.
+        With neither a marker nor a bound, the window is fetched and the
+        pipeline's stable_id dedup absorbs anything already stored.
         """
         videos = await self._get_videos()
+        marker = self._video_id_from(since_id)
+        bound: datetime | None = None
 
-        # Extract the last-processed video_id from since_id ("youtube:{video_id}:...")
-        last_video_id = None
-        if since_id:
-            parts = since_id.split(":")
-            if len(parts) >= 2:
-                last_video_id = parts[1]
+        if marker and not any(v["video_id"] == marker for v in videos):
+            bound = to_naive_utc(since_timestamp)
+            log.warning(
+                "Cursor video %s is gone from %s's window; falling back to %s",
+                marker, self.channel_identifier, bound or "the whole window",
+            )
+            marker = None
 
-        for video in reversed(videos):  # oldest-first
-            if last_video_id and video["video_id"] == last_video_id:
-                last_video_id = None  # found the marker — yield everything after
+        for video in reversed(videos):                  # oldest first
+            if marker is not None:
+                # Still walking up to the marker; the marker video itself is
+                # already stored, so it is skipped too.
+                if video["video_id"] == marker:
+                    marker = None
                 continue
-            if last_video_id:
-                continue  # still before the marker
+            if bound is not None and self._parse_timestamp(video["published_at"]) <= bound:
+                continue
 
             async for msg in self._yield_video_chunks(video):
                 yield msg
+
+    @staticmethod
+    def _video_id_from(stable_id: str | None) -> str | None:
+        """The video id inside a cursor ("youtube:{video_id}:...")."""
+        if not stable_id:
+            return None
+        parts = stable_id.split(":")
+        return parts[1] if len(parts) >= 2 else None
 
     async def latest_stable_id(self) -> str | None:
         """
