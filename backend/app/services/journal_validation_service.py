@@ -15,7 +15,7 @@ This runs separately from trade_idea validation so the stats are distinct:
 from __future__ import annotations
 import logging
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import select

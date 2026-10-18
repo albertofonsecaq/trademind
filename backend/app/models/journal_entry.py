@@ -29,8 +29,8 @@ class JournalEntry(Base):
     mode: Mapped[str] = mapped_column(String(10), nullable=False, default="paper")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=now_utc)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), 
-        default=now_utc, server_default=func.now()
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now_utc, server_default=func.now()
     )
 
     broker_order: Mapped["BrokerOrder | None"] = relationship("BrokerOrder", back_populates="journal_entries")

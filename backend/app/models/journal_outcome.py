@@ -46,7 +46,7 @@ class JournalOutcome(Base):
     max_favorable_excursion: Mapped[Decimal | None] = mapped_column(Numeric(12, 6), nullable=True)
 
     data_source: Mapped[str] = mapped_column(String(50), nullable=False, default="manual")
-    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), 
-        default=now_utc, server_default=func.now()
+    checked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now_utc, server_default=func.now()
     )
     window_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
