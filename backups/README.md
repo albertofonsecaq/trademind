@@ -43,6 +43,7 @@ docker compose exec -T db dropdb -U trademind trademind_verify
 | --- | --- | --- | --- | --- |
 | `trademind-20261018-alembic016.dump` | 2026-10-18 | 016 | restored to a scratch database, 127 objects, 8,582 evidence / 1,274 ideas / 11,630 usage events | before #34, the first batch of #8 to change how stored timestamps are read |
 | `trademind-20261018-alembic016-pre35.dump` | 2026-10-18 | 016 | restored to a throwaway database, 8,582 evidence / 1,274 ideas / 11,630 usage events | before #35. Its own tables (cards, checks, plans, journal, orders) were all empty, so this dump protects the ingestion data rather than anything #35 touches |
+| `trademind-20261018-alembic016-pre36.dump` | 2026-10-18 | 016 | restored to a throwaway database, 2 users / 2 workspaces / 2 members / 11,630 usage events | before #36. Unlike #35, these tables hold data — the usage events the budget cap is computed from |
 
 ## Before changing how timestamps are stored or read
 

@@ -1,8 +1,9 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, Text, ForeignKey, func
+from sqlalchemy import DateTime, String, Text, ForeignKey, func
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
+from app.core.clock import now_utc
 from app.core.database import Base
 
 
@@ -17,6 +18,6 @@ class AdminAuditLog(Base):
     target_workspace_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     target_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    created_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow, server_default=func.now(), index=True
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), 
+        default=now_utc, server_default=func.now(), index=True
     )
