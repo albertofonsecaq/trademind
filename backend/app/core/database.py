@@ -18,6 +18,10 @@ engine = create_async_engine(
     # because the session reads it as UTC. Taking that from the server's default
     # means a differently configured server silently changes what stored values
     # mean, so it is pinned here.
+    #
+    # `server_settings` is asyncpg's spelling: swapping DATABASE_URL to another
+    # driver means translating this, not deleting it (psycopg2 wants
+    # `options="-c timezone=UTC"`, as alembic/env.py does).
     connect_args={"server_settings": {"timezone": "UTC"}},
 )
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)

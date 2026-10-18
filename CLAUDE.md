@@ -14,6 +14,4 @@ The five canonical triage roles, using their default label strings. See `docs/ag
 
 Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 
-Decisions recorded so far:
-
-- [ADR 1: timestamps are timezone-aware UTC](docs/adr/0001-timestamps-are-aware-utc.md) — and connectors are the only place a naive value is correct.
+`docs/adr/README.md` says how an ADR here is written; read the ones touching the area you are changing before changing it.

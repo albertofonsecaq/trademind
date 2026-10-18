@@ -26,8 +26,9 @@ about time. Comparing a connector's naive timestamp against a bound read from
 the database raised `TypeError` (#4), fixed at that boundary with a conversion
 helper. Both are the same root cause one layer apart.
 
-There are 29 `datetime.utcnow()` calls across 12 files. Each returns a naive
-value, and `utcnow()` is deprecated in 3.12.
+The write side is larger than it looks: 29 `datetime.utcnow()` calls across 12
+files, plus 21 models whose columns default to `datetime.utcnow` — 50 places
+producing a naive value, and `utcnow()` is deprecated in 3.12.
 
 ## Decision
 
@@ -52,16 +53,18 @@ request through the ORM to the column and back without conversion. Comparisons
 against market-data timestamps and Stripe period boundaries — both aware —
 stop being accidents.
 
-The session time zone stops being load-bearing. It is set explicitly on the
-engine so a differently configured server cannot change the meaning of stored
-data, and a database-backed test asserts it (#32), so the assumption fails
-loudly rather than silently.
+The session time zone stops being load-bearing. Both engines — the
+application's and the one Alembic runs migrations through — state it rather than
+inheriting it, so a differently configured server cannot change what a naive
+value means on the way in. #32 adds a database-backed test asserting it, so that
+the assumption will fail loudly rather than silently.
 
 This is a wide change: 36 columns across 18 models, and the writers that touch
-them. It is sequenced as expand–contract in #8 — the convention and the clock
-first, then one batch of models per domain area, then the shims are deleted and
-a test asserts no model can declare a bare timestamp again. Each batch keeps
-the suite green, because a model's reads and its writers move together.
+them. It cannot land as one green commit, so #8 sequences it as expand–contract;
+how it is broken up is that issue's business, not this decision's. What the
+decision asks of each step is only this: a model's reads and its writers move
+together, because a model that returns aware values breaks any arithmetic still
+using a naive now.
 
 **No migration is required and none should be written.** The columns are
 already `timestamptz`; this makes the mapping tell the truth about them. Any
