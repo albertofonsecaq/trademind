@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from sqlalchemy.orm import selectinload
 
@@ -20,6 +20,7 @@ from app.models import backfill_job as job_status
 from app.models.backfill_job import BackfillJob
 from app.models.platform_connection import PlatformConnection
 from app.services import source_resume_service as resume_service
+from app.core.clock import as_utc, now_utc
 from app.core.llm_errors import is_fatal_for_run, safe_failure_summary
 from app.services.ingestion_gate import SOURCE_PAUSED, WORKSPACE_PAUSED, blocked_reason
 from app.services.source_resume_service import NewestEvidenceUnknown, ResumeMode
@@ -73,7 +74,23 @@ def _assert_not_paused(source: SourceConfig):
         raise HTTPException(status_code=409, detail=_PAUSE_DETAIL[SOURCE_PAUSED])
 
 
-class SourceCreateRequest(BaseModel):
+class _NormalizesTimestamps(BaseModel):
+    """
+    Every datetime a client sends is read as aware UTC.
+
+    A payload without an offset parses as naive, and a naive value written to a
+    `timestamptz` column is read in the *server's* local time zone — so the same
+    request would store a different instant depending on where the process runs.
+    Normalizing here keeps the meaning these fields have always had (ADR 1).
+    """
+
+    @field_validator("*", mode="after")
+    @classmethod
+    def _as_utc(cls, value):
+        return as_utc(value) if isinstance(value, datetime) else value
+
+
+class SourceCreateRequest(_NormalizesTimestamps):
     source_type: str
     identifier: str
     label: str | None = None
@@ -106,7 +123,7 @@ class ResumeRequest(BaseModel):
     mode: ResumeMode
 
 
-class BackfillRequest(BaseModel):
+class BackfillRequest(_NormalizesTimestamps):
     date_range_start: datetime
     date_range_end: datetime | None = None
 
@@ -154,7 +171,7 @@ async def add_source(
         label=payload.label,
         fetch_cadence=payload.fetch_cadence,
         content_filters=payload.content_filters,
-        backfill_start_date=payload.backfill_start_date.replace(tzinfo=None) if payload.backfill_start_date else None,
+        backfill_start_date=payload.backfill_start_date,
         created_by_user_id=current_user.id,
     )
     db.add(source)
@@ -176,7 +193,7 @@ async def list_sources(
     return result.scalars().all()
 
 
-class SourceUpdateRequest(BaseModel):
+class SourceUpdateRequest(_NormalizesTimestamps):
     label: str | None = None
     fetch_cadence: str | None = None
     content_filters: dict | None = None
@@ -208,7 +225,7 @@ async def update_source(
     if payload.content_filters is not None:
         source.content_filters = payload.content_filters
     if payload.backfill_start_date is not None:
-        source.backfill_start_date = payload.backfill_start_date.replace(tzinfo=None)
+        source.backfill_start_date = payload.backfill_start_date
     if payload.is_paused is not None:
         if not payload.is_paused:
             # Resuming needs a mode, and this field cannot carry one (#12).
@@ -221,7 +238,7 @@ async def update_source(
         # pause is never a reset (#10).
         if not source.is_paused:
             source.is_paused = True
-            source.paused_at = datetime.utcnow()
+            source.paused_at = now_utc()
     await db.commit()
     await db.refresh(source)
     return source
@@ -339,8 +356,8 @@ async def trigger_backfill(
     job = BackfillJob(
         source_config_id=source_id,
         workspace_id=workspace_id,
-        date_range_start=payload.date_range_start.replace(tzinfo=None),
-        date_range_end=payload.date_range_end.replace(tzinfo=None) if payload.date_range_end else None,
+        date_range_start=payload.date_range_start,
+        date_range_end=payload.date_range_end,
         status=job_status.QUEUED,
         triggered_by_user_id=current_user.id,
     )
@@ -449,7 +466,7 @@ async def _run_backfill_bg(job_id: uuid.UUID):
                 log.info("Cancelling backfill job %s: %s", job_id, message)
                 job.status = job_status.CANCELLED
                 job.error_message = message
-                job.completed_at = datetime.utcnow()
+                job.completed_at = now_utc()
                 await db.commit()
                 return
 
@@ -511,7 +528,7 @@ async def _run_backfill_bg(job_id: uuid.UUID):
                     job.error_message = first_failure[:900]
             job.items_ingested = count
             job.items_failed = failed
-            job.completed_at = datetime.utcnow()
+            job.completed_at = now_utc()
             log.info(
                 "Backfill job %s %s: %d ingested, %d failed",
                 job_id, job.status, count, failed,

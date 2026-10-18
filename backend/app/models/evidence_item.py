@@ -1,8 +1,9 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, ForeignKey, func, Text, Float, Boolean, UniqueConstraint
+from sqlalchemy import DateTime, String, ForeignKey, func, Text, Float, Boolean, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from app.core.clock import now_utc
 from app.core.database import Base
 
 
@@ -25,8 +26,8 @@ class EvidenceItem(Base):
     # should be re-ingested — distinct from a genuine is_on_topic=False rejection.
     needs_reprocessing: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     source_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    message_timestamp: Mapped[datetime | None] = mapped_column(nullable=True)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
+    message_timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now())
 
     source: Mapped["SourceConfig"] = relationship("SourceConfig", back_populates="evidence_items")
     trade_ideas: Mapped[list["TradeIdea"]] = relationship("TradeIdea", back_populates="evidence_item")

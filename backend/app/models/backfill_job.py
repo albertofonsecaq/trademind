@@ -1,9 +1,10 @@
 import uuid
 from datetime import datetime, timezone
 from typing import Literal
-from sqlalchemy import String, ForeignKey, func, Integer
+from sqlalchemy import DateTime, String, ForeignKey, func, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from app.core.clock import now_utc
 from app.core.database import Base
 
 
@@ -26,8 +27,8 @@ class BackfillJob(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     source_config_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("source_configs.id"), nullable=False)
     workspace_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("workspaces.id"), nullable=False)
-    date_range_start: Mapped[datetime] = mapped_column(nullable=False)
-    date_range_end: Mapped[datetime | None] = mapped_column(nullable=True)
+    date_range_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    date_range_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
     items_ingested: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # Counted so the row can be read on its own: "completed, 1043 ingested" said
@@ -35,7 +36,7 @@ class BackfillJob(Base):
     items_failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     error_message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     triggered_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
-    completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     source: Mapped["SourceConfig"] = relationship("SourceConfig", back_populates="backfill_jobs")

@@ -2,8 +2,14 @@
 Regression tests for #4 — fetch_range crashed on tz-aware bounds.
 
 Every timestamp column is timestamptz, so bounds read back from the DB arrive
-aware, while connectors work in naive UTC. Comparing the two raised TypeError
-and made the backfill endpoint unusable.
+aware. Comparing those against a connector's own timestamps raised TypeError and
+made the backfill endpoint unusable.
+
+#4 fixed it by normalizing both sides down to naive. #34 reversed the direction:
+connectors now hand out aware UTC like everything else (ADR 1), and `to_naive_utc`
+survives only for a platform API that insists on naive. Either way the property
+these tests pin is the same — a connector accepts a bound whichever way it
+arrives, and comparisons inside it never mix the two.
 """
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -109,10 +115,14 @@ class TestFetchRangeBounds:
         Without this the suite could pass vacuously — the first draft of this
         test did exactly that, because stubbing the shared helper disabled both
         sides of the comparison at once.
+
+        The helper being stubbed is `to_aware_utc` now: #34 moved connectors to
+        hand out aware UTC (ADR 1), so normalizing the bounds *up* is what keeps
+        the comparison from mixing the two. The guarantee is the same one.
         """
         import app.connectors.telegram as telegram_module
 
-        monkeypatch.setattr(telegram_module, "to_naive_utc", lambda dt: dt)
+        monkeypatch.setattr(telegram_module, "to_aware_utc", lambda dt: dt)
         monkeypatch.setattr(connector, "_ts", lambda msg: msg.date.replace(tzinfo=None))
 
         with pytest.raises(TypeError, match="offset-naive and offset-aware"):

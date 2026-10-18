@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.clock import now_utc
 from app.connectors.base import FetchPosition, RawMessage
 from app.core.llm_errors import is_fatal_for_run
 from app.models.evidence_item import EvidenceItem
@@ -585,5 +586,5 @@ async def _store_position(
         src.last_fetched_id = position.stable_id
         src.last_fetched_item_at = position.item_at
         if touch_fetched_at:
-            src.last_fetched_at = datetime.utcnow()
+            src.last_fetched_at = now_utc()
     await db.commit()

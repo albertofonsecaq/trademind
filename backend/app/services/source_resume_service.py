@@ -19,6 +19,7 @@ import logging
 from datetime import datetime
 from typing import Literal
 
+from app.core.clock import now_utc
 from app.models.source_config import SourceConfig
 from app.services.ingestion_pipeline import _build_connector
 
@@ -109,7 +110,7 @@ async def resume_source(*, source: SourceConfig, mode: ResumeMode) -> None:
         # connector that later loses this marker — a deleted video — would fall
         # back to the newest *stored* evidence, behind the decline, and re-fetch
         # and re-pay transcription for exactly what the user chose to skip (#19).
-        declined_at = datetime.utcnow()
+        declined_at = now_utc()
         source.last_fetched_at = declined_at
         source.last_fetched_item_at = declined_at
 

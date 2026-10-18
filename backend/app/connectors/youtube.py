@@ -13,7 +13,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import AsyncIterator
 
-from app.connectors.base import BaseConnector, FetchPosition, RawMessage, to_naive_utc
+from app.connectors.base import BaseConnector, FetchPosition, RawMessage, to_aware_utc
+from app.core.clock import now_utc
 from app.core.config import settings
 
 log = logging.getLogger(__name__)
@@ -208,12 +209,12 @@ class YouTubeConnector(BaseConnector):
         return None, "0"
 
     def _parse_timestamp(self, published_at: str) -> datetime:
-        # Naive UTC, matching the connector contract — the API returns "…Z" (aware)
-        # but the fallback below is naive, so normalize both through one path.
+        # Aware UTC, which is what everything above the connectors uses (ADR 1).
+        # The API returns "…Z"; the fallback is now(), so both go through one path.
         try:
-            return to_naive_utc(datetime.fromisoformat(published_at.replace("Z", "+00:00")))
+            return to_aware_utc(datetime.fromisoformat(published_at.replace("Z", "+00:00")))
         except Exception:
-            return datetime.utcnow()
+            return now_utc()
 
     async def _yield_video_chunks(
         self, video: dict
@@ -291,7 +292,7 @@ class YouTubeConnector(BaseConnector):
         self._repaired = None
 
         if marker and not any(v["video_id"] == marker for v in videos):
-            bound = to_naive_utc(position.item_at)
+            bound = to_aware_utc(position.item_at)
             log.warning(
                 "Position video %s is gone from %s's window; falling back to %s",
                 marker, self.channel_identifier, bound or "the whole window",
@@ -354,8 +355,8 @@ class YouTubeConnector(BaseConnector):
         self, date_start: datetime, date_end: datetime | None
     ) -> AsyncIterator[RawMessage]:
         """Yield chunks for videos published within [date_start, date_end]."""
-        date_start = to_naive_utc(date_start)
-        date_end = to_naive_utc(date_end)
+        date_start = to_aware_utc(date_start)
+        date_end = to_aware_utc(date_end)
         videos = await self._get_videos()
 
         for video in reversed(videos):  # oldest-first

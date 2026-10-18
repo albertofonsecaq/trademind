@@ -7,22 +7,24 @@ ZONE. These tests record the consequences rather than the intention:
 
 - the column really is `timestamptz`, which is the premise everything else rests
   on;
-- a naive write round-trips and comes back aware, because the session's time zone
-  is UTC and Postgres reads the naive input in it;
-- an aware write is rejected outright, which is the DataError in #8.
+- an aware write round-trips and comes back as the same instant, which is what
+  #34 made true: the models now declare `DateTime(timezone=True)`, so a value
+  carrying its time zone can be written at all;
+- a naive write is now read in the *server's local* time zone, not as UTC. That
+  is the sharp edge of this change and the reason nothing above the connectors
+  may produce one (ADR 1), and the reason the API normalizes what clients send.
 
-All green now. #34 inverts the third one — that is the point: the behaviour
-change will be visible as a diff here rather than asserted in a commit message.
+The second assertion in this file used to be that an aware write *failed* —
+#8's DataError. #34 inverted it, which is exactly what this file is for.
 
 These need a real database, so they are skipped unless one is configured. See
 conftest.py for how to run them.
 """
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select, text
-from sqlalchemy.exc import DBAPIError
 
 from app.models.backfill_job import BackfillJob
 from app.models.source_config import SourceConfig
@@ -110,10 +112,15 @@ class TestTheSessionsTimeZone:
         assert tz in ("UTC", "Etc/UTC")
 
 
-class TestANaiveWrite:
+class TestAnAwareWrite:
     async def test_round_trips_without_losing_the_instant(self, db_session):
+        """
+        The #8 failure, now the normal path: this exact write raised
+        `DataError: can't subtract offset-naive and offset-aware datetimes`
+        before #34, because the mapping bound it as TIMESTAMP WITHOUT TIME ZONE.
+        """
         source = await _a_source(db_session)
-        job = _a_job(source, AN_INSTANT.replace(tzinfo=None))   # what the ORM binds today
+        job = _a_job(source, AN_INSTANT)                        # aware, unconverted
         db_session.add(job)
         await db_session.flush()
 
@@ -126,17 +133,91 @@ class TestANaiveWrite:
         assert stored.tzinfo is not None     # timestamptz, so it comes back aware
         assert stored == AN_INSTANT          # same instant, microseconds included
 
-
-class TestAnAwareWrite:
-    async def test_is_rejected_today(self, db_session):
+    async def test_survives_an_offset_that_is_not_utc(self, db_session):
         """
-        #8's error, pinned: the ORM binds TIMESTAMP WITHOUT TIME ZONE against a
-        timestamptz column, so an aware value cannot be sent at all. This is the
-        assertion #34 inverts — when it does, this class should assert the write
-        succeeds, not that a different error is raised.
+        An aware value need not be UTC — a client could send +05:30 — and what
+        is stored is the instant, not the wall clock it was written in.
         """
         source = await _a_source(db_session)
-        db_session.add(_a_job(source, AN_INSTANT))              # aware
+        in_kolkata = AN_INSTANT.astimezone(timezone(timedelta(hours=5, minutes=30)))
+        job = _a_job(source, in_kolkata)
+        db_session.add(job)
+        await db_session.flush()
 
-        with pytest.raises(DBAPIError, match="offset-naive and offset-aware"):
+        stored = (
+            await db_session.execute(
+                select(BackfillJob.date_range_start).where(BackfillJob.id == job.id)
+            )
+        ).scalar_one()
+
+        assert stored == AN_INSTANT
+
+
+class TestANaiveWrite:
+    async def test_no_longer_means_utc(self, db_session):
+        """
+        The hazard this change introduces, pinned so nobody rediscovers it in
+        production. Before #34 the mapping bound naive and Postgres read it in
+        the session's time zone, so naive meant UTC. Now the column is declared
+        aware, and the driver reads a naive value in the *machine's* local time
+        zone — so the same value stores a different instant depending on where
+        the process runs.
+
+        Worse than a constant offset: the value is read with the local zone's
+        rules *for its own date*, so a January timestamp written on a machine
+        currently in summer time shifts by the winter offset. Measured here
+        rather than assumed, because assuming it got this wrong first.
+
+        Nothing above the connectors may produce one. The API normalizes what
+        clients send (see TestTheApiBoundary), column defaults use now_utc, and
+        connectors hand out aware values.
+        """
+        source = await _a_source(db_session)
+        job = _a_job(source, AN_INSTANT.replace(tzinfo=None))
+        db_session.add(job)
+        await db_session.flush()
+
+        stored = (
+            await db_session.execute(
+                select(BackfillJob.date_range_start).where(BackfillJob.id == job.id)
+            )
+        ).scalar_one()
+
+        # The offset local rules give *that date*, not today's.
+        naive = AN_INSTANT.replace(tzinfo=None)
+        local_offset = naive.astimezone().utcoffset()
+
+        assert stored == AN_INSTANT - local_offset       # shifted by exactly that much
+        if local_offset:                                  # and so wrong, unless UTC
+            assert stored != AN_INSTANT
+
+
+class TestTheApiBoundary:
+    async def test_a_payload_without_an_offset_stores_the_same_instant_as_one_with(
+        self, db_session
+    ):
+        """
+        What protects the hazard above: a client sending `...T14:30:05` and one
+        sending `...T14:30:05+00:00` must store the same instant, whatever the
+        server's local time zone is.
+        """
+        from app.api.sources import BackfillRequest
+
+        source = await _a_source(db_session)
+        without_offset = BackfillRequest(date_range_start="2026-01-22T14:30:05.123456")
+        with_offset = BackfillRequest(date_range_start="2026-01-22T14:30:05.123456+00:00")
+
+        stored = []
+        for payload in (without_offset, with_offset):
+            job = _a_job(source, payload.date_range_start)
+            db_session.add(job)
             await db_session.flush()
+            stored.append(
+                (
+                    await db_session.execute(
+                        select(BackfillJob.date_range_start).where(BackfillJob.id == job.id)
+                    )
+                ).scalar_one()
+            )
+
+        assert stored[0] == stored[1] == AN_INSTANT
