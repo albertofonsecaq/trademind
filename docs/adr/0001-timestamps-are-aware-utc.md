@@ -37,11 +37,19 @@ database.** Models declare `DateTime(timezone=True)`, matching the schema they
 have always had. Code asks `app.core.clock.now_utc()` for the current instant
 rather than `datetime.utcnow()`.
 
-**Connectors are the single exception.** Some platform APIs genuinely speak
-naive UTC — Telethon's message dates, YouTube's `publishedAt` once parsed — so
-the connector layer converts at its own boundary with `to_naive_utc`, and that
-helper exists for that reason alone. A conversion anywhere else is a bug or a
-leftover, not a local decision.
+**Connectors are the single exception**, if a platform ever needs one. The
+connector layer is where a conversion belongs, and `to_naive_utc` exists for
+that and nothing else. A conversion anywhere else is a bug or a leftover, not a
+local decision.
+
+> **Correction, 2026-10-18 (#34).** As written, this section claimed Telethon's
+> message dates and YouTube's parsed `publishedAt` "genuinely speak naive UTC".
+> Implementing the first batch disproved it: Telethon hands back aware UTC, and
+> the YouTube timestamps are ours to parse, so neither platform we talk to
+> insists on naive. `to_naive_utc` therefore has no caller. The decision stands
+> — the exception is still the right shape for a platform that does need it, and
+> the connector layer is still where it would live — but the examples were
+> wrong, and whether to keep a caller-less helper is #37's to settle.
 
 Nothing above the connector boundary stores, compares or returns a naive
 timestamp.

@@ -86,7 +86,7 @@ def _paused_source() -> object:
         platform_connection_id=uuid.uuid4(),
         connection=SimpleNamespace(status="active"),
         is_paused=True,
-        paused_at=datetime(2026, 10, 1, 9, 0),
+        paused_at=datetime(2026, 10, 1, 9, 0, tzinfo=timezone.utc),
         last_fetched_id=CURSOR,
         # Aware, like the columns they stand in for (ADR 1): a naive fixture
         # here would raise the moment it met a value the service wrote.
