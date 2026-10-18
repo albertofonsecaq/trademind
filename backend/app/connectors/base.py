@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from typing import AsyncIterator
 import uuid
 
+from app.core.clock import as_utc
+
 
 def to_naive_utc(dt: datetime | None) -> datetime | None:
     """Coerce a datetime to naive UTC, for a platform API that requires one.
@@ -27,20 +29,10 @@ def to_naive_utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(timezone.utc).replace(tzinfo=None)
 
 
-def to_aware_utc(dt: datetime | None) -> datetime | None:
-    """Coerce a datetime to aware UTC, which is what the rest of the system uses.
-
-    Used on the way *in*: a platform's own timestamps, and the bounds a caller
-    hands a connector, which may be naive or aware depending on where they came
-    from. A naive value is read as UTC, which is what it has always meant here
-    (ADR 1). Normalizing at the boundary is why comparisons inside a connector
-    cannot raise on a naive-versus-aware mix (#4).
-    """
-    if dt is None:
-        return dt
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+# Reading a value *in* as aware UTC is the same operation wherever it happens,
+# so the connectors use the clock's rather than keeping a second copy of it.
+# Imported here because this is the layer whose contract it expresses.
+to_aware_utc = as_utc
 
 
 @dataclass(frozen=True)

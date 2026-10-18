@@ -15,6 +15,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from app.core.clock import now_utc
 from app.core.database import AsyncSessionLocal
 from app.models.source_config import SourceConfig
 from app.models.workspace import Workspace
@@ -57,7 +58,7 @@ async def _poll_all_sources():
         )
         sources = result.scalars().all()
 
-        now = datetime.now(timezone.utc)
+        now = now_utc()
         plan = [
             _PlannedSource(
                 source=src,

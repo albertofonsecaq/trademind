@@ -74,14 +74,18 @@ def _assert_not_paused(source: SourceConfig):
         raise HTTPException(status_code=409, detail=_PAUSE_DETAIL[SOURCE_PAUSED])
 
 
-class _NormalizesTimestamps(BaseModel):
+class _ReadsTimestampsAsUtc(BaseModel):
     """
     Every datetime a client sends is read as aware UTC.
 
     A payload without an offset parses as naive, and a naive value written to a
     `timestamptz` column is read in the *server's* local time zone — so the same
     request would store a different instant depending on where the process runs.
-    Normalizing here keeps the meaning these fields have always had (ADR 1).
+    Reading it as UTC here keeps the meaning these fields have always had (ADR 1).
+
+    Reaches top-level datetime fields only. A datetime inside a list or a nested
+    model would pass through untouched, so a request model that grows one needs
+    its own validator — there are none today.
     """
 
     @field_validator("*", mode="after")
@@ -90,7 +94,7 @@ class _NormalizesTimestamps(BaseModel):
         return as_utc(value) if isinstance(value, datetime) else value
 
 
-class SourceCreateRequest(_NormalizesTimestamps):
+class SourceCreateRequest(_ReadsTimestampsAsUtc):
     source_type: str
     identifier: str
     label: str | None = None
@@ -123,7 +127,7 @@ class ResumeRequest(BaseModel):
     mode: ResumeMode
 
 
-class BackfillRequest(_NormalizesTimestamps):
+class BackfillRequest(_ReadsTimestampsAsUtc):
     date_range_start: datetime
     date_range_end: datetime | None = None
 
@@ -193,7 +197,7 @@ async def list_sources(
     return result.scalars().all()
 
 
-class SourceUpdateRequest(_NormalizesTimestamps):
+class SourceUpdateRequest(_ReadsTimestampsAsUtc):
     label: str | None = None
     fetch_cadence: str | None = None
     content_filters: dict | None = None
