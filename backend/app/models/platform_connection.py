@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, ForeignKey, func, Text
+from sqlalchemy import DateTime, String, ForeignKey, func, Text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
@@ -18,7 +18,7 @@ class PlatformConnection(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     # Stores temporary auth state (phone_code_hash, phone) between OTP steps
     auth_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    connected_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    last_verified_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     sources: Mapped[list["SourceConfig"]] = relationship("SourceConfig", back_populates="connection")

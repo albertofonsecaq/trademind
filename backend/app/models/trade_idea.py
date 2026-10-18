@@ -1,9 +1,10 @@
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-from sqlalchemy import String, ForeignKey, func, Text, Numeric
+from sqlalchemy import DateTime, String, ForeignKey, func, Text, Numeric
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from app.core.clock import now_utc
 from app.core.database import Base
 
 
@@ -25,7 +26,7 @@ class TradeIdea(Base):
     original_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     author: Mapped[str | None] = mapped_column(String(255), nullable=True)
     channel: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    message_timestamp: Mapped[datetime | None] = mapped_column(nullable=True)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
+    message_timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now())
 
     evidence_item: Mapped["EvidenceItem"] = relationship("EvidenceItem", back_populates="trade_ideas")

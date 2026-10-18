@@ -13,7 +13,7 @@ Two failure modes matter here:
 Offline like the rest of the suite: the session and the connector are stubbed.
 """
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -88,8 +88,10 @@ def _paused_source() -> object:
         is_paused=True,
         paused_at=datetime(2026, 10, 1, 9, 0),
         last_fetched_id=CURSOR,
-        last_fetched_item_at=datetime(2026, 9, 28, 8, 0),
-        last_fetched_at=datetime(2026, 9, 28, 8, 0),
+        # Aware, like the columns they stand in for (ADR 1): a naive fixture
+        # here would raise the moment it met a value the service wrote.
+        last_fetched_item_at=datetime(2026, 9, 28, 8, 0, tzinfo=timezone.utc),
+        last_fetched_at=datetime(2026, 9, 28, 8, 0, tzinfo=timezone.utc),
     )
 
 

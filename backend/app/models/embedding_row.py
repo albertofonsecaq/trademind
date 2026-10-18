@@ -1,9 +1,10 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, ForeignKey, func, Text, UniqueConstraint, Index
+from sqlalchemy import DateTime, String, ForeignKey, func, Text, UniqueConstraint, Index
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from pgvector.sqlalchemy import Vector
+from app.core.clock import now_utc
 from app.core.database import Base
 from app.core.config import settings
 
@@ -22,4 +23,4 @@ class EmbeddingRow(Base):
     embedding: Mapped[list[float]] = mapped_column(Vector(settings.EMBEDDING_DIM), nullable=False)
     source_language: Mapped[str | None] = mapped_column(String(10), nullable=True)
     embedding_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now(), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now(), index=True)

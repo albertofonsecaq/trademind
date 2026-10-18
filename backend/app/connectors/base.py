@@ -10,16 +10,37 @@ import uuid
 
 
 def to_naive_utc(dt: datetime | None) -> datetime | None:
-    """Coerce a datetime to the connector contract: naive, UTC.
+    """Coerce a datetime to naive UTC, for a platform API that requires one.
 
-    Connectors speak naive UTC, but the timestamp columns these bounds come from
-    are timestamptz, so a value read back from the DB arrives tz-aware. Comparing
-    the two raises TypeError, so normalize at the boundary rather than asking
-    every caller to remember (#4).
+    This is the one place a naive timestamp is legitimate (ADR 1): some platform
+    APIs will not take an aware value. Everything above the connectors works in
+    aware UTC, so this converts on the way *out* to such an API and nowhere
+    else — a call to it anywhere above this layer is a leftover, not a decision.
+
+    As of #34 it has **no caller**: Telethon accepts aware datetimes and the
+    YouTube API's timestamps are parsed by us, so neither platform we talk to
+    insists on naive. Kept rather than deleted because the next connector may,
+    and because deleting shims is #37's job, not this batch's.
     """
     if dt is None or dt.tzinfo is None:
         return dt
     return dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def to_aware_utc(dt: datetime | None) -> datetime | None:
+    """Coerce a datetime to aware UTC, which is what the rest of the system uses.
+
+    Used on the way *in*: a platform's own timestamps, and the bounds a caller
+    hands a connector, which may be naive or aware depending on where they came
+    from. A naive value is read as UTC, which is what it has always meant here
+    (ADR 1). Normalizing at the boundary is why comparisons inside a connector
+    cannot raise on a naive-versus-aware mix (#4).
+    """
+    if dt is None:
+        return dt
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -56,7 +77,7 @@ class RawMessage:
     text: str | None
     author: str | None
     channel: str | None
-    timestamp: datetime
+    timestamp: datetime     # aware UTC — see ADR 1; connectors normalize on the way in
     source_type: str = "telegram"           # "telegram" | "youtube"
     content_type: str = "text"              # "text" | "video_transcript"
     language: str | None = None
@@ -108,6 +129,7 @@ class BaseConnector(ABC):
     ) -> AsyncIterator[RawMessage]:
         """Yield messages in [date_start, date_end] for backfill.
 
-        Bounds may be naive or aware; implementations normalize with to_naive_utc.
+        Bounds may be naive or aware depending on where the caller read them;
+        implementations normalize with to_aware_utc (ADR 1).
         """
         ...

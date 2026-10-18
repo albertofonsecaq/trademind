@@ -1,9 +1,10 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, Boolean, ForeignKey, func, Date
+from sqlalchemy import DateTime, String, Boolean, ForeignKey, func, Date
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import false as sa_false
+from app.core.clock import now_utc
 from app.core.database import Base
 
 
@@ -19,20 +20,20 @@ class SourceConfig(Base):
     fetch_cadence: Mapped[str] = mapped_column(String(20), nullable=False, default="hourly")
     # {text: true, image: false, video: false, url: false}
     content_filters: Mapped[dict] = mapped_column(JSONB, nullable=False, default=lambda: {"text": True, "image": False, "video": False, "url": False})
-    backfill_start_date: Mapped[datetime | None] = mapped_column(nullable=True)
+    backfill_start_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Paused only stops future fetching; the cursor below is left untouched.
     is_paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=sa_false())
     # When the pause started — what the resume prompt measures the backlog from.
-    paused_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # The fetch position: the platform's own handle on it, and the timestamp of
     # the content that handle names — recorded, not inferred, because a position
     # can advance without storing anything (#19). last_fetched_at is a different
     # thing: when we last ran, which drives the cadence.
     last_fetched_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    last_fetched_item_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    last_fetched_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    last_fetched_item_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now())
 
     connection: Mapped["PlatformConnection | None"] = relationship("PlatformConnection", back_populates="sources")
     backfill_jobs: Mapped[list["BackfillJob"]] = relationship("BackfillJob", back_populates="source")

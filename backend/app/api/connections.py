@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 
+from app.core.clock import now_utc
 from app.core.database import get_db
 from app.core.dependencies import get_current_user
 from app.core.encryption import encrypt_credential, decrypt_credential
@@ -143,8 +144,8 @@ async def telegram_verify(
     # Keep api_id/api_hash in auth_metadata (needed by the connector at fetch time)
     conn.auth_metadata = {"api_id": meta["api_id"], "api_hash": meta["api_hash"]}
     conn.status = "active"
-    conn.connected_at = datetime.utcnow()
-    conn.last_verified_at = datetime.utcnow()
+    conn.connected_at = now_utc()
+    conn.last_verified_at = now_utc()
     await db.commit()
     await db.refresh(conn)
 
@@ -233,8 +234,8 @@ async def telegram_check_auth(
     conn.session_credential = encrypt_credential(final_session)
     conn.auth_metadata = {"api_id": meta["api_id"], "api_hash": meta["api_hash"]}
     conn.status = "active"
-    conn.connected_at = datetime.utcnow()
-    conn.last_verified_at = datetime.utcnow()
+    conn.connected_at = now_utc()
+    conn.last_verified_at = now_utc()
     await db.commit()
     await db.refresh(conn)
     return conn

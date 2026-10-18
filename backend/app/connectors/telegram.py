@@ -16,7 +16,7 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.types import Message, MessageMediaPhoto, MessageMediaDocument
 
-from app.connectors.base import BaseConnector, FetchPosition, RawMessage, to_naive_utc
+from app.connectors.base import BaseConnector, FetchPosition, RawMessage, to_aware_utc
 
 _URL_RE = re.compile(r'https?://\S+')
 _MAX_VIDEO_BYTES = 100 * 1024 * 1024  # 100 MB
@@ -73,9 +73,9 @@ class TelegramConnector(BaseConnector):
         return {"message_id": msg.id, "views": getattr(msg, "views", None)}
 
     def _ts(self, msg: Message) -> datetime:
-        # Telegram dates are always UTC. Connectors speak naive UTC (see
-        # base.to_naive_utc); the timestamptz columns store it as UTC either way.
-        return to_naive_utc(msg.date)
+        # Telethon already hands back aware UTC; normalized anyway so this one
+        # place decides the contract rather than trusting the library (ADR 1).
+        return to_aware_utc(msg.date)
 
     # ── text ─────────────────────────────────────────────────────────────────
 
@@ -264,8 +264,10 @@ class TelegramConnector(BaseConnector):
     async def fetch_range(
         self, date_start: datetime, date_end: datetime | None
     ) -> AsyncIterator[RawMessage]:
-        date_start = to_naive_utc(date_start)
-        date_end = to_naive_utc(date_end)
+        # Bounds may arrive naive or aware depending on where the caller read
+        # them; normalized so the comparisons below cannot mix the two (#4).
+        date_start = to_aware_utc(date_start)
+        date_end = to_aware_utc(date_end)
         entity = self._resolve_identifier()
         async with self._client() as client:
             async for msg in client.iter_messages(
