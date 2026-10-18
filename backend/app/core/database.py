@@ -13,6 +13,12 @@ engine = create_async_engine(
     max_overflow=20,
     pool_timeout=10,
     pool_pre_ping=True,
+    # Stated rather than inherited. Every timestamp column is timestamptz, and
+    # until the models declare that (ADR 1, #8) a naive write is only correct
+    # because the session reads it as UTC. Taking that from the server's default
+    # means a differently configured server silently changes what stored values
+    # mean, so it is pinned here.
+    connect_args={"server_settings": {"timezone": "UTC"}},
 )
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
