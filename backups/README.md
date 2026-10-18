@@ -14,7 +14,7 @@ of the Telegram history behind it may no longer be fetchable at all.
 ```bash
 docker compose up -d db
 docker compose exec -T db pg_dump -U trademind -d trademind -Fc \
-  > backups/trademind-$(date +%Y%m%d)-alembic$(
+  > backups/trademind-$(date -u +%Y%m%d)-alembic$(
       docker compose exec -T db psql -U trademind -d trademind -tAc \
         'SELECT version_num FROM alembic_version' | tr -d '[:space:]'
     ).dump
@@ -42,6 +42,7 @@ docker compose exec -T db dropdb -U trademind trademind_verify
 | File | Taken | Revision | Verified | Why |
 | --- | --- | --- | --- | --- |
 | `trademind-20261018-alembic016.dump` | 2026-10-18 | 016 | restored to a scratch database, 127 objects, 8,582 evidence / 1,274 ideas / 11,630 usage events | before #34, the first batch of #8 to change how stored timestamps are read |
+| `trademind-20261018-alembic016-pre35.dump` | 2026-10-18 | 016 | restored to a throwaway database, 8,582 evidence / 1,274 ideas / 11,630 usage events | before #35. Its own tables (cards, checks, plans, journal, orders) were all empty, so this dump protects the ingestion data rather than anything #35 touches |
 
 ## Before changing how timestamps are stored or read
 

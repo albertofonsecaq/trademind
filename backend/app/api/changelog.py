@@ -6,13 +6,14 @@ Also exposes a combined recompute endpoint that chains mining → validation seq
 so a single button in the UI refreshes everything.
 """
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 
+from app.core.clock import as_utc
 from app.core.database import get_db, AsyncSessionLocal
 from app.core.dependencies import get_current_user
 from app.models.user import User
@@ -87,9 +88,32 @@ async def get_changelog(
                 confidence_tier=snap.get("confidence_tier"),
             ))
 
-    # Sort newest-first, cap at limit
-    entries.sort(key=lambda e: e.changed_at, reverse=True)
+    # Newest first, by instant rather than by the string it is stored as.
+    #
+    # These timestamps live inside a JSONB snapshot as whatever isoformat()
+    # produced at the time, so the history now holds both shapes: naive from
+    # before #35 and aware after it. Sorting the strings compares "+00:00"
+    # against ".123456" character by character, so two snapshots in the same
+    # second order by punctuation — silently, with no error to notice.
+    entries.sort(key=lambda e: _as_instant(e.changed_at), reverse=True)
     return entries[:limit]
+
+
+_LONG_AGO = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _as_instant(snapshot_at: str) -> datetime:
+    """
+    The instant a snapshot string names, whichever shape it is in.
+
+    A naive string is read as UTC, which is what it meant when it was written
+    (ADR 1). Anything unparseable sorts last rather than breaking the response:
+    a malformed snapshot is a reason to look at the data, not to fail a read.
+    """
+    try:
+        return as_utc(datetime.fromisoformat(snapshot_at))
+    except (TypeError, ValueError):
+        return _LONG_AGO
 
 
 @router.post("/{workspace_id}/recompute", response_model=RecomputeResult, status_code=202)

@@ -346,3 +346,172 @@ class TestEveryIngestionColumnRoundTrips:
 
         assert created.tzinfo is not None
         assert abs(created - datetime.now(timezone.utc)) < timedelta(minutes=5)
+
+
+class TestEveryKnowledgeColumnRoundTrips:
+    """
+    #35's twelve columns, written and read back against a real database.
+
+    The same reason as the ingestion batch above: the dangerous half of
+    declaring a column aware is a `default=` or `onupdate=` still producing a
+    naive value, which stores a shifted instant on every write and cannot be
+    seen by reading the models.
+
+    These tables are empty in the live database, so unlike #34 this batch had no
+    stored rows to put at risk — but the writes it enables start now.
+    """
+
+    async def _a_card(self, session):
+        """Returns the card and the user who owns the personal rows below it."""
+        from app.models.strategy_card import StrategyCard
+
+        source = await _a_source(session)
+        card = StrategyCard(
+            id=uuid.uuid4(), workspace_id=source.workspace_id,
+            setup_type="breakout", symbol_scope="EURUSD",
+            description_en="a breakout", description_es="una ruptura",
+            flowchart_spec={}, supporting_evidence=[], sample_size=0,
+            source_count=0, version=1, version_history=[],
+            validation_updated_at=AN_INSTANT, last_updated=AN_INSTANT,
+        )
+        session.add(card)
+        await session.flush()
+        return card, source.created_by_user_id
+
+    async def test_a_strategy_card(self, db_session):
+        from app.models.strategy_card import StrategyCard
+
+        card, _ = await self._a_card(db_session)
+
+        stored = (
+            await db_session.execute(
+                select(
+                    StrategyCard.validation_updated_at, StrategyCard.last_updated,
+                    StrategyCard.created_at,
+                ).where(StrategyCard.id == card.id)
+            )
+        ).one()
+
+        assert stored[:2] == (AN_INSTANT, AN_INSTANT)
+        assert stored[2].tzinfo is not None                  # the model's own default
+
+    async def test_an_outcome_check(self, db_session):
+        from app.models.outcome_check import OutcomeCheck
+        from app.models.trade_idea import TradeIdea
+        from app.models.evidence_item import EvidenceItem
+
+        source = await _a_source(db_session)
+        evidence = EvidenceItem(
+            id=uuid.uuid4(), workspace_id=source.workspace_id,
+            source_config_id=source.id, stable_id=f"telegram:chan:{uuid.uuid4().hex[:6]}",
+            source_type="telegram", type="text", content="x", confidence=1.0,
+        )
+        db_session.add(evidence)
+        await db_session.flush()
+        idea = TradeIdea(
+            id=uuid.uuid4(), evidence_item_id=evidence.id,
+            workspace_id=source.workspace_id,
+        )
+        db_session.add(idea)
+        await db_session.flush()
+
+        check = OutcomeCheck(
+            id=uuid.uuid4(), trade_idea_id=idea.id,
+            workspace_id=source.workspace_id, window_days=30,
+        )
+        db_session.add(check)
+        await db_session.flush()
+
+        checked_at = (
+            await db_session.execute(
+                select(OutcomeCheck.checked_at).where(OutcomeCheck.id == check.id)
+            )
+        ).scalar_one()
+
+        assert checked_at.tzinfo is not None
+        assert abs(checked_at - datetime.now(timezone.utc)) < timedelta(minutes=5)
+
+    async def test_a_plan_item_including_its_onupdate(self, db_session):
+        """
+        `onupdate=` is the one a model sweep is most likely to miss: it fires on
+        every write after the first, so a naive one would shift an instant each
+        time the row is touched.
+        """
+        from app.models.plan_item import PlanItem
+
+        card, user_id = await self._a_card(db_session)
+        item = PlanItem(
+            id=uuid.uuid4(), strategy_card_id=card.id,
+            user_id=user_id, status="watching",
+        )
+        db_session.add(item)
+        await db_session.flush()
+
+        item.status = "trading"
+        await db_session.flush()
+
+        stored = (
+            await db_session.execute(
+                select(PlanItem.created_at, PlanItem.updated_at).where(PlanItem.id == item.id)
+            )
+        ).one()
+
+        assert stored[0].tzinfo is not None and stored[1].tzinfo is not None
+        assert abs(stored[1] - datetime.now(timezone.utc)) < timedelta(minutes=5)
+
+    async def test_a_journal_entry_and_its_outcome(self, db_session):
+        from app.models.journal_entry import JournalEntry
+        from app.models.journal_outcome import JournalOutcome
+
+        card, user_id = await self._a_card(db_session)
+        entry = JournalEntry(
+            id=uuid.uuid4(), user_id=user_id, symbol="EURUSD",
+            action="long", entry=1, size=1, mode="paper", timestamp=AN_INSTANT,
+        )
+        db_session.add(entry)
+        await db_session.flush()
+
+        outcome = JournalOutcome(
+            id=uuid.uuid4(), journal_entry_id=entry.id, user_id=entry.user_id,
+            symbol="EURUSD", action="long", entry_price=1, window_days=30,
+        )
+        db_session.add(outcome)
+        await db_session.flush()
+
+        entry_stored = (
+            await db_session.execute(
+                select(JournalEntry.timestamp, JournalEntry.created_at)
+                .where(JournalEntry.id == entry.id)
+            )
+        ).one()
+        outcome_checked = (
+            await db_session.execute(
+                select(JournalOutcome.checked_at).where(JournalOutcome.id == outcome.id)
+            )
+        ).scalar_one()
+
+        assert entry_stored[0] == AN_INSTANT
+        assert entry_stored[1].tzinfo is not None
+        assert outcome_checked.tzinfo is not None
+
+    async def test_a_broker_order(self, db_session):
+        from app.models.broker_order import BrokerOrder
+
+        card, user_id = await self._a_card(db_session)
+        order = BrokerOrder(
+            id=uuid.uuid4(), user_id=user_id, symbol="EURUSD",
+            action="long", size=1, status="pending", mode="paper",
+            confirmed_at=AN_INSTANT,
+        )
+        db_session.add(order)
+        await db_session.flush()
+
+        stored = (
+            await db_session.execute(
+                select(BrokerOrder.confirmed_at, BrokerOrder.created_at, BrokerOrder.updated_at)
+                .where(BrokerOrder.id == order.id)
+            )
+        ).one()
+
+        assert stored[0] == AN_INSTANT
+        assert stored[1].tzinfo is not None and stored[2].tzinfo is not None
