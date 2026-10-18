@@ -20,3 +20,5 @@ The five canonical triage roles, using their default label strings. See `docs/ag
 ### Domain docs
 
 Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+`docs/adr/README.md` says how an ADR here is written; read the ones touching the area you are changing before changing it.

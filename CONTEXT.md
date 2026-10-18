@@ -4,6 +4,12 @@ A knowledge base that ingests trading content from public channels, extracts the
 
 ## Language
 
+### Time
+
+**Timestamp**:
+An instant, stored timezone-aware in UTC and compared as an instant rather than as a wall clock. A value without a time zone is not one: it cannot be compared with anything read out of the database, and it is only ever correct by accident of a session setting. Connectors are the single boundary where a naive value is legitimate, because some platform APIs speak that way. See `docs/adr/0001-timestamps-are-aware-utc.md`.
+_Avoid_: Naive datetime, local time, wall-clock time
+
 ### Tenancy and people
 
 **Workspace**:
