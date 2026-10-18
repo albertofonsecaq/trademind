@@ -26,6 +26,13 @@ frontend/dist/
 frontend/.vite/
 frontend/tsconfig.tsbuildinfo
 
+# Database dumps — irreplaceable data, far too large for git, and a dump of a
+# production-ish database has no business in version control anyway. See
+# backups/README.md.
+backups/*.dump
+backups/*.sql
+backups/*.gz
+
 # OS
 .DS_Store
 Thumbs.db
