@@ -1,9 +1,10 @@
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-from sqlalchemy import String, ForeignKey, func, Text, Integer, Numeric
+from sqlalchemy import DateTime, String, ForeignKey, func, Text, Integer, Numeric
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from app.core.clock import now_utc
 from app.core.database import Base
 
 
@@ -30,8 +31,8 @@ class StrategyCard(Base):
     # still_learning | developing | established
     confidence_tier: Mapped[str] = mapped_column(String(20), nullable=False, default="still_learning")
     walk_forward_result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    validation_updated_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    last_updated: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
+    validation_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_updated: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now())
 
     plan_items: Mapped[list["PlanItem"]] = relationship("PlanItem", back_populates="card")

@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 
+from app.core.clock import now_utc
 from app.core.database import get_db, AsyncSessionLocal
 from app.core.dependencies import get_current_user
 from app.models.user import User
@@ -127,7 +128,7 @@ async def propose_order(
         notes=payload.notes,
         status="proposed",
         mode="paper",
-        updated_at=datetime.utcnow(),
+        updated_at=now_utc(),
     )
     db.add(order)
     await db.commit()
@@ -173,8 +174,8 @@ async def confirm_order(
         raise HTTPException(status_code=409, detail=f"Order is already in '{order.status}' status")
 
     order.status = "confirmed"
-    order.confirmed_at = datetime.utcnow()
-    order.updated_at = datetime.utcnow()
+    order.confirmed_at = now_utc()
+    order.updated_at = now_utc()
     await db.commit()
     await db.refresh(order)
     return order
@@ -210,7 +211,7 @@ async def submit_order(
 
     order.alpaca_order_id = result.get("id")
     order.status = "submitted"
-    order.updated_at = datetime.utcnow()
+    order.updated_at = now_utc()
     await db.commit()
     await db.refresh(order)
     return order
@@ -235,7 +236,7 @@ async def cancel_order(
             raise HTTPException(status_code=503, detail=str(e))
 
     order.status = "cancelled"
-    order.updated_at = datetime.utcnow()
+    order.updated_at = now_utc()
     await db.commit()
     await db.refresh(order)
     return order
@@ -265,7 +266,7 @@ async def refresh_order_status(
 
     new_status = ALPACA_TERMINAL_MAP.get(alpaca_data.get("status", ""), "submitted")
     order.status = new_status
-    order.updated_at = datetime.utcnow()
+    order.updated_at = now_utc()
 
     if new_status == "filled":
         filled_price_str = alpaca_data.get("filled_avg_price")
@@ -289,7 +290,7 @@ async def refresh_order_status(
                 size=order.size,
                 mode=order.mode,
                 notes=order.notes,
-                timestamp=datetime.utcnow(),
+                timestamp=now_utc(),
             )
             db.add(journal)
 

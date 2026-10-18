@@ -24,6 +24,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.clock import now_utc
 from app.core.config import settings
 from app.connectors.market_data import MarketDataConnector
 from app.models.trade_idea import TradeIdea
@@ -59,7 +60,10 @@ def recency_weight(trade_date: date | None) -> float:
     """Exponential decay weight — recent ideas count more."""
     if not trade_date:
         return 0.5
-    days_ago = (date.today() - trade_date).days
+    # The UTC date, not the machine's: a server in Sydney and one in Chicago
+    # would otherwise weight the same idea differently, and the walk-forward
+    # split would move with the deployment (ADR 1).
+    days_ago = (now_utc().date() - trade_date).days
     return math.exp(-_DECAY_RATE * days_ago)
 
 
@@ -158,7 +162,7 @@ def _check_bars(
             mfe = max(mfe, entry - low)
             mae = max(mae, high - entry)
 
-    today = date.today()
+    today = now_utc().date()
     if trade_date + timedelta(days=window_days) > today:
         # Window not yet elapsed
         return {"outcome": "open", "outcome_date": None, "holding_days": None,
@@ -216,7 +220,7 @@ async def check_idea_outcome(
         existing.holding_days             = outcome_data["holding_days"]
         existing.max_adverse_excursion    = outcome_data["max_adverse_excursion"]
         existing.max_favorable_excursion  = outcome_data["max_favorable_excursion"]
-        existing.checked_at               = datetime.utcnow()
+        existing.checked_at               = now_utc()
         existing.data_source              = market.data_source_name()
         return existing
 
@@ -282,7 +286,7 @@ async def validate_strategy_card(
         card.confidence_interval = None
         card.walk_forward_result = walk_forward_check(concluded)
         card.confidence_tier = compute_confidence_tier(card.sample_size, None, None)
-        card.validation_updated_at = datetime.utcnow()
+        card.validation_updated_at = now_utc()
         return
 
     # Recency-weighted win rate
@@ -303,7 +307,7 @@ async def validate_strategy_card(
 
     new_tier = compute_confidence_tier(card.sample_size, card.win_rate, card.confidence_interval)
     card.confidence_tier = new_tier
-    card.validation_updated_at = datetime.utcnow()
+    card.validation_updated_at = now_utc()
 
     # Add a version snapshot if win_rate or tier changed meaningfully
     wr_changed = prev_win_rate is None or abs(float(prev_win_rate) - weighted_p) > 0.02
@@ -317,7 +321,7 @@ async def validate_strategy_card(
             changes_parts.append(f"tier {prev_tier} → {new_tier}")
         snapshot = {
             "version": card.version,
-            "snapshot_at": datetime.utcnow().isoformat(),
+            "snapshot_at": now_utc().isoformat(),
             "change_source": "validation",
             "sample_size": card.sample_size,
             "win_rate": str(card.win_rate),

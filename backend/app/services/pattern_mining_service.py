@@ -22,6 +22,7 @@ import anthropic
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.clock import now_utc
 from app.core.config import settings
 from app.models.strategy_card import StrategyCard
 from app.services.usage_service import log_usage_event
@@ -225,7 +226,7 @@ async def run_pattern_mining(
                 confidence_tier=tier,
                 version=1,
                 version_history=[],
-                last_updated=datetime.utcnow(),
+                last_updated=now_utc(),
             )
             db.add(card)
         else:
@@ -260,7 +261,7 @@ async def run_pattern_mining(
             card.preliminary_confidence = confidence
             card.source_count = source_count
             card.confidence_tier = tier
-            card.last_updated = datetime.utcnow()
+            card.last_updated = now_utc()
 
         cards_touched += 1
 

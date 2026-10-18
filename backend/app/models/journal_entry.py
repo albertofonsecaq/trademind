@@ -1,9 +1,10 @@
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-from sqlalchemy import String, ForeignKey, func, Numeric, Text
+from sqlalchemy import DateTime, String, ForeignKey, func, Numeric, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from app.core.clock import now_utc
 from app.core.database import Base
 
 
@@ -27,9 +28,9 @@ class JournalEntry(Base):
     size: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False)
     mode: Mapped[str] = mapped_column(String(10), nullable=False, default="paper")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    timestamp: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
-    created_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow, server_default=func.now()
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=now_utc)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), 
+        default=now_utc, server_default=func.now()
     )
 
     broker_order: Mapped["BrokerOrder | None"] = relationship("BrokerOrder", back_populates="journal_entries")

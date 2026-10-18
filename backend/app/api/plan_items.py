@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from pydantic import BaseModel
 
+from app.core.clock import now_utc
 from app.core.database import get_db
 from app.core.dependencies import get_current_user
 from app.models.user import User
@@ -132,7 +133,7 @@ async def add_plan_item(
         status=payload.status,
         user_notes=payload.user_notes,
         risk_tolerance_match=payload.risk_tolerance_match,
-        updated_at=datetime.utcnow(),
+        updated_at=now_utc(),
     )
     db.add(item)
     await db.commit()
@@ -171,7 +172,7 @@ async def update_plan_item(
     if payload.risk_tolerance_match is not None:
         item.risk_tolerance_match = payload.risk_tolerance_match
 
-    item.updated_at = datetime.utcnow()
+    item.updated_at = now_utc()
     await db.commit()
     await db.refresh(item)
     return item

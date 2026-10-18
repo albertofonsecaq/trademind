@@ -1,8 +1,9 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, ForeignKey, func, Text, UniqueConstraint
+from sqlalchemy import DateTime, String, ForeignKey, func, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from app.core.clock import now_utc
 from app.core.database import Base
 
 
@@ -17,7 +18,7 @@ class PlanItem(Base):
     user_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     risk_tolerance_match: Mapped[str | None] = mapped_column(String(20), nullable=True)  # low|medium|high
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="watching")
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 
     card: Mapped["StrategyCard"] = relationship("StrategyCard", back_populates="plan_items")

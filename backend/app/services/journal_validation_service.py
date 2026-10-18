@@ -21,6 +21,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.clock import now_utc
 from app.core.config import settings
 from app.connectors.market_data import MarketDataConnector
 from app.models.journal_entry import JournalEntry
@@ -111,7 +112,7 @@ async def score_journal_entry(
         existing.max_adverse_excursion = _dec(outcome_data["max_adverse_excursion"])
         existing.max_favorable_excursion = _dec(outcome_data["max_favorable_excursion"])
         existing.data_source = data_source
-        existing.checked_at = datetime.utcnow()
+        existing.checked_at = now_utc()
         return existing
 
     outcome_row = JournalOutcome(

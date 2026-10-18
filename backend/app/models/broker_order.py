@@ -1,9 +1,10 @@
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-from sqlalchemy import String, ForeignKey, func, Numeric, Text
+from sqlalchemy import DateTime, String, ForeignKey, func, Numeric, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from app.core.clock import now_utc
 from app.core.database import Base
 
 
@@ -30,16 +31,16 @@ class BrokerOrder(Base):
     mode: Mapped[str] = mapped_column(String(10), nullable=False, default="paper")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    confirmed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     alpaca_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     filled_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow, server_default=func.now()
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), 
+        default=now_utc, server_default=func.now()
     )
-    updated_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), 
+        default=now_utc,
+        onupdate=now_utc,
     )
 
     journal_entries: Mapped[list["JournalEntry"]] = relationship("JournalEntry", back_populates="broker_order")
