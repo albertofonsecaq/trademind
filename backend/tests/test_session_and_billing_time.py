@@ -14,6 +14,7 @@ columns — the #8 DataError. There are no subscription rows in the database,
 which is consistent with that path never having completed.
 """
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 import pytest
 from jose import jwt
@@ -100,6 +101,37 @@ class TestABillingPeriod:
         await session.flush()
         return workspace
 
+    async def _a_subscription(self, session):
+        """A workspace with an active subscription, and the period's start."""
+        import uuid
+
+        from app.models.subscription import Subscription
+
+        workspace = await self._a_workspace(session)
+        period_start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        sub = Subscription(
+            id=uuid.uuid4(), workspace_id=workspace.id, plan_name="solo",
+            price_usd_monthly=29, included_budget_usd=30, status="active",
+            current_period_start=period_start,
+            current_period_end=period_start + timedelta(days=31),
+        )
+        session.add(sub)
+        await session.flush()
+        return workspace, sub, period_start
+
+    async def _usage(self, session, workspace, created_at, cost, overage=False):
+        import uuid
+
+        from app.models.usage_event import UsageEvent
+
+        session.add(
+            UsageEvent(
+                id=uuid.uuid4(), workspace_id=workspace.id,
+                task_type="relevance_filter", provider_model="haiku",
+                cost_usd=Decimal(cost), is_overage=overage, created_at=created_at,
+            )
+        )
+
     async def test_a_stripe_period_can_be_stored_at_all(self, db_session):
         """
         It could not before this batch: `_ts` builds aware values and the column
@@ -134,50 +166,127 @@ class TestABillingPeriod:
         assert stored == (period_start, period_end)
         assert all(value.tzinfo is not None for value in stored)
 
-    async def test_usage_inside_the_period_counts_and_usage_before_it_does_not(
-        self, db_session
-    ):
+        created = (
+            await db_session.execute(
+                select(Subscription.created_at).where(Subscription.id == sub.id)
+            )
+        ).scalar_one()
+        assert created.tzinfo is not None                      # its own default
+        assert abs(created - now_utc()) < timedelta(minutes=5)
+
+    async def test_period_spend_counts_from_the_boundary(self, db_session):
         """
-        The comparison the budget cap rests on, run in SQL against real columns:
-        an event one second inside the period counts, one second before it does
-        not. A naive-versus-aware mix here would raise, or worse, misplace an
-        event by the server's offset.
+        The real query, not a reimplementation of it.
+
+        An earlier version of this test wrote its own count() with the same
+        where-clause, which proved the comparison worked and nothing about the
+        function the budget cap actually calls — it omitted the overage filter
+        and summed nothing. get_period_spend is what is_budget_exhausted uses,
+        so that is what gets exercised: an event on the period boundary is
+        inside it, one a second earlier is not, and an overage event is excluded
+        whichever side it falls on.
+        """
+        from app.services.billing_service import get_period_spend
+
+        workspace, sub, period_start = await self._a_subscription(db_session)
+
+        await self._usage(db_session, workspace, period_start - timedelta(seconds=1), "0.10")
+        await self._usage(db_session, workspace, period_start, "0.01")
+        await self._usage(db_session, workspace, period_start + timedelta(seconds=1), "0.02")
+        await self._usage(
+            db_session, workspace, period_start + timedelta(hours=1), "5.00", overage=True
+        )
+        await db_session.flush()
+
+        spend = await get_period_spend(db_session, workspace.id, sub)
+
+        # 0.01 on the boundary + 0.02 after it. Not the 0.10 before, not the
+        # 5.00 of overage, which is metered separately rather than capped.
+        assert spend == Decimal("0.03")
+
+    async def test_a_usage_event_dates_itself_with_an_aware_default(self, db_session):
+        """
+        The tests above all set created_at explicitly, so the column's own
+        default was never exercised — and a naive default on an aware column is
+        the corruption this batch exists to prevent.
         """
         import uuid
-
-        from sqlalchemy import func
 
         from app.models.usage_event import UsageEvent
 
         workspace = await self._a_workspace(db_session)
-        period_start = datetime(2026, 1, 1, tzinfo=timezone.utc)
-
-        for created_at in (
-            period_start - timedelta(seconds=1),
-            period_start,
-            period_start + timedelta(seconds=1),
-        ):
-            db_session.add(
-                UsageEvent(
-                    id=uuid.uuid4(), workspace_id=workspace.id,
-                    task_type="relevance_filter", provider_model="haiku",
-                    created_at=created_at,
-                )
-            )
+        event = UsageEvent(
+            id=uuid.uuid4(), workspace_id=workspace.id,
+            task_type="relevance_filter", provider_model="haiku",
+        )
+        db_session.add(event)
         await db_session.flush()
 
-        counted = (
+        created = (
             await db_session.execute(
-                select(func.count())
-                .select_from(UsageEvent)
-                .where(
-                    UsageEvent.workspace_id == workspace.id,
-                    UsageEvent.created_at >= period_start,
-                )
+                select(UsageEvent.created_at).where(UsageEvent.id == event.id)
             )
         ).scalar_one()
 
-        assert counted == 2        # the boundary itself counts; the one before does not
+        assert created.tzinfo is not None
+        assert abs(created - now_utc()) < timedelta(minutes=5)
+
+    async def test_the_budget_cap_gate_itself(self, db_session):
+        """
+        is_budget_exhausted is the gate the poller consults, and every test that
+        touches it elsewhere monkeypatches it away — so the real one, against
+        real columns, was never run. It compares period spend against the
+        workspace's cap, and both sides of that comparison moved in this batch.
+        """
+        from app.models.workspace import Workspace
+        from app.services.billing_service import is_budget_exhausted
+
+        workspace, sub, period_start = await self._a_subscription(db_session)
+        await db_session.execute(
+            Workspace.__table__.update()
+            .where(Workspace.id == workspace.id)
+            .values(monthly_budget_cap=Decimal("1.00"))
+        )
+
+        await self._usage(db_session, workspace, period_start + timedelta(hours=1), "0.50")
+        await db_session.flush()
+        assert await is_budget_exhausted(db_session, workspace.id) is False
+
+        await self._usage(db_session, workspace, period_start + timedelta(hours=2), "0.60")
+        await db_session.flush()
+        assert await is_budget_exhausted(db_session, workspace.id) is True
+
+    async def test_period_spend_is_the_same_whatever_zone_the_server_runs_in(
+        self, db_session, monkeypatch
+    ):
+        """
+        What the batch is for: the boundary is an instant, so moving the
+        machine's clock must not move what falls inside the billing period.
+
+        The first version of this test called tzset() without setting TZ, so the
+        zone never actually changed and the assertion held trivially — a review
+        caught it. The loop below asserts the zone really moved before trusting
+        the answer, so it cannot go quiet that way again.
+        """
+        import time
+        from datetime import datetime as dt
+
+        from app.services.billing_service import get_period_spend
+
+        workspace, sub, period_start = await self._a_subscription(db_session)
+        await self._usage(db_session, workspace, period_start + timedelta(seconds=1), "0.02")
+        await self._usage(db_session, workspace, period_start - timedelta(seconds=1), "0.10")
+        await db_session.flush()
+
+        spends, offsets = [], []
+        for zone in ("Pacific/Kiritimati", "Pacific/Midway"):       # UTC+14, UTC-11
+            monkeypatch.setenv("TZ", zone)
+            time.tzset()
+            offsets.append(dt.now().astimezone().utcoffset())
+            spends.append(await get_period_spend(db_session, workspace.id, sub))
+
+        assert offsets[0] != offsets[1], offsets      # the zone did move
+        assert spends[0] == spends[1] == Decimal("0.02")
 
     async def test_every_tenancy_column_round_trips(self, db_session):
         """The rest of the batch: written, read back, and the defaults are aware."""

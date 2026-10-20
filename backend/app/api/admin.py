@@ -11,7 +11,7 @@ Distinct from the per-workspace Admin/config view. Super admins can:
   - Read the audit log
 """
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
