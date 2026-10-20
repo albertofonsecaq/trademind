@@ -7,6 +7,11 @@ meant to be fast enough for every change. Tests that need a real database are
 marked `db` and skipped unless `TEST_DATABASE_URL` is set; `backend/tests/conftest.py`
 has the commands, including the `alembic upgrade head` those tests assume.
 
+`.github/workflows/ci.yml` runs all of it on every push and pull request: the
+offline suite in two time zones, the full suite against a Postgres service
+migrated from empty, and `npm run build` for the frontend's only typecheck. If a
+check only passes locally, it does not pass.
+
 ## Agent skills
 
 ### Issue tracker
