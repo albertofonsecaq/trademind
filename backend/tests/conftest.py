@@ -32,6 +32,7 @@ test releases a savepoint, and the outer transaction is still thrown away.
 """
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -78,6 +79,28 @@ async def _assert_schema_is_current(session) -> None:
             f"but this tree's head is {expected} — run `alembic upgrade head` against it",
             pytrace=False,
         )
+
+
+@pytest.fixture(autouse=True)
+def _restore_the_machines_time_zone():
+    """
+    Put the process's time zone back after a test moves it.
+
+    Several tests prove that an answer does not depend on where the server runs
+    by setting TZ and calling `time.tzset()`. `monkeypatch.setenv` restores the
+    variable but cannot undo `tzset()`, so without this the whole session
+    carried on in whichever zone the last such test chose — and a later test
+    reading local time would pass or fail depending on collection order.
+    """
+    before = os.environ.get("TZ")
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = before
+        time.tzset()
 
 
 @pytest.fixture

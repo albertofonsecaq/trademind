@@ -67,12 +67,31 @@ inheriting it, so a differently configured server cannot change what a naive
 value means on the way in. #32 adds a database-backed test asserting it, so that
 the assumption will fail loudly rather than silently.
 
-This is a wide change: 36 columns across 18 models, and the writers that touch
-them. It cannot land as one green commit, so #8 sequences it as expand–contract;
-how it is broken up is that issue's business, not this decision's. What the
-decision asks of each step is only this: a model's reads and its writers move
-together, because a model that returns aware values breaks any arithmetic still
-using a naive now.
+This was a wide change: 36 columns across 18 models, and the writers that touch
+them. It could not land as one green commit, so #8 sequenced it as
+expand–contract. What the decision asked of each step was only this: a model's
+reads and its writers move together, because a model that returns aware values
+breaks any arithmetic still using a naive now.
+
+> **Completed, 2026-10-19.** All 36 columns across all 18 models now declare
+> `DateTime(timezone=True)`, every default and `onupdate` produces an aware
+> value, and neither `datetime.utcnow()` nor `date.today()` appears in the
+> application. Three things are worth recording, because they were discovered by
+> doing the work rather than by planning it:
+>
+> - **A naive value is no longer read as UTC.** Once a column is declared aware,
+>   the driver reads a naive value in the *machine's* local zone, with that
+>   zone's rules for the value's own date — so the error is not even a constant
+>   offset. This is why the API boundary reads offset-less payloads as UTC and
+>   why nothing above the connectors may produce a naive value: the old
+>   forgiving behaviour is gone.
+> - **The Stripe subscription-period write could not previously have
+>   succeeded.** Those timestamps arrive aware, and the column was bound naive,
+>   which is this ADR's own failure mode. There are no subscription rows, which
+>   is consistent with that.
+> - **No platform we talk to needs naive.** `to_naive_utc` still has no caller;
+>   #37 decides whether it stays as the documented shape of the exception or
+>   goes.
 
 **No migration is required and none should be written.** The columns are
 already `timestamptz`; this makes the mapping tell the truth about them. Any
