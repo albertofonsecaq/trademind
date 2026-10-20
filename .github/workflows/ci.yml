@@ -1,0 +1,123 @@
+# What runs on every push and pull request, so the checks stop depending on
+# somebody remembering (#50). `npm run build` was red on main for an unknown
+# stretch before #20, because nothing looked.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push supersedes an in-flight run on the same ref; main is left alone so
+# its history keeps a result per commit.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  # 3.11 on purpose: psycopg2-binary 2.9.9 publishes no wheel for 3.13 and
+  # fails to build from source without pg_config, which is how this was first
+  # discovered locally.
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  backend:
+    name: backend (offline, TZ=${{ matrix.tz }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Two zones deliberately. UTC is what a deployment looks like — and is
+        # also the configuration in which a badly written zone test asserts
+        # nothing, which happened twice during #8 and was caught by review
+        # rather than by running. A non-UTC zone catches that class outright.
+        tz: ["UTC", "Australia/Sydney"]
+    env:
+      TZ: ${{ matrix.tz }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements-dev.txt
+
+      - name: Run the offline suite
+        working-directory: backend
+        # No TEST_DATABASE_URL, so the database-backed tests skip. This job is
+        # what proves the suite stays offline-capable, which conftest.py
+        # promises and which keeps it fast enough to run on every change.
+        run: pytest -q
+
+  backend-database:
+    name: backend (with a database)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # The same image as docker-compose: migration 001 creates the pgvector
+        # extension, so plain postgres cannot run the migrations at all.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: trademind
+          POSTGRES_PASSWORD: trademind
+          POSTGRES_DB: trademind
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U trademind"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements-dev.txt
+
+      - name: Migrate the database to head
+        working-directory: backend
+        env:
+          DATABASE_URL_SYNC: postgresql+psycopg2://trademind:trademind@localhost:5432/trademind
+        # Before the tests, not as part of them: they read the real schema, and
+        # the fixture fails with a readable message if the revision is behind.
+        run: alembic upgrade head
+
+      - name: Run the whole suite, database included
+        working-directory: backend
+        env:
+          TEST_DATABASE_URL: postgresql+asyncpg://trademind:trademind@localhost:5432/trademind
+        run: pytest -q
+
+  frontend:
+    name: frontend (typecheck and build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Typecheck and build
+        working-directory: frontend
+        # `npm run build` is `tsc -b && vite build`: the only typecheck the
+        # frontend has, since there is no test runner here yet.
+        run: npm run build
