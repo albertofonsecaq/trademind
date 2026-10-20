@@ -19,7 +19,7 @@ from app.core.clock import now_utc
 from app.core.database import AsyncSessionLocal
 from app.models.source_config import SourceConfig
 from app.models.workspace import Workspace
-from app.services.ingestion_gate import blocked_reason
+from app.services.ingestion_gate import blocked_reason, connection_blocked_reason
 
 log = logging.getLogger(__name__)
 
@@ -86,11 +86,19 @@ async def _poll_all_sources():
                 log.debug("Skipping source %s: paused", identifier)
                 continue
 
-            # Telegram requires an active connection; YouTube only needs YOUTUBE_API_KEY
-            if planned.source_type == "telegram":
-                if planned.connection_status != "active":
-                    continue
-            elif planned.source_type == "youtube":
+            # Gate 0c: the account this source fetches through. The same
+            # predicate the on-demand endpoints use, so a source the poll skips
+            # is one Fetch now refuses rather than accepts and drops (#49).
+            reason = connection_blocked_reason(
+                source_type=planned.source_type,
+                connection_status=planned.connection_status,
+            )
+            if reason:
+                log.debug("Skipping source %s: %s", identifier, reason)
+                continue
+
+            # YouTube needs no connection, but it does need the server's key.
+            if planned.source_type == "youtube":
                 from app.core.config import settings as _s
                 if not _s.YOUTUBE_API_KEY:
                     continue
