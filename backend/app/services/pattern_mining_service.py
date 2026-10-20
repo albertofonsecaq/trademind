@@ -15,7 +15,6 @@ import json
 import logging
 import math
 import uuid
-from datetime import datetime, timezone
 from decimal import Decimal
 
 import anthropic
@@ -243,7 +242,9 @@ async def run_pattern_mining(
             # Snapshot current state before overwriting
             snapshot = {
                 "version": card.version,
-                "snapshot_at": card.last_updated.isoformat() if card.last_updated else None,
+                # last_updated is NOT NULL, so the fallback was unreachable and
+                # only existed to put an unreadable value in the history.
+                "snapshot_at": (card.last_updated or now_utc()).isoformat(),
                 "change_source": "mining",
                 "sample_size": card.sample_size,
                 "win_rate": str(card.win_rate) if card.win_rate is not None else None,

@@ -35,11 +35,11 @@ class BrokerOrder(Base):
     alpaca_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     filled_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), 
-        default=now_utc, server_default=func.now()
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now_utc, server_default=func.now()
     )
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), 
-        default=now_utc,
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now_utc,
         onupdate=now_utc,
     )
 

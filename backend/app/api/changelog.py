@@ -13,12 +13,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 
-from app.core.clock import as_utc
+from app.core.clock import instant_from_iso
 from app.core.database import get_db, AsyncSessionLocal
 from app.core.dependencies import get_current_user
 from app.models.user import User
 from app.models.workspace_member import WorkspaceMember
 from app.models.strategy_card import StrategyCard
+
+# Sorts a snapshot we cannot read to the end, rather than dropping the row.
+_LONG_AGO = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 router = APIRouter(prefix="/workspaces", tags=["changelog"])
 
@@ -39,7 +42,7 @@ class ChangelogEntry(BaseModel):
     symbol_scope: str
     setup_type: str
     version: int
-    changed_at: str           # ISO string from snapshot
+    changed_at: datetime | None     # the instant the snapshot names, aware UTC
     change_source: str        # "mining" | "validation" | "unknown"
     changes_en: str
     sample_size: int | None
@@ -74,7 +77,7 @@ async def get_changelog(
         for snap in (card.version_history or []):
             if not isinstance(snap, dict):
                 continue
-            changed_at = snap.get("snapshot_at") or ""
+            changed_at = instant_from_iso(snap.get("snapshot_at"))
             entries.append(ChangelogEntry(
                 card_id=card.id,
                 symbol_scope=card.symbol_scope,
@@ -88,32 +91,11 @@ async def get_changelog(
                 confidence_tier=snap.get("confidence_tier"),
             ))
 
-    # Newest first, by instant rather than by the string it is stored as.
-    #
-    # These timestamps live inside a JSONB snapshot as whatever isoformat()
-    # produced at the time, so the history now holds both shapes: naive from
-    # before #35 and aware after it. Sorting the strings compares "+00:00"
-    # against ".123456" character by character, so two snapshots in the same
-    # second order by punctuation — silently, with no error to notice.
-    entries.sort(key=lambda e: _as_instant(e.changed_at), reverse=True)
+    # Newest first, by instant. The history holds both shapes — naive from
+    # before #35, aware after it — and a malformed snapshot sorts last rather
+    # than failing the page, which is a reason to inspect data, not to 500.
+    entries.sort(key=lambda e: e.changed_at or _LONG_AGO, reverse=True)
     return entries[:limit]
-
-
-_LONG_AGO = datetime(1970, 1, 1, tzinfo=timezone.utc)
-
-
-def _as_instant(snapshot_at: str) -> datetime:
-    """
-    The instant a snapshot string names, whichever shape it is in.
-
-    A naive string is read as UTC, which is what it meant when it was written
-    (ADR 1). Anything unparseable sorts last rather than breaking the response:
-    a malformed snapshot is a reason to look at the data, not to fail a read.
-    """
-    try:
-        return as_utc(datetime.fromisoformat(snapshot_at))
-    except (TypeError, ValueError):
-        return _LONG_AGO
 
 
 @router.post("/{workspace_id}/recompute", response_model=RecomputeResult, status_code=202)
