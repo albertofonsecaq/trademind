@@ -38,9 +38,8 @@ have always had. Code asks `app.core.clock.now_utc()` for the current instant
 rather than `datetime.utcnow()`.
 
 **Connectors are the single exception**, if a platform ever needs one. The
-connector layer is where a conversion belongs, and `to_naive_utc` exists for
-that and nothing else. A conversion anywhere else is a bug or a leftover, not a
-local decision.
+connector layer is where such a conversion belongs, and nowhere else: a
+conversion above that layer is a bug or a leftover, not a local decision.
 
 > **Correction, 2026-10-18 (#34).** As written, this section claimed Telethon's
 > message dates and YouTube's parsed `publishedAt` "genuinely speak naive UTC".
@@ -89,15 +88,32 @@ breaks any arithmetic still using a naive now.
 >   succeeded.** Those timestamps arrive aware, and the column was bound naive,
 >   which is this ADR's own failure mode. There are no subscription rows, which
 >   is consistent with that.
-> - **No platform we talk to needs naive.** `to_naive_utc` still has no caller;
->   #37 decides whether it stays as the documented shape of the exception or
->   goes.
+> - **No platform we talk to needs naive.** `to_naive_utc` spent all three
+>   batches with no caller, and #37 deleted it. The exception in the Decision
+>   above still stands as the right *shape* — a platform that demands a naive
+>   value gets converted at the connector boundary and nowhere else — there is
+>   simply nothing to convert for today. A comment where the helper was says so,
+>   and git history has the implementation if it is ever needed again.
 
 **No migration is required and none should be written.** The columns are
 already `timestamptz`; this makes the mapping tell the truth about them. Any
 change that proposes altering a timestamp column's type under this ADR is
 almost certainly wrong — the data in this database is months of paid ingestion
 and is not reproducible.
+
+## Enforcement
+
+As of #37 this is checked rather than described. Tests walk every mapped model
+and fail if a timestamp column does not declare its time zone, or if its default
+or `onupdate` would produce a naive value; others fail if `utcnow()` or
+`date.today()` is called anywhere in the application, or if a `.replace(tzinfo=None)`
+appears outside the connector boundary — which is currently nowhere at all.
+
+Each of those guards was verified by breaking the convention on purpose and
+watching the right test fail. That matters more than it sounds: three of the
+tests written across #34–#36 could not have failed as first written, and were
+caught by review rather than by running. A guard that cannot fail is worse than
+no guard, because it reads as coverage.
 
 ## Alternatives considered
 
