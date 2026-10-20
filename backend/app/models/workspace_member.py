@@ -1,8 +1,9 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, ForeignKey, func, UniqueConstraint
+from sqlalchemy import DateTime, String, ForeignKey, func, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
+from app.core.clock import now_utc
 from app.core.database import Base
 
 
@@ -14,7 +15,7 @@ class WorkspaceMember(Base):
     workspace_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("workspaces.id"), nullable=False)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False)  # owner | member
-    joined_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now())
 
     workspace: Mapped["Workspace"] = relationship("Workspace", back_populates="members")
     user: Mapped["User"] = relationship("User", back_populates="workspace_memberships")

@@ -19,6 +19,7 @@ from sqlalchemy import select, func, text
 from sqlalchemy.orm import selectinload
 from pydantic import BaseModel
 
+from app.core.clock import now_utc
 from app.core.database import get_db
 from app.core.dependencies import get_current_user
 from app.core.security import hash_password
@@ -243,7 +244,7 @@ async def add_member(
     member = WorkspaceMember(
         workspace_id=workspace_id, user_id=user.id,
         role=payload.role if payload.role in ("owner", "member") else "member",
-        joined_at=datetime.utcnow(),
+        joined_at=now_utc(),
     )
     db.add(member)
     await db.flush()

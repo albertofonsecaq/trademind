@@ -1,9 +1,10 @@
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-from sqlalchemy import String, Numeric, Boolean, ForeignKey, func
+from sqlalchemy import DateTime, String, Numeric, Boolean, ForeignKey, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
+from app.core.clock import now_utc
 from app.core.database import Base
 
 
@@ -19,6 +20,6 @@ class UsageEvent(Base):
     cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 8), nullable=False, default=Decimal("0"))
     is_overage: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     source_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now(), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now(), index=True)
 
     workspace: Mapped["Workspace"] = relationship("Workspace", back_populates="usage_events")

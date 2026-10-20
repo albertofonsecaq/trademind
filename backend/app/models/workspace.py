@@ -1,10 +1,11 @@
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-from sqlalchemy import String, Boolean, Numeric, Text, ForeignKey, func
+from sqlalchemy import DateTime, String, Boolean, Numeric, Text, ForeignKey, func
 from sqlalchemy.sql import false as sa_false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
+from app.core.clock import now_utc
 from app.core.database import Base
 
 
@@ -23,7 +24,7 @@ class Workspace(Base):
         Boolean, default=False, nullable=False, server_default=sa_false()
     )
     topic_scope: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now())
 
     members: Mapped[list["WorkspaceMember"]] = relationship("WorkspaceMember", back_populates="workspace")
     subscription: Mapped["Subscription | None"] = relationship("Subscription", back_populates="workspace", uselist=False)

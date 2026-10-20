@@ -1,9 +1,10 @@
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-from sqlalchemy import String, Numeric, Boolean, ForeignKey, func
+from sqlalchemy import DateTime, String, Numeric, Boolean, ForeignKey, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
+from app.core.clock import now_utc
 from app.core.database import Base
 
 
@@ -25,9 +26,9 @@ class Subscription(Base):
     payment_provider_subscription_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="inactive")
     manually_overridden_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
-    current_period_start: Mapped[datetime | None] = mapped_column(nullable=True)
-    current_period_end: Mapped[datetime | None] = mapped_column(nullable=True)
+    current_period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    current_period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     stripe_subscription_item_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now())
 
     workspace: Mapped["Workspace"] = relationship("Workspace", back_populates="subscription")
