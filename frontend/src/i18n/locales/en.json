@@ -311,6 +311,14 @@
     "removeSource": "Remove source",
     "connection": "Telegram account",
     "noConnectionNeeded": "No account needed (uses API key)",
+    "via": "via {{label}}",
+    "connectionMissing": "No account linked — this source cannot fetch until one is connected.",
+    "connectionUnhealthy": "This account is not usable, so the source is not being fetched.",
+    "connectionStatus": {
+      "pending": "Awaiting confirmation",
+      "active": "Active",
+      "revoked": "Revoked"
+    },
     "backfillStartDate": "Ingest history from (optional)",
     "backfillStartDateHint": "Leave empty to ingest full available history. Set a date to limit how far back the initial fetch goes.",
     "configure": "Configure",
