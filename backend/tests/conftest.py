@@ -33,6 +33,7 @@ test releases a savepoint, and the outer transaction is still thrown away.
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -140,3 +141,278 @@ async def db_session():
             await outer.rollback()
     finally:
         await engine.dispose()
+
+
+# ── offline session doubles ───────────────────────────────────────────────────
+#
+# Six test files used to carry their own copy of these, and most answered a
+# query by *call order*: a queue of rows popped per execute(). That is wrong the
+# moment production code adds a query, and it went wrong three times — #13 added
+# one workspace lookup and three tests in another file had to have a row
+# inserted at the right index, #9 added a MAX() and the #2 regression tests
+# failed on a missing scalar(), and a poll test in #13 passed only because every
+# source happened to clear the earlier gates.
+#
+# So these resolve a query by what it asks for. Register a value per model and
+# the order of queries stops mattering; a lookup by id can register a mapping
+# and gets matched against the statement's own parameters.
+
+
+class FakeResult:
+    """Serves every access shape the code under test uses on a result."""
+
+    def __init__(self, value):
+        self._value = value
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self._value if isinstance(self._value, list) else [self._value]
+
+    def first(self):
+        rows = self.all()
+        return rows[0] if rows else None
+
+    def scalar_one_or_none(self):
+        return self._value[0] if isinstance(self._value, list) and self._value else (
+            None if isinstance(self._value, list) else self._value
+        )
+
+    def scalar_one(self):
+        return self.scalar_one_or_none()
+
+    def scalar(self):
+        return self.scalar_one_or_none()
+
+    def one(self):
+        return self._value
+
+
+class FakeSavepoint:
+    """
+    Records that a savepoint was entered and how it ended, which is what #2's
+    fix turns on: a failed message must undo its own savepoint and leave the
+    shared session usable. "enter" is recorded as well as the outcome, so a test
+    can tell a savepoint that was opened and never closed from one that never
+    opened at all.
+    """
+
+    def __init__(self, recorder: list):
+        self._recorder = recorder
+
+    async def __aenter__(self):
+        self._recorder.append("enter")
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self._recorder.append("rollback" if exc_type else "release")
+        return False        # never swallow: the caller's except clauses decide
+
+
+class FakeSession:
+    """
+    An AsyncSession stand-in that answers by statement, and records what it was
+    asked to do.
+
+    Register what a query should find, by model:
+
+        db = FakeSession(rows={SourceConfig: [source], Workspace: workspace})
+        db = FakeSession(rows={Workspace: {ws.id: ws, other.id: other}})
+
+    A dict value is matched against the statement's bound parameters, so a
+    lookup by id finds the right row however many other queries ran first. A
+    callable value is handed the statement. Anything unregistered answers None,
+    which is what a real session does for a row that is not there.
+    """
+
+    def __init__(self, rows: dict | None = None, *, membership: bool = True):
+        self._rows = dict(rows or {})
+        # Most API handlers check workspace membership first; `membership=False`
+        # makes that check fail, for the tests that want a 403.
+        self._membership = membership
+        self.statements: list[str] = []
+        self.entities: list = []
+        self.savepoints: list[str] = []
+        self.added: list = []
+        self.deleted: list = []
+        self.commits = 0
+        self.rollbacks = 0
+        self.flushes = 0
+        # Which keys a by-id lookup matched, in order. A test asserting that a
+        # source was turned back at a particular gate needs to know the gate was
+        # reached at all — not just that nothing was fetched (#13).
+        self.lookup_keys: list = []
+
+    # the session is also used as a context manager by background runners
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def register(self, model, value):
+        self._rows[model] = value
+        return self
+
+    async def execute(self, statement=None, *_args, **_kwargs):
+        self.statements.append(str(statement).lower())
+        entity = self._entity_of(statement)
+        self.entities.append(entity)
+        value = self._rows.get(entity, _MISSING)
+
+        if value is _MISSING:
+            from app.models.workspace_member import WorkspaceMember
+
+            # An unregistered membership check passes by default, so a test only
+            # says so when it cares.
+            if entity is WorkspaceMember:
+                return FakeResult(object() if self._membership else None)
+            return FakeResult(None)
+        if callable(value):
+            return FakeResult(value(statement))
+        if isinstance(value, dict):
+            key, found = self._by_parameter(statement, value)
+            if key is not None:
+                self.lookup_keys.append(key)
+            return FakeResult(found)
+        return FakeResult(value)
+
+    @staticmethod
+    def _entity_of(statement):
+        try:
+            description = statement.column_descriptions[0]
+        except (AttributeError, IndexError):
+            return None
+        return description.get("entity") or description.get("type")
+
+    @staticmethod
+    def _by_parameter(statement, mapping: dict):
+        """The registered row whose key appears in the statement's parameters."""
+        try:
+            parameters = statement.compile().params.values()
+        except Exception:
+            return None, None
+        for value in parameters:
+            if value in mapping:
+                return value, mapping[value]
+        return None, None
+
+    def begin_nested(self):
+        return FakeSavepoint(self.savepoints)
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    def add_all(self, objects):
+        self.added.extend(objects)
+
+    async def delete(self, obj):
+        self.deleted.append(obj)
+
+    async def flush(self):
+        self.flushes += 1
+
+    async def commit(self):
+        self.commits += 1
+
+    async def rollback(self):
+        self.rollbacks += 1
+
+    async def refresh(self, _obj):
+        pass
+
+    # ── what a test can ask about what happened ──────────────────────────────
+
+    def touched(self, table: str) -> bool:
+        """True if any statement mentioned that table, read or write."""
+        return any(table in statement for statement in self.statements)
+
+    def wrote_anything_destructive(self) -> bool:
+        """A bulk delete or update, which .deleted would never see."""
+        return any(
+            verb in statement
+            for statement in self.statements
+            for verb in ("delete", "update")
+        )
+
+    def lookups_of(self, model) -> list:
+        """Which rows of this model were looked for, in order."""
+        return [entity for entity in self.entities if entity is model]
+
+
+class _Missing:
+    pass
+
+
+_MISSING = _Missing()
+
+
+# ── rows for the database-backed tests ───────────────────────────────────────
+#
+# Built in dependency order and flushed in turn: several of these models carry
+# foreign keys to each other with no matching relationship, so the unit of work
+# has no dependency to order the inserts by and would otherwise send a child
+# first. Two test files had their own copies of this, including that reasoning.
+
+
+async def make_user(session):
+    from app.models.user import User
+
+    user = User(
+        id=uuid.uuid4(), email=f"test-{uuid.uuid4().hex[:8]}@example.com",
+        password_hash="x",
+    )
+    session.add(user)
+    await session.flush()
+    return user
+
+
+async def make_workspace(session, user=None):
+    from app.models.workspace import Workspace
+
+    user = user or await make_user(session)
+    workspace = Workspace(
+        id=uuid.uuid4(), name="a workspace", owner_user_id=user.id, topic_scope="forex",
+    )
+    session.add(workspace)
+    await session.flush()
+    return workspace
+
+
+async def make_source(session, workspace=None):
+    from app.models.source_config import SourceConfig
+
+    workspace = workspace or await make_workspace(session)
+    source = SourceConfig(
+        id=uuid.uuid4(), workspace_id=workspace.id, source_type="telegram",
+        identifier="chan", created_by_user_id=workspace.owner_user_id,
+    )
+    session.add(source)
+    await session.flush()
+    return source
+
+
+def make_job(source, starting):
+    """Unflushed, so a test can assert on what the write does."""
+    from app.models.backfill_job import BackfillJob
+
+    return BackfillJob(
+        id=uuid.uuid4(), source_config_id=source.id, workspace_id=source.workspace_id,
+        date_range_start=starting, triggered_by_user_id=source.created_by_user_id,
+    )
+
+
+async def make_card(session, workspace=None):
+    from app.models.strategy_card import StrategyCard
+
+    workspace = workspace or await make_workspace(session)
+    card = StrategyCard(
+        id=uuid.uuid4(), workspace_id=workspace.id, setup_type="breakout",
+        symbol_scope="EURUSD", description_en="a breakout", description_es="una ruptura",
+        flowchart_spec={}, supporting_evidence=[], sample_size=0, source_count=0,
+        version=1, version_history=[],
+    )
+    session.add(card)
+    await session.flush()
+    return card

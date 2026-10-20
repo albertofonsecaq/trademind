@@ -15,41 +15,8 @@ from types import SimpleNamespace
 import pytest
 
 from app.services import ingestion_pipeline
+from tests.conftest import FakeSession
 from app.connectors.base import RawMessage
-
-
-class _Savepoint:
-    def __init__(self, recorder):
-        self._recorder = recorder
-
-    async def __aenter__(self):
-        self._recorder.append("enter")
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        self._recorder.append("rollback" if exc_type else "release")
-        return False        # never swallow: the caller's except clauses decide
-
-
-class _FakeSession:
-    """Records the transaction calls the pipeline makes."""
-
-    def __init__(self):
-        self.savepoints: list[str] = []
-        self.commits = 0
-        self.rollbacks = 0
-
-    def begin_nested(self):
-        return _Savepoint(self.savepoints)
-
-    async def commit(self):
-        self.commits += 1
-
-    async def rollback(self):
-        self.rollbacks += 1
-
-    async def execute(self, *a, **kw):
-        return SimpleNamespace(scalar_one_or_none=lambda: None)
 
 
 def _msg(n: int) -> RawMessage:
@@ -68,7 +35,7 @@ def _msg(n: int) -> RawMessage:
 @pytest.fixture
 def pipeline(monkeypatch):
     """run_fetch_pipeline wired to a fake connector and a recording session."""
-    db = _FakeSession()
+    db = FakeSession()
     messages = [_msg(1), _msg(2), _msg(3)]
 
     class _Connector:

@@ -19,74 +19,11 @@ import pytest
 from fastapi import BackgroundTasks, HTTPException
 
 from app.api import sources as sources_api
+from app.models.backfill_job import BackfillJob
+from app.models.source_config import SourceConfig
+from app.models.workspace import Workspace
 from app.workers import poller
-
-
-# ── fakes ─────────────────────────────────────────────────────────────────────
-
-class _Result:
-    """Serves both access shapes the code under test uses on a result."""
-
-    def __init__(self, value):
-        self._value = value
-
-    def scalars(self):
-        return self
-
-    def all(self):
-        return self._value
-
-    def scalar_one_or_none(self):
-        return self._value
-
-
-class _PollSession:
-    """First execute() hands back the sources, every later one the workspace."""
-
-    def __init__(self, sources, workspace):
-        self._sources = sources
-        self._workspace = workspace
-        self.calls = 0
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    async def execute(self, _stmt):
-        self.calls += 1
-        return _Result(self._sources if self.calls == 1 else self._workspace)
-
-    async def commit(self):
-        pass
-
-
-class _ApiSession:
-    """Returns queued rows in order, and records what the handler writes."""
-
-    def __init__(self, rows):
-        self._rows = list(rows)
-        self.added: list = []
-        self.commits = 0
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    async def execute(self, _stmt):
-        return _Result(self._rows.pop(0) if self._rows else None)
-
-    def add(self, obj):
-        self.added.append(obj)
-
-    async def commit(self):
-        self.commits += 1
-
-    async def refresh(self, _obj):
-        pass
+from tests.conftest import FakeSession
 
 
 def _ingesting_workspace() -> SimpleNamespace:
@@ -134,10 +71,12 @@ def poll(monkeypatch):
     monkeypatch.setattr(billing_service, "is_budget_exhausted", _never_exhausted)
 
     async def run(*sources):
-        session = _PollSession(list(sources), workspace)
+        session = FakeSession(
+            rows={SourceConfig: list(sources), Workspace: {workspace.id: workspace}}
+        )
         monkeypatch.setattr(poller, "AsyncSessionLocal", lambda: session)
         await poller._poll_all_sources()
-        return SimpleNamespace(fetched=fetched, gate_checks=gate_checks)
+        return SimpleNamespace(fetched=fetched, gate_checks=gate_checks, session=session)
 
     return SimpleNamespace(run=run, workspace_id=workspace_id)
 
@@ -173,7 +112,7 @@ class TestPollSkipsPausedSources:
 class TestPauseKeepsEvidenceAndCursor:
     async def _patch(self, source, **fields):
         user = SimpleNamespace(id=uuid.uuid4())
-        db = _ApiSession([SimpleNamespace(id=uuid.uuid4()), source])   # member, source
+        db = FakeSession(rows={SourceConfig: source})
         await sources_api.update_source(
             workspace_id=uuid.uuid4(),
             source_id=source.id,
@@ -220,7 +159,7 @@ class TestPauseKeepsEvidenceAndCursor:
 class TestPausedSourceRejectsFetchAndBackfill:
     async def test_fetch_now_is_rejected_with_409(self):
         source = _source("chan", is_paused=True, workspace_id=uuid.uuid4())
-        db = _ApiSession([SimpleNamespace(id=uuid.uuid4()), _ingesting_workspace(), source])
+        db = FakeSession(rows={Workspace: _ingesting_workspace(), SourceConfig: source})
         tasks = BackgroundTasks()
 
         with pytest.raises(HTTPException) as exc:
@@ -237,7 +176,7 @@ class TestPausedSourceRejectsFetchAndBackfill:
 
     async def test_backfill_is_rejected_with_409(self):
         source = _source("chan", is_paused=True, workspace_id=uuid.uuid4())
-        db = _ApiSession([SimpleNamespace(id=uuid.uuid4()), _ingesting_workspace(), source])
+        db = FakeSession(rows={Workspace: _ingesting_workspace(), SourceConfig: source})
 
         with pytest.raises(HTTPException) as exc:
             await sources_api.trigger_backfill(
@@ -258,7 +197,7 @@ class TestPausedSourceRejectsFetchAndBackfill:
     async def test_an_unpaused_source_still_accepts_a_fetch(self):
         """The guard must not become a blanket block."""
         source = _source("chan", is_paused=False, workspace_id=uuid.uuid4())
-        db = _ApiSession([SimpleNamespace(id=uuid.uuid4()), _ingesting_workspace(), source])
+        db = FakeSession(rows={Workspace: _ingesting_workspace(), SourceConfig: source})
         tasks = BackgroundTasks()
 
         await sources_api.trigger_fetch(
@@ -283,7 +222,7 @@ class TestPauseStopsWorkAlreadyQueued:
     async def test_a_queued_fetch_stops_once_the_source_is_paused(self, monkeypatch):
         source = _source("chan", is_paused=True, workspace_id=uuid.uuid4())
         workspace = SimpleNamespace(topic_scope="trading", ingestion_paused=False)
-        db = _ApiSession([source, workspace])
+        db = FakeSession(rows={SourceConfig: source, Workspace: workspace})
         monkeypatch.setattr(sources_api, "AsyncSessionLocal", lambda: db)
 
         fetched: list[str] = []
@@ -313,7 +252,9 @@ class TestPauseStopsWorkAlreadyQueued:
             completed_at=None,
             error_message=None,
         )
-        db = _ApiSession([job, source, workspace])
+        db = FakeSession(
+            rows={BackfillJob: job, SourceConfig: source, Workspace: workspace}
+        )
         monkeypatch.setattr(sources_api, "AsyncSessionLocal", lambda: db)
 
         built: list = []

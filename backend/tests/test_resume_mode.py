@@ -20,56 +20,10 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from app.api import sources as sources_api
+from app.models.source_config import SourceConfig
 from app.services import source_resume_service as resume_service
+from tests.conftest import FakeSession
 from app.services.source_resume_service import NewestEvidenceUnknown
-
-
-class _Result:
-    def __init__(self, value):
-        self._value = value
-
-    def scalar_one_or_none(self):
-        return self._value
-
-
-class _Session:
-    """
-    Returns queued rows in order, and records every write it is asked for.
-
-    `evidence` stands in for what the workspace already holds, so a test can
-    compare the count before and after. `statements` catches the hole a
-    delete-recording stub leaves open: a bulk `execute(delete(EvidenceItem))`
-    writes nothing through .delete() and would otherwise pass unnoticed.
-    """
-
-    def __init__(self, rows, evidence=3):
-        self._rows = list(rows)
-        self.added: list = []
-        self.deleted: list = []
-        self.statements: list[str] = []
-        self.evidence = evidence
-        self.commits = 0
-
-    async def execute(self, stmt):
-        self.statements.append(str(stmt).lower())
-        return _Result(self._rows.pop(0) if self._rows else None)
-
-    def wrote_anything_destructive(self) -> bool:
-        return any(
-            verb in stmt for stmt in self.statements for verb in ("delete", "update")
-        )
-
-    def add(self, obj):
-        self.added.append(obj)
-
-    async def delete(self, obj):
-        self.deleted.append(obj)
-
-    async def commit(self):
-        self.commits += 1
-
-    async def refresh(self, _obj):
-        pass
 
 
 CURSOR = "telegram:chan:500"
@@ -110,7 +64,7 @@ def connector(monkeypatch):
 
 
 async def _resume(source, mode, db=None):
-    db = db or _Session([object(), source])      # membership row, then the source
+    db = db or FakeSession(rows={SourceConfig: source})
     await sources_api.resume_source(
         workspace_id=uuid.uuid4(),
         source_id=source.id,
@@ -127,7 +81,7 @@ class TestResumeModeIsExplicit:
     async def test_patch_cannot_unpause_without_choosing(self):
         """The back door: PATCH is_paused=false would be a silent default."""
         source = _paused_source()
-        db = _Session([object(), source])
+        db = FakeSession(rows={SourceConfig: source})
 
         with pytest.raises(HTTPException) as exc:
             await sources_api.update_source(
@@ -166,11 +120,11 @@ class TestCatchUp:
     async def test_removes_nothing(self, connector):
         connector(None)
         source = _paused_source()
-        db = _Session([object(), source], evidence=3)
+        db = FakeSession(rows={SourceConfig: source})
 
         await _resume(source, "catch_up", db=db)
 
-        assert db.evidence == 3                   # the workspace's evidence is untouched
+        assert not db.touched("evidence_items")   # the workspace's evidence is untouched
         assert db.deleted == []
         assert db.added == []
         assert not db.wrote_anything_destructive()
@@ -191,11 +145,11 @@ class TestResumeFromNow:
     async def test_removes_nothing(self, connector):
         connector("telegram:chan:900")
         source = _paused_source()
-        db = _Session([object(), source], evidence=3)
+        db = FakeSession(rows={SourceConfig: source})
 
         await _resume(source, "from_now", db=db)
 
-        assert db.evidence == 3                   # declining a backlog is not deleting it
+        assert not db.touched("evidence_items")   # declining a backlog is not deleting it
         assert db.deleted == []
         assert db.added == []
         assert not db.wrote_anything_destructive()
