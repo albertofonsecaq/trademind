@@ -11,28 +11,17 @@ import uuid
 from app.core.clock import as_utc
 
 
-def to_naive_utc(dt: datetime | None) -> datetime | None:
-    """Coerce a datetime to naive UTC, for a platform API that requires one.
-
-    This is the one place a naive timestamp is legitimate (ADR 1): some platform
-    APIs will not take an aware value. Everything above the connectors works in
-    aware UTC, so this converts on the way *out* to such an API and nowhere
-    else — a call to it anywhere above this layer is a leftover, not a decision.
-
-    As of #34 it has **no caller**: Telethon accepts aware datetimes and the
-    YouTube API's timestamps are parsed by us, so neither platform we talk to
-    insists on naive. Kept rather than deleted because the next connector may,
-    and because deleting shims is #37's job, not this batch's.
-    """
-    if dt is None or dt.tzinfo is None:
-        return dt
-    return dt.astimezone(timezone.utc).replace(tzinfo=None)
-
-
 # Reading a value *in* as aware UTC is the same operation wherever it happens,
 # so the connectors use the clock's rather than keeping a second copy of it.
 # Imported here because this is the layer whose contract it expresses.
 to_aware_utc = as_utc
+
+# There is deliberately no to_naive_utc any more. ADR 1 keeps the connector
+# layer as the one place a naive value *could* be legitimate, and #4 added that
+# helper for Telethon and YouTube — but neither insists on naive, so it spent
+# #34 through #36 with no caller at all and was deleted in #37. If a future
+# platform does demand one, it belongs here, converting on the way out to that
+# API and nowhere else. The shape is in this comment and in git history.
 
 
 @dataclass(frozen=True)

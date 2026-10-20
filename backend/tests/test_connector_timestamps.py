@@ -6,10 +6,13 @@ aware. Comparing those against a connector's own timestamps raised TypeError and
 made the backfill endpoint unusable.
 
 #4 fixed it by normalizing both sides down to naive. #34 reversed the direction:
-connectors now hand out aware UTC like everything else (ADR 1), and `to_naive_utc`
-survives only for a platform API that insists on naive. Either way the property
-these tests pin is the same — a connector accepts a bound whichever way it
-arrives, and comparisons inside it never mix the two.
+connectors hand out aware UTC like everything else (ADR 1), and #37 deleted
+`to_naive_utc` once it turned out no platform we talk to insists on naive.
+
+Either way the property these tests pin is the same, and it is the one that
+matters: a connector accepts a bound whichever way it arrives, and comparisons
+inside it never mix the two. The unit tests for the deleted helper went with it;
+this is where the guarantee actually lived.
 """
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -17,27 +20,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from telethon.tl.types import Message, PeerChannel
 
-from app.connectors.base import to_naive_utc
 from app.connectors.telegram import TelegramConnector
 
 UTC_NOON = datetime(2026, 9, 18, 12, tzinfo=timezone.utc)
-
-
-class TestToNaiveUtc:
-    def test_strips_utc(self):
-        assert to_naive_utc(UTC_NOON) == datetime(2026, 9, 18, 12)
-
-    def test_converts_other_offsets_rather_than_stripping(self):
-        # 14:00+02:00 is 12:00Z — a naive strip would wrongly yield 14:00.
-        plus_two = datetime(2026, 9, 18, 14, tzinfo=timezone(timedelta(hours=2)))
-        assert to_naive_utc(plus_two) == datetime(2026, 9, 18, 12)
-
-    def test_passes_naive_through(self):
-        naive = datetime(2026, 9, 18, 12)
-        assert to_naive_utc(naive) is naive
-
-    def test_passes_none_through(self):
-        assert to_naive_utc(None) is None
 
 
 def _message(msg_id: int, when: datetime) -> Message:
