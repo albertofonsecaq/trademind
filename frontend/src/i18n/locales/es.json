@@ -311,6 +311,14 @@
     "removeSource": "Eliminar fuente",
     "connection": "Cuenta de Telegram",
     "noConnectionNeeded": "Sin cuenta requerida (usa clave API)",
+    "via": "vía {{label}}",
+    "connectionMissing": "Sin cuenta vinculada — esta fuente no puede obtener contenido hasta que se conecte una.",
+    "connectionUnhealthy": "Esta cuenta no se puede usar, así que la fuente no se está obteniendo.",
+    "connectionStatus": {
+      "pending": "Pendiente de confirmación",
+      "active": "Activa",
+      "revoked": "Revocada"
+    },
     "backfillStartDate": "Ingerir historial desde (opcional)",
     "backfillStartDateHint": "Vacío = historial completo disponible. Establece una fecha para limitar qué tan atrás va la ingesta inicial.",
     "configure": "Configurar",

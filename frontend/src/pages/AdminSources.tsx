@@ -379,16 +379,66 @@ function SourcePanel({ source, workspaceId, workspacePaused, onSaved }: {
   );
 }
 
+const CONNECTION_TONE: Record<string, { background: string; color: string }> = {
+  active: { background: "#e8f5e9", color: "#2e7d32" },
+  pending: { background: "#fff3e0", color: "#e65100" },
+  revoked: { background: "#fdecea", color: "#c0392b" },
+};
+
+function ConnectionStatus({ status }: { status: string }) {
+  const { t } = useTranslation();
+  return (
+    <span style={{ ...pill, ...(CONNECTION_TONE[status] || CONNECTION_TONE.pending) }}>
+      {t(`sources.connectionStatus.${status}`, status)}
+    </span>
+  );
+}
+
+// ── which account fetches a source ───────────────────────────────────────────
+// Written on add and shown nowhere until now (#28). It matters because a
+// workspace may hold several Telegram accounts: when one is revoked, the rows
+// that just went quiet are otherwise unidentifiable.
+function SourceConnection({ source, connection }: {
+  source: Source; connection: Connection | undefined;
+}) {
+  const { t } = useTranslation();
+
+  if (source.source_type !== "telegram") {
+    // Not missing a connection — it never needed one.
+    return (
+      <span style={{ fontSize: "0.75rem", color: "#aaa" }}>
+        {t("sources.noConnectionNeeded")}
+      </span>
+    );
+  }
+  if (!connection) {
+    return (
+      <span style={{ fontSize: "0.75rem", color: "#c0392b" }}>
+        {t("sources.connectionMissing")}
+      </span>
+    );
+  }
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem" }}>
+      <span style={{ fontSize: "0.75rem", color: "#888" }}>
+        {t("sources.via", { label: connection.label })}
+      </span>
+      <ConnectionStatus status={connection.status} />
+    </span>
+  );
+}
+
 // ── one source, one row ───────────────────────────────────────────────────────
 // Every per-source affordance lives here. Two lists used to render their own
 // copy, so a YouTube channel appeared twice with two sets of controls — and two
 // resume prompts at once — and anything new had to be written into both (#18).
 function SourceRow({
-  source, workspaceId, workspacePaused,
+  source, connection, workspaceId, workspacePaused,
   expanded, busy, fetching, fetchInProgress, resumePromptOpen, pauseError,
   onToggleExpanded, onTogglePause, onFetch, onResume, onCancelResume, onDelete, onSaved,
 }: {
   source: Source;
+  connection: Connection | undefined;
   workspaceId: string | null | undefined;
   workspacePaused: boolean;
   expanded: boolean;
@@ -429,6 +479,15 @@ function SourceRow({
           <button style={btn(false, true)} onClick={onDelete}>{t("common.delete")}</button>
         </div>
       </div>
+
+      <div style={{ marginTop: "0.3rem" }}>
+        <SourceConnection source={source} connection={connection} />
+      </div>
+      {source.source_type === "telegram" && connection && connection.status !== "active" && (
+        <p style={{ margin: "0.15rem 0 0", fontSize: "0.77rem", color: "#c0392b" }}>
+          {t("sources.connectionUnhealthy")}
+        </p>
+      )}
 
       <div style={{ display: "flex", gap: "0.3rem", marginTop: "0.3rem", flexWrap: "wrap" }}>
         {(["text", "image", "video", "url"] as const).filter((k) => source.content_filters?.[k]).map((k) => (
@@ -691,9 +750,7 @@ export function AdminSources() {
             connections.map((c) => (
               <div key={c.id} style={{ display: "flex", alignItems: "center", gap: "0.6rem", padding: "0.45rem 0", borderBottom: "1px solid #f5f5f5" }}>
                 <span style={{ fontSize: "0.875rem", fontWeight: 500 }}>{c.label}</span>
-                <span style={{ fontSize: "0.72rem", padding: "2px 8px", borderRadius: "12px", background: c.status === "active" ? "#e8f5e9" : "#fff3e0", color: c.status === "active" ? "#2e7d32" : "#e65100" }}>
-                  {c.status}
-                </span>
+                <ConnectionStatus status={c.status} />
               </div>
             ))
           )}
@@ -827,6 +884,7 @@ export function AdminSources() {
               <SourceRow
                 key={s.id}
                 source={s}
+                connection={connections.find((c) => c.id === s.platform_connection_id)}
                 workspaceId={workspaceId}
                 workspacePaused={!!workspace?.ingestion_paused}
                 expanded={expandedId === s.id}
