@@ -8,8 +8,9 @@ from decimal import Decimal
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
+from app.core.clock import with_aware_snapshot_times
 from app.core.database import get_db, AsyncSessionLocal
 from app.core.dependencies import get_current_user
 from app.models.user import User
@@ -41,7 +42,14 @@ class FlowchartSpec(BaseModel):
 
 
 class StrategyCardOut(BaseModel):
+    """A card as served. See version_history below for the one normalization."""
+
     model_config = {"from_attributes": True}
+
+    @field_validator("version_history", mode="after")
+    @classmethod
+    def _aware_snapshot_times(cls, value: list) -> list:
+        return with_aware_snapshot_times(value)
 
     id: uuid.UUID
     workspace_id: uuid.UUID
@@ -59,6 +67,9 @@ class StrategyCardOut(BaseModel):
     walk_forward_result: dict | None
     validation_updated_at: datetime | None
     version: int
+    # Normalized on the way out: a history written across the #8 batches holds
+    # both naive and aware timestamps, and a client reading the offset-less ones
+    # as local time would render the same moment a day off.
     version_history: list
     last_updated: datetime
     created_at: datetime
