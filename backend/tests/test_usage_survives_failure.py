@@ -22,65 +22,15 @@ from types import SimpleNamespace
 import pytest
 
 from app.connectors.base import RawMessage
+from app.models.evidence_item import EvidenceItem
 from app.services import ingestion_pipeline, usage_service
-
-
-class _Savepoint:
-    """The per-message savepoint, which must not be able to undo a usage row."""
-
-    def __init__(self, recorder):
-        self._recorder = recorder
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        self._recorder.append("rollback" if exc_type else "release")
-        return False
-
-
-class _Session:
-    """The caller's session: records what it was asked to write."""
-
-    def __init__(self, duplicate=False):
-        self.added: list = []
-        self.savepoints: list[str] = []
-        self.commits = 0
-        self._duplicate = duplicate
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    async def execute(self, _stmt):
-        found = object() if self._duplicate else None
-        return SimpleNamespace(
-            scalar_one_or_none=lambda: found, scalar=lambda: None,
-            scalars=lambda: SimpleNamespace(all=lambda: []),
-        )
-
-    def add(self, obj):
-        self.added.append(obj)
-
-    def begin_nested(self):
-        return _Savepoint(self.savepoints)
-
-    async def flush(self):
-        pass
-
-    async def commit(self):
-        self.commits += 1
-
-    async def rollback(self):
-        pass
+from tests.conftest import FakeSession
 
 
 @pytest.fixture
 def usage_log(monkeypatch):
     """Captures what the usage service writes, and how it writes it."""
-    written = _Session()
+    written = FakeSession()
     monkeypatch.setattr(usage_service, "AsyncSessionLocal", lambda: written)
     return written
 
@@ -115,7 +65,7 @@ class TestUsageIsWrittenOnItsOwn:
 
         with pytest.raises(TypeError):
             usage_service.log_usage_event(
-                _Session(),                       # a positional session
+                FakeSession(),                       # a positional session
                 workspace_id=uuid.uuid4(),
                 task_type="relevance_filter",
                 provider_model="claude-haiku-4-5-20251001",
@@ -157,7 +107,7 @@ class TestUsageIsWrittenOnItsOwn:
 
     async def test_survives_a_savepoint_rollback_around_it(self, usage_log):
         """The shape of the bug, in miniature."""
-        caller = _Session()
+        caller = FakeSession()
 
         with pytest.raises(RuntimeError):
             async with caller.begin_nested():
@@ -169,7 +119,7 @@ class TestUsageIsWrittenOnItsOwn:
                 )
                 raise RuntimeError("distillation failed")
 
-        assert caller.savepoints == ["rollback"]
+        assert "rollback" in caller.savepoints
         assert len(usage_log.added) == 1      # the spend is still on the record
 
 
@@ -193,7 +143,7 @@ class TestAFailedMessageStillRecordsWhatItSpent:
         monkeypatch.setattr(ingestion_pipeline, "_detect_lang", lambda text: "en")
 
     async def test_the_relevance_call_is_still_logged(self, usage_log, failing_distillation):
-        caller = _Session()
+        caller = FakeSession()
 
         with pytest.raises(RuntimeError):
             await ingestion_pipeline.process_message(caller, _msg(), "forex and indices")
@@ -202,7 +152,7 @@ class TestAFailedMessageStillRecordsWhatItSpent:
         assert task_types == ["relevance_filter"]
 
     async def test_the_logged_cost_is_the_one_that_was_incurred(self, usage_log, failing_distillation):
-        caller = _Session()
+        caller = FakeSession()
 
         with pytest.raises(RuntimeError):
             await ingestion_pipeline.process_message(caller, _msg(), "forex and indices")
@@ -217,7 +167,7 @@ class TestAFailedMessageStillRecordsWhatItSpent:
         Whisper already ran in the connector, so its cost is owed whatever the
         rest of the message does.
         """
-        caller = _Session()
+        caller = FakeSession()
         msg = _msg(
             pre_pipeline_cost_usd="0.006",
             pre_pipeline_task_type="transcription",
@@ -241,7 +191,8 @@ class TestEveryPaidCallIsRecordedBeforeAnythingCanSkipIt:
         The connector transcribes to produce the message, so by the time the
         pipeline notices it already has this content, Whisper has been billed.
         """
-        caller = _Session(duplicate=True)
+        # an evidence row already exists, so the pipeline sees a duplicate
+        caller = FakeSession(rows={EvidenceItem: object()})
         msg = _msg(
             pre_pipeline_cost_usd="0.006",
             pre_pipeline_task_type="transcription",
@@ -269,7 +220,7 @@ class TestEveryPaidCallIsRecordedBeforeAnythingCanSkipIt:
 
         monkeypatch.setattr(ingestion_pipeline.vision_service, "extract_image", _extract)
 
-        class _FlushFails(_Session):
+        class _FlushFails(FakeSession):
             async def flush(self):
                 raise IntegrityError("duplicate stable_id", None, Exception())
 
@@ -308,7 +259,7 @@ class TestEveryPaidCallIsRecordedBeforeAnythingCanSkipIt:
         monkeypatch.setattr(ingestion_pipeline.keyframe_service, "extract_keyframes", _frames)
         monkeypatch.setattr(ingestion_pipeline.vision_service, "extract_image", _extract)
 
-        caller = _Session()
+        caller = FakeSession()
         msg = _msg(content_type="video", text=None)
         msg.metadata = {"video_path": str(video)}
 

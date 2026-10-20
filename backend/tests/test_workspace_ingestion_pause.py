@@ -20,97 +20,12 @@ from fastapi import BackgroundTasks, HTTPException
 
 from app.api import sources as sources_api
 from app.api import workspaces as workspaces_api
+from app.models.backfill_job import BackfillJob
 from app.models.source_config import SourceConfig
+from app.models.workspace import Workspace
 from app.schemas.workspace import IngestionPauseRequest
+from tests.conftest import FakeSession
 from app.workers import poller
-
-
-class _Result:
-    def __init__(self, value):
-        self._value = value
-
-    def scalars(self):
-        return self
-
-    def all(self):
-        return self._value
-
-    def scalar_one_or_none(self):
-        return self._value
-
-
-class _PollSession:
-    """
-    Answers by what the statement asks for, never by call order.
-
-    Positional fakes lie here: the poll skips the workspace lookup entirely for
-    a source that is itself paused, or whose cadence has not elapsed, so a
-    call-counting stub silently hands back the wrong workspace and the test
-    passes for the wrong reason. Looking up the id in the statement's own
-    parameters keeps the fake honest, and `workspace_lookups` lets a test prove
-    the skip came from the workspace gate rather than from a missing row.
-    """
-
-    def __init__(self, sources, workspaces):
-        self._sources = sources
-        self._workspaces = {ws.id: ws for ws in workspaces}
-        self.workspace_lookups: list[uuid.UUID] = []
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    async def execute(self, stmt):
-        entity = stmt.column_descriptions[0]["entity"]
-        if entity is SourceConfig:
-            return _Result(self._sources)
-        for value in stmt.compile().params.values():
-            if value in self._workspaces:
-                self.workspace_lookups.append(value)
-                return _Result(self._workspaces[value])
-        return _Result(None)
-
-    async def commit(self):
-        pass
-
-
-class _ApiSession:
-    """Queued rows in order; records writes and the statements it was given."""
-
-    def __init__(self, rows):
-        self._rows = list(rows)
-        self.added: list = []
-        self.statements: list[str] = []
-        self.commits = 0
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    async def execute(self, stmt):
-        self.statements.append(str(stmt).lower())
-        return _Result(self._rows.pop(0) if self._rows else None)
-
-    def add(self, obj):
-        self.added.append(obj)
-
-    async def commit(self):
-        self.commits += 1
-
-    async def refresh(self, _obj):
-        pass
-
-    def touched_sources(self) -> bool:
-        """
-        Any mention at all, not just an UPDATE: the switch has no business
-        reading sources either, and a handler that loaded them could mutate
-        them through the ORM without ever issuing an UPDATE of its own.
-        """
-        return any("source_configs" in s for s in self.statements)
 
 
 def _workspace(*, paused: bool) -> SimpleNamespace:
@@ -147,7 +62,9 @@ def poll(monkeypatch):
     monkeypatch.setattr(billing_service, "is_budget_exhausted", _no)
 
     async def run(sources, workspaces):
-        session = _PollSession(sources, workspaces)
+        session = FakeSession(
+            rows={SourceConfig: sources, Workspace: {ws.id: ws for ws in workspaces}}
+        )
         monkeypatch.setattr(poller, "AsyncSessionLocal", lambda: session)
         await poller._poll_all_sources()
         return SimpleNamespace(fetched=fetched, session=session)
@@ -182,7 +99,7 @@ class TestPollSkipsPausedWorkspaces:
         assert result.fetched == []
         # Both sources reached the workspace gate and were turned back there,
         # rather than falling out earlier on a lookup that returned nothing.
-        assert result.session.workspace_lookups == [paused_ws.id, paused_ws.id]
+        assert result.session.lookup_keys == [paused_ws.id, paused_ws.id]
 
 
 class TestTheTwoSwitchesTogether:
@@ -201,14 +118,14 @@ class TestTheTwoSwitchesTogether:
 
         assert result.fetched == ["running"]
         # The paused source never even needed its workspace read.
-        assert result.session.workspace_lookups == [ws.id]
+        assert result.session.lookup_keys == [ws.id]
 
 
 # ── the switch leaves everything underneath it alone ──────────────────────────
 
 class TestSwitchKeepsPerSourceState:
     async def _toggle(self, workspace, paused: bool):
-        db = _ApiSession([object(), workspace])      # membership row, then workspace
+        db = FakeSession(rows={Workspace: workspace})
         await workspaces_api.set_ingestion_paused(
             workspace_id=workspace.id,
             payload=IngestionPauseRequest(paused=paused),
@@ -228,12 +145,12 @@ class TestSwitchKeepsPerSourceState:
 
         db = await self._toggle(ws, True)
         assert ws.ingestion_paused is True
-        assert not db.touched_sources()
+        assert not db.touched("source_configs")
         assert len(db.statements) == 2                # membership, workspace
 
         db = await self._toggle(ws, False)
         assert ws.ingestion_paused is False
-        assert not db.touched_sources()
+        assert not db.touched("source_configs")
         assert len(db.statements) == 2
 
 
@@ -243,7 +160,7 @@ class TestPausedWorkspaceRejectsOnDemandWork:
     async def test_fetch_now_is_rejected_with_409(self):
         ws = _workspace(paused=True)
         source = _source("chan", workspace_id=ws.id)
-        db = _ApiSession([object(), ws, source])
+        db = FakeSession(rows={Workspace: ws, SourceConfig: source})
         tasks = BackgroundTasks()
 
         with pytest.raises(HTTPException) as exc:
@@ -258,7 +175,7 @@ class TestPausedWorkspaceRejectsOnDemandWork:
     async def test_backfill_is_rejected_with_409(self):
         ws = _workspace(paused=True)
         source = _source("chan", workspace_id=ws.id)
-        db = _ApiSession([object(), ws, source])
+        db = FakeSession(rows={Workspace: ws, SourceConfig: source})
 
         with pytest.raises(HTTPException) as exc:
             await sources_api.trigger_backfill(
@@ -283,7 +200,7 @@ class TestPausedWorkspaceRejectsOnDemandWork:
             date_range_start=datetime(2026, 9, 1), date_range_end=None,
             completed_at=None, error_message=None,
         )
-        db = _ApiSession([job, source, ws])
+        db = FakeSession(rows={BackfillJob: job, SourceConfig: source, Workspace: ws})
         monkeypatch.setattr(sources_api, "AsyncSessionLocal", lambda: db)
 
         built: list = []

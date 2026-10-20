@@ -36,55 +36,13 @@ from app.models.source_config import SourceConfig
 from app.models.trade_idea import TradeIdea
 from app.models.user import User
 from app.models.workspace import Workspace
+from tests.conftest import make_card, make_job, make_source, make_workspace
 
 pytestmark = pytest.mark.db
 
 # Microseconds on purpose: a round trip that silently truncated sub-second
 # precision would still satisfy a whole-second instant.
 AN_INSTANT = datetime(2026, 1, 22, 14, 30, 5, 123456, tzinfo=timezone.utc)
-
-
-async def _a_source(session) -> SourceConfig:
-    """
-    A user, a workspace and a source — the minimum a backfill job needs.
-
-    Flushed in turn rather than together: these three carry foreign keys to each
-    other with no matching relationships, so the unit of work has no dependency
-    to order the inserts by and would otherwise send a child first. (The job
-    below is fine either way — a source does declare its backfill jobs.)
-    """
-    user = User(
-        id=uuid.uuid4(),
-        email=f"timestamps-{uuid.uuid4().hex[:8]}@example.com",
-        password_hash="x",
-    )
-    session.add(user)
-    await session.flush()
-
-    workspace = Workspace(
-        id=uuid.uuid4(), name="timestamp check", owner_user_id=user.id,
-        topic_scope="forex",
-    )
-    session.add(workspace)
-    await session.flush()
-
-    source = SourceConfig(
-        id=uuid.uuid4(), workspace_id=workspace.id, source_type="telegram",
-        identifier="chan", created_by_user_id=user.id,
-    )
-    session.add(source)
-    await session.flush()
-    return source
-
-
-def _a_job(source: SourceConfig, starting: datetime) -> BackfillJob:
-    return BackfillJob(
-        id=uuid.uuid4(),
-        source_config_id=source.id,
-        workspace_id=source.workspace_id,
-        date_range_start=starting,
-        triggered_by_user_id=source.created_by_user_id,
-    )
 
 
 class TestThePremise:
@@ -125,8 +83,8 @@ class TestAnAwareWrite:
         `DataError: can't subtract offset-naive and offset-aware datetimes`
         before #34, because the mapping bound it as TIMESTAMP WITHOUT TIME ZONE.
         """
-        source = await _a_source(db_session)
-        job = _a_job(source, AN_INSTANT)                        # aware, unconverted
+        source = await make_source(db_session)
+        job = make_job(source, AN_INSTANT)                        # aware, unconverted
         db_session.add(job)
         await db_session.flush()
 
@@ -144,9 +102,9 @@ class TestAnAwareWrite:
         An aware value need not be UTC — a client could send +05:30 — and what
         is stored is the instant, not the wall clock it was written in.
         """
-        source = await _a_source(db_session)
+        source = await make_source(db_session)
         in_kolkata = AN_INSTANT.astimezone(timezone(timedelta(hours=5, minutes=30)))
-        job = _a_job(source, in_kolkata)
+        job = make_job(source, in_kolkata)
         db_session.add(job)
         await db_session.flush()
 
@@ -186,8 +144,8 @@ class TestANaiveWrite:
         """
         monkeypatch.setenv("TZ", "America/New_York")
         time.tzset()
-        source = await _a_source(db_session)
-        job = _a_job(source, AN_INSTANT.replace(tzinfo=None))
+        source = await make_source(db_session)
+        job = make_job(source, AN_INSTANT.replace(tzinfo=None))
         db_session.add(job)
         await db_session.flush()
 
@@ -213,13 +171,13 @@ class TestTheApiBoundary:
         """
         from app.api.sources import BackfillRequest
 
-        source = await _a_source(db_session)
+        source = await make_source(db_session)
         without_offset = BackfillRequest(date_range_start="2026-01-22T14:30:05.123456")
         with_offset = BackfillRequest(date_range_start="2026-01-22T14:30:05.123456+00:00")
 
         stored = []
         for payload in (without_offset, with_offset):
-            job = _a_job(source, payload.date_range_start)
+            job = make_job(source, payload.date_range_start)
             db_session.add(job)
             await db_session.flush()
             stored.append(
@@ -244,7 +202,7 @@ class TestEveryIngestionColumnRoundTrips:
     """
 
     async def test_evidence_and_the_idea_drawn_from_it(self, db_session):
-        source = await _a_source(db_session)
+        source = await make_source(db_session)
         evidence = EvidenceItem(
             id=uuid.uuid4(), workspace_id=source.workspace_id,
             source_config_id=source.id, stable_id=f"telegram:chan:{uuid.uuid4().hex[:6]}",
@@ -273,7 +231,7 @@ class TestEveryIngestionColumnRoundTrips:
             assert abs(created - datetime.now(timezone.utc)) < timedelta(minutes=5)
 
     async def test_a_platform_connection(self, db_session):
-        source = await _a_source(db_session)
+        source = await make_source(db_session)
         connection = PlatformConnection(
             id=uuid.uuid4(), workspace_id=source.workspace_id, platform="telegram",
             label="an account", connected_by_user_id=source.created_by_user_id,
@@ -292,7 +250,7 @@ class TestEveryIngestionColumnRoundTrips:
         assert stored == (AN_INSTANT, AN_INSTANT)
 
     async def test_every_source_timestamp(self, db_session):
-        source = await _a_source(db_session)
+        source = await make_source(db_session)
         source.backfill_start_date = AN_INSTANT
         source.paused_at = AN_INSTANT
         source.last_fetched_item_at = AN_INSTANT
@@ -314,7 +272,7 @@ class TestEveryIngestionColumnRoundTrips:
 
     async def test_an_embedding_row(self, db_session):
         """Only a created_at, and it comes entirely from the model's default."""
-        source = await _a_source(db_session)
+        source = await make_source(db_session)
         row = EmbeddingRow(
             id=uuid.uuid4(), workspace_id=source.workspace_id, source_type="telegram",
             source_id=str(uuid.uuid4()), text="EURUSD breakout",
@@ -333,8 +291,8 @@ class TestEveryIngestionColumnRoundTrips:
         assert abs(created - datetime.now(timezone.utc)) < timedelta(minutes=5)
 
     async def test_a_backfill_jobs_own_default(self, db_session):
-        source = await _a_source(db_session)
-        job = _a_job(source, AN_INSTANT)
+        source = await make_source(db_session)
+        job = make_job(source, AN_INSTANT)
         db_session.add(job)
         await db_session.flush()
 
@@ -365,7 +323,7 @@ class TestEveryKnowledgeColumnRoundTrips:
         """Returns the card and the user who owns the personal rows below it."""
         from app.models.strategy_card import StrategyCard
 
-        source = await _a_source(session)
+        source = await make_source(session)
         card = StrategyCard(
             id=uuid.uuid4(), workspace_id=source.workspace_id,
             setup_type="breakout", symbol_scope="EURUSD",
@@ -400,7 +358,7 @@ class TestEveryKnowledgeColumnRoundTrips:
         from app.models.trade_idea import TradeIdea
         from app.models.evidence_item import EvidenceItem
 
-        source = await _a_source(db_session)
+        source = await make_source(db_session)
         evidence = EvidenceItem(
             id=uuid.uuid4(), workspace_id=source.workspace_id,
             source_config_id=source.id, stable_id=f"telegram:chan:{uuid.uuid4().hex[:6]}",

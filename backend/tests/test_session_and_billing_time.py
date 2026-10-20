@@ -23,6 +23,7 @@ from sqlalchemy import select
 from app.core.clock import now_utc
 from app.core.config import settings
 from app.core.security import create_access_token, create_refresh_token
+from tests.conftest import make_workspace
 
 
 class TestATokensLife:
@@ -81,33 +82,13 @@ class TestABillingPeriod:
 
     pytestmark = pytest.mark.db
 
-    async def _a_workspace(self, session):
-        import uuid
-
-        from app.models.user import User
-        from app.models.workspace import Workspace
-
-        user = User(
-            id=uuid.uuid4(), email=f"billing-{uuid.uuid4().hex[:8]}@example.com",
-            password_hash="x",
-        )
-        session.add(user)
-        await session.flush()
-        workspace = Workspace(
-            id=uuid.uuid4(), name="billing check", owner_user_id=user.id,
-            topic_scope="forex",
-        )
-        session.add(workspace)
-        await session.flush()
-        return workspace
-
     async def _a_subscription(self, session):
         """A workspace with an active subscription, and the period's start."""
         import uuid
 
         from app.models.subscription import Subscription
 
-        workspace = await self._a_workspace(session)
+        workspace = await make_workspace(session)
         period_start = datetime(2026, 1, 1, tzinfo=timezone.utc)
         sub = Subscription(
             id=uuid.uuid4(), workspace_id=workspace.id, plan_name="solo",
@@ -143,7 +124,7 @@ class TestABillingPeriod:
         from app.models.subscription import Subscription
         from app.services.billing_service import _ts
 
-        workspace = await self._a_workspace(db_session)
+        workspace = await make_workspace(db_session)
         period_start = _ts(1_767_225_600)          # 2026-01-01T00:00:00Z
         period_end = _ts(1_769_904_000)            # 2026-02-01T00:00:00Z
 
@@ -214,7 +195,7 @@ class TestABillingPeriod:
 
         from app.models.usage_event import UsageEvent
 
-        workspace = await self._a_workspace(db_session)
+        workspace = await make_workspace(db_session)
         event = UsageEvent(
             id=uuid.uuid4(), workspace_id=workspace.id,
             task_type="relevance_filter", provider_model="haiku",
@@ -297,7 +278,7 @@ class TestABillingPeriod:
         from app.models.workspace import Workspace
         from app.models.workspace_member import WorkspaceMember
 
-        workspace = await self._a_workspace(db_session)
+        workspace = await make_workspace(db_session)
         member = WorkspaceMember(
             id=uuid.uuid4(), workspace_id=workspace.id,
             user_id=workspace.owner_user_id, role="owner",

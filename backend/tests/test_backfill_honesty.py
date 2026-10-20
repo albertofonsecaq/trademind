@@ -22,7 +22,11 @@ import pytest
 from app.api import sources as sources_api
 from app.connectors.base import RawMessage
 from app.core.llm_errors import is_fatal_for_run
+from app.models.backfill_job import BackfillJob
+from app.models.source_config import SourceConfig
+from app.models.workspace import Workspace
 from app.services import ingestion_pipeline
+from tests.conftest import FakeSession
 
 REQUEST = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
 
@@ -89,47 +93,6 @@ class TestFatalProviderErrors:
 
 # ── fakes ─────────────────────────────────────────────────────────────────────
 
-class _Savepoint:
-    """Records how each message's savepoint ended, as #2's fix depends on."""
-
-    def __init__(self, recorder):
-        self._recorder = recorder
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        self._recorder.append("rollback" if exc_type else "release")
-        return False            # never swallow: the caller decides
-
-
-class _Session:
-    def __init__(self, rows):
-        self._rows = list(rows)
-        self.savepoints: list[str] = []
-        self.commits = 0
-        self.rollbacks = 0
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    async def execute(self, _stmt):
-        value = self._rows.pop(0) if self._rows else None
-        return SimpleNamespace(scalar_one_or_none=lambda: value, scalar=lambda: None)
-
-    def begin_nested(self):
-        return _Savepoint(self.savepoints)
-
-    async def commit(self):
-        self.commits += 1
-
-    async def rollback(self):
-        self.rollbacks += 1
-
-
 def _job(**over) -> SimpleNamespace:
     return SimpleNamespace(
         id=uuid.uuid4(), source_config_id=uuid.uuid4(), workspace_id=uuid.uuid4(),
@@ -179,7 +142,9 @@ def backfill(monkeypatch):
 
         monkeypatch.setattr(ingestion_pipeline, "_build_connector", lambda s: _Connector())
         monkeypatch.setattr(ingestion_pipeline, "process_message", process)
-        db = _Session([job, source, workspace])
+        db = FakeSession(
+            rows={BackfillJob: job, SourceConfig: source, Workspace: workspace}
+        )
         monkeypatch.setattr(sources_api, "AsyncSessionLocal", lambda: db)
 
         async def go():
@@ -279,7 +244,7 @@ class TestFetchPipelineReportsFailures:
 
             monkeypatch.setattr(ingestion_pipeline, "_build_connector", lambda s: _Connector())
             monkeypatch.setattr(ingestion_pipeline, "process_message", process)
-            return source, attempted, _Session([source])
+            return source, attempted, FakeSession(rows={SourceConfig: source})
 
         return run
 
