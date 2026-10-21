@@ -603,6 +603,9 @@ export function AdminSources() {
     setSources(s.data);
     setWorkspace(w.data);
     if (c.data.length > 0 && !newConnId) setNewConnId(c.data[0].id);
+    // Returned as well as stored: a handler that has just failed needs this
+    // now, and the state it sets is not readable until the next render.
+    return { connections: c.data, sources: s.data };
   };
 
   useEffect(() => { load(); }, [workspaceId]);
@@ -736,14 +739,19 @@ export function AdminSources() {
       await api.post(`/workspaces/${workspaceId}/sources/${source.id}/resume`, { mode });
       setResumingId(null);
       await load();
-    } catch (err) {
-      // The server's own sentence when it has one: a resume refused because
-      // Telegram ended the session has to say so, or the user is left reading
-      // "could not resume" and retrying something that cannot work (#57). The
-      // translated line stays as the fallback for everything else.
-      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+    } catch {
+      // A resume can fail because Telegram ended the account's session, and
+      // then "could not resume" is true but useless: resuming will keep
+      // failing until it is reconnected. The server records that on the
+      // connection before refusing (#54, #57), so reload and ask the state
+      // rather than parsing the message — which also keeps this sentence
+      // translated, where echoing the server's English would not.
+      const fresh = await load();
+      const connection = fresh?.connections.find((c) => c.id === source.platform_connection_id);
+      const rejected = connection !== undefined && connection.status !== "active";
       setPauseErrors((prev) => ({
-        ...prev, [source.id]: detail || t("sources.resumeFailed"),
+        ...prev,
+        [source.id]: rejected ? t("sources.resumeNeedsReconnect") : t("sources.resumeFailed"),
       }));
     } finally {
       setPausingId(null);

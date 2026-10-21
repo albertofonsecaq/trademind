@@ -349,6 +349,28 @@ class _Missing:
 _MISSING = _Missing()
 
 
+# ── platform failures the tests simulate ─────────────────────────────────────
+#
+# Telethon's RPC errors take a `request=` naming what caused them, which these
+# tests have no use for but cannot omit. Two files build them, so the shape
+# lives here rather than being copied with its explanation.
+
+
+class FakeRpcRequest:
+    """Stands in for the Telethon request an RPCError names as its cause."""
+
+
+def rpc_error(error_class, **kwargs):
+    """
+    One of Telethon's RPC errors, ready to raise.
+
+    The class is the test's subject — which way Telegram ended the session, or
+    which failure says nothing about it — so it is passed in rather than wrapped
+    one function per error.
+    """
+    return error_class(request=FakeRpcRequest(), **kwargs)
+
+
 # ── the recurring poll ───────────────────────────────────────────────────────
 
 

@@ -243,6 +243,15 @@ async def telegram_check_auth(
     return conn
 
 
+# Named like its siblings in sources.py rather than left inline: three places
+# now tell a user their session was rejected, each in the terms of what it was
+# trying to do, and they should be legible side by side (#57).
+_DIALOGS_REJECTED_DETAIL = (
+    "Telegram rejected this platform connection's session, so its channels "
+    "cannot be listed. Reconnect it first."
+)
+
+
 @router.get("/{workspace_id}/connections/telegram/{connection_id}/dialogs", response_model=list[DialogItem])
 async def list_telegram_dialogs(
     workspace_id: uuid.UUID,
@@ -267,27 +276,24 @@ async def list_telegram_dialogs(
     session_string = decrypt_credential(conn.session_credential)
 
     from app.connectors.telegram import list_dialogs
+
+    # Read outside the try below, so that only the call to Telegram is inside
+    # it: malformed auth_metadata is a bug of ours and has no business being
+    # weighed up as a credentials problem.
+    api_id, api_hash = int(meta["api_id"]), meta["api_hash"]
     try:
         return await list_dialogs(
-            api_id=int(meta["api_id"]),
-            api_hash=meta["api_hash"],
-            session_string=session_string,
+            api_id=api_id, api_hash=api_hash, session_string=session_string,
         )
     except Exception as e:
         # The path a user walks deliberately while adding a source, so it is
         # where a dead session is most likely to be discovered — and a stack
-        # trace is the worst way to discover it. Anything that is not about the
-        # credentials is left to the handlers above (#57).
+        # trace is the worst way to discover it. Anything else is re-raised
+        # untouched and answered the way it was before (#57).
         if not credentials_rejected(e):
             raise
         await mark_rejected(db, conn.id)
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Telegram rejected this platform connection's session, so its "
-                "channels cannot be listed. Reconnect it first."
-            ),
-        )
+        raise HTTPException(status_code=409, detail=_DIALOGS_REJECTED_DETAIL)
 
 
 @router.get("/{workspace_id}/connections", response_model=list[ConnectionOut])

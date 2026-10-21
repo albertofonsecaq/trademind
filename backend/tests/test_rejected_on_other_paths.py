@@ -25,31 +25,29 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
-from telethon.errors import AuthKeyUnregisteredError, FloodWaitError, SessionRevokedError
+from telethon.errors import AuthKeyUnregisteredError, FloodWaitError
 
 from app.api import connections as connections_api
 from app.api import sources as sources_api
 from app.models.platform_connection import PlatformConnection
 from app.models.source_config import SourceConfig
 from app.services import source_resume_service as resume_service
-from tests.conftest import FakeSession
-
-
-class _Request:
-    """Stands in for the Telethon request an RPCError names as its cause."""
+from tests.conftest import FakeSession, rpc_error
 
 
 def _rejection():
-    return AuthKeyUnregisteredError(request=_Request())
+    """Telegram has ended our session; nothing will work until it is replaced."""
+    return rpc_error(AuthKeyUnregisteredError)
 
 
 def _transient():
-    return FloodWaitError(request=_Request(), capture=30)
+    """A failure that says nothing at all about the credentials."""
+    return rpc_error(FloodWaitError, capture=30)
 
 
-def _connection(status="active"):
+def _connection():
     return SimpleNamespace(
-        id=uuid.uuid4(), status=status, label="an account", platform="telegram",
+        id=uuid.uuid4(), status="active", label="a connection", platform="telegram",
         session_credential="x", auth_metadata={"api_id": 1, "api_hash": "h"},
     )
 
@@ -134,8 +132,8 @@ class TestResumeWhenItFailedForOtherReasons:
 
     async def test_a_connector_that_knows_of_no_newest_item(self, monkeypatch):
         """
-        Nothing to move the cursor to, which says nothing about the account —
-        an empty channel, or one whose head was deleted.
+        No fetch position to move to, which says nothing about the connection
+        — an empty channel, or one whose head was deleted.
         """
         result = await _resume_from_now(monkeypatch, latest=None)
 
@@ -145,7 +143,14 @@ class TestResumeWhenItFailedForOtherReasons:
 
 # ── listing a connection's channels ──────────────────────────────────────────
 
-async def _list_dialogs(monkeypatch, *, failing_with):
+async def _list_dialogs(monkeypatch, *, failing_with, expecting):
+    """
+    List a connection's channels, with the listing failing as told.
+
+    Shaped like _resume_from_now: the call happens here and the raised error
+    comes back. The alternative — handing the caller something to await — reads
+    fine and passes silently the day a test forgets the await.
+    """
     connection = _connection()
     db = FakeSession(rows={PlatformConnection: {connection.id: connection}})
 
@@ -154,40 +159,39 @@ async def _list_dialogs(monkeypatch, *, failing_with):
 
     monkeypatch.setattr("app.connectors.telegram.list_dialogs", _raise)
     monkeypatch.setattr(connections_api, "decrypt_credential", lambda _c: "session")
-    return SimpleNamespace(connection=connection, db=db, call=lambda: (
-        connections_api.list_telegram_dialogs(
+
+    with pytest.raises(expecting) as exc:
+        await connections_api.list_telegram_dialogs(
             workspace_id=uuid.uuid4(), connection_id=connection.id,
             current_user=SimpleNamespace(id=uuid.uuid4()), db=db,
         )
-    ))
+    return SimpleNamespace(error=exc.value, connection=connection, db=db)
 
 
 class TestListingChannelsWhenTheSessionIsGone:
     async def test_it_refuses_instead_of_crashing(self, monkeypatch):
         """A 500 told the user nothing and left the row looking usable."""
-        listing = await _list_dialogs(monkeypatch, failing_with=_rejection())
+        listing = await _list_dialogs(
+            monkeypatch, failing_with=_rejection(), expecting=HTTPException,
+        )
 
-        with pytest.raises(HTTPException) as exc:
-            await listing.call()
-
-        assert exc.value.status_code == 409
-        assert "reconnect" in exc.value.detail.lower()
+        assert listing.error.status_code == 409
+        assert "reconnect" in listing.error.detail.lower()
 
     async def test_it_marks_the_connection(self, monkeypatch):
-        listing = await _list_dialogs(monkeypatch, failing_with=_rejection())
-
-        with pytest.raises(HTTPException):
-            await listing.call()
+        listing = await _list_dialogs(
+            monkeypatch, failing_with=_rejection(), expecting=HTTPException,
+        )
 
         assert listing.connection.status == "revoked"
 
 
 class TestListingChannelsWhenItFailedForOtherReasons:
-    async def test_the_failure_is_not_turned_into_a_revoked_account(self, monkeypatch):
-        listing = await _list_dialogs(monkeypatch, failing_with=_transient())
-
-        with pytest.raises(FloodWaitError):
-            await listing.call()
+    async def test_the_failure_is_not_turned_into_a_revoked_connection(self, monkeypatch):
+        """It still fails — just not by revoking a working connection."""
+        listing = await _list_dialogs(
+            monkeypatch, failing_with=_transient(), expecting=FloodWaitError,
+        )
 
         assert listing.connection.status == "active"
 
@@ -197,8 +201,8 @@ class TestListingChannelsWhenItFailedForOtherReasons:
 class TestCatchUpIsUntouched:
     async def test_it_does_not_reach_telegram_and_cannot_revoke_anything(self, monkeypatch):
         """
-        CATCH_UP leaves the cursor alone, so it never builds a connector — the
-        rejection handling must not have given it a reason to.
+        CATCH_UP leaves the fetch position alone, so it never builds a
+        connector — the rejection handling must not have given it a reason to.
         """
         connection = _connection()
         source = _paused_source(connection)
