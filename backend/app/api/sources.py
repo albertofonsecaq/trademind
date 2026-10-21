@@ -35,7 +35,11 @@ from app.services.ingestion_gate import (
     blocked_reason,
     connection_blocked_reason,
 )
-from app.services.source_resume_service import NewestEvidenceUnknown, ResumeMode
+from app.services.source_resume_service import (
+    NewestEvidenceUnknown,
+    ResumeMode,
+    SessionRejected,
+)
 
 router = APIRouter(prefix="/workspaces", tags=["sources"])
 
@@ -56,6 +60,13 @@ _REFUSAL_DETAIL = {
     ),
 }
 
+
+# Resuming has its own sentence: the source is still paused, which the gate's
+# wording does not say, and the thing not to do here is advise a retry (#57).
+_RESUME_REJECTED_DETAIL = (
+    "Telegram rejected this source's platform connection, so it stays paused. "
+    "Reconnect the connection, then resume."
+)
 
 # Why a queued backfill was called off, written onto the job itself.
 _CANCELLED_BECAUSE = {
@@ -392,6 +403,12 @@ async def resume_source(
 
     try:
         await resume_service.resume_source(source=source, mode=payload.mode)
+    except SessionRejected:
+        # Caught before its parent: same outcome for the source, which stays
+        # paused, but the advice below cannot work and the state is now known
+        # to be wrong, so it is written down (#54, #57).
+        await mark_rejected(db, source.platform_connection_id)
+        raise HTTPException(status_code=409, detail=_RESUME_REJECTED_DETAIL)
     except NewestEvidenceUnknown:
         # Left paused on purpose: guessing a cursor here could re-ingest the
         # whole history, and ignoring the request would be a silent catch-up.

@@ -17,6 +17,7 @@ from app.models.user import User
 from app.models.workspace_member import WorkspaceMember
 from app.models.platform_connection import PlatformConnection
 from app.models import platform_connection as connection_status
+from app.services.connection_health import credentials_rejected, mark_rejected
 
 router = APIRouter(prefix="/workspaces", tags=["connections"])
 
@@ -266,11 +267,27 @@ async def list_telegram_dialogs(
     session_string = decrypt_credential(conn.session_credential)
 
     from app.connectors.telegram import list_dialogs
-    return await list_dialogs(
-        api_id=int(meta["api_id"]),
-        api_hash=meta["api_hash"],
-        session_string=session_string,
-    )
+    try:
+        return await list_dialogs(
+            api_id=int(meta["api_id"]),
+            api_hash=meta["api_hash"],
+            session_string=session_string,
+        )
+    except Exception as e:
+        # The path a user walks deliberately while adding a source, so it is
+        # where a dead session is most likely to be discovered — and a stack
+        # trace is the worst way to discover it. Anything that is not about the
+        # credentials is left to the handlers above (#57).
+        if not credentials_rejected(e):
+            raise
+        await mark_rejected(db, conn.id)
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Telegram rejected this platform connection's session, so its "
+                "channels cannot be listed. Reconnect it first."
+            ),
+        )
 
 
 @router.get("/{workspace_id}/connections", response_model=list[ConnectionOut])

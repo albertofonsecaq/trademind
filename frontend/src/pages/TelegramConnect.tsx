@@ -110,7 +110,12 @@ export function TelegramConnect() {
     setLoadingDialogs(true);
     api.get<Dialog[]>(`/workspaces/${workspaceId}/connections/telegram/${connectionId}/dialogs`)
       .then(({ data }) => setDialogs(data))
-      .catch(() => setError(t("telegramConnect.error")))
+      // Same as the resume path: a session Telegram has rejected explains
+      // itself, and this is where a user is most likely to meet one (#57).
+      .catch((err) => setError(
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+        || t("telegramConnect.error"),
+      ))
       .finally(() => setLoadingDialogs(false));
   }, [step, connectionId, workspaceId]);
 

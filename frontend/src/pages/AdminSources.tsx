@@ -736,8 +736,15 @@ export function AdminSources() {
       await api.post(`/workspaces/${workspaceId}/sources/${source.id}/resume`, { mode });
       setResumingId(null);
       await load();
-    } catch {
-      setPauseErrors((prev) => ({ ...prev, [source.id]: t("sources.resumeFailed") }));
+    } catch (err) {
+      // The server's own sentence when it has one: a resume refused because
+      // Telegram ended the session has to say so, or the user is left reading
+      // "could not resume" and retrying something that cannot work (#57). The
+      // translated line stays as the fallback for everything else.
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setPauseErrors((prev) => ({
+        ...prev, [source.id]: detail || t("sources.resumeFailed"),
+      }));
     } finally {
       setPausingId(null);
     }

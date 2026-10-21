@@ -21,6 +21,7 @@ from typing import Literal
 
 from app.core.clock import now_utc
 from app.models.source_config import SourceConfig
+from app.services.connection_health import credentials_rejected
 from app.services.ingestion_pipeline import _build_connector
 
 log = logging.getLogger(__name__)
@@ -37,6 +38,20 @@ class NewestEvidenceUnknown(Exception):
     could not be reached at all. There is then nothing safe to move the cursor
     to: clearing it would re-ingest the source's entire history, the opposite of
     what FROM_NOW asked for. Callers leave the source paused.
+    """
+
+
+class SessionRejected(NewestEvidenceUnknown):
+    """
+    The same thing, with the one cause that changes what to tell the user: the
+    platform ended our session, so retrying the probe — or resuming the other
+    way — fails identically until the connection is reconnected (#57).
+
+    A subclass, so a caller that only knows the parent still does the safe
+    thing and leaves the source paused. One that wants to say more, or to record
+    the state, catches this first. This service deliberately has no database
+    session: it decides what kind of failure this was, and its caller decides
+    what that is worth doing about.
     """
 
 
@@ -83,6 +98,8 @@ async def resume_source(*, source: SourceConfig, mode: ResumeMode) -> None:
             log.warning(
                 "Cannot read newest item for source %s: %s", source.identifier, e, exc_info=True
             )
+            if credentials_rejected(e):
+                raise SessionRejected(source.identifier) from e
             raise NewestEvidenceUnknown(source.identifier) from e
         if not latest:
             raise NewestEvidenceUnknown(source.identifier)
