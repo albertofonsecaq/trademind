@@ -22,6 +22,11 @@ from app.models.platform_connection import PlatformConnection
 from app.services import source_resume_service as resume_service
 from app.core.clock import as_utc, now_utc
 from app.core.llm_errors import is_fatal_for_run, safe_failure_summary
+from app.services.connection_health import (
+    REJECTED_SUMMARY,
+    credentials_rejected,
+    mark_rejected,
+)
 from app.services.ingestion_gate import (
     CONNECTION_MISSING,
     CONNECTION_UNUSABLE,
@@ -541,6 +546,9 @@ async def _run_backfill_bg(job_id: uuid.UUID):
             filters = source.content_filters or {}
             topic_scope = workspace.topic_scope
             date_start, date_end = job.date_range_start, job.date_range_end
+            # Same reason as the rest: if the session is rejected mid-range we
+            # still have to know which connection to mark (#54).
+            connection_id = source.platform_connection_id
 
             count = 0
             failed = 0
@@ -601,6 +609,14 @@ async def _run_backfill_bg(job_id: uuid.UUID):
         except Exception as e:
             log.error("Backfill job %s failed: %s", job_id, e, exc_info=True)
             job.status = job_status.FAILED
-            job.error_message = safe_failure_summary(e)[:900]
+            if credentials_rejected(e):
+                # Outlives this job: every later run hits the same wall until
+                # the user reconnects, so it is written onto the connection and
+                # #49's gate stops offering the source (#54). The job says what
+                # to do about it, in our words rather than Telethon's.
+                job.error_message = REJECTED_SUMMARY
+                await mark_rejected(db, connection_id)
+            else:
+                job.error_message = safe_failure_summary(e)[:900]
 
         await db.commit()
