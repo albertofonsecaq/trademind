@@ -10,9 +10,11 @@ and a module importing both would make every caller of either depend on both.
 #49 refused work a source could not do when the stored state said so. The state
 could be wrong: Telegram ends a session from its own side — the user terminates
 that device, two-factor is re-armed, the account is deactivated — and nothing
-wrote that back, so `status` stayed "active" and the work was accepted and
-dropped. Marking the connection is the whole fix; #49's gate does the refusing,
-which is why nothing here knows about fetching (#54).
+wrote that back, so `status` stayed "active" and the work was accepted and then
+dropped. Marking the connection is the whole fix, because #49's gate does the
+refusing and #28's row copy does the explaining. That is why nothing in here
+knows anything about fetching, and why its callers only have to say "this
+failure was about the credentials" and carry on failing (#54).
 
 Getting this wrong in the other direction is the expensive one. A rate limit or
 a network blip says nothing about the credentials, and marking a connection for
@@ -24,24 +26,22 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models import platform_connection as connection_status
 from app.models.platform_connection import PlatformConnection
 
 log = logging.getLogger(__name__)
 
-# Written rather than a new status value: "revoked" is already what the gate
-# refuses and what #28's row copy describes, and the user's next step is the
-# same either way — reconnect the account. A separate "expired" would need its
-# own tone, its own two translations and its own branch in the gate to mean
-# exactly what this one does.
-REJECTED = "revoked"
+# Rejected credentials are recorded as "revoked" rather than a status of their
+# own; see docs/adr/0002-a-connection-has-three-states.md for why, and for what
+# that costs.
 
 # One line fit to store on a job row. Telethon's own wording goes nowhere near
 # it: `str()` on these errors reads "The key is not registered in the system
 # (caused by GetHistoryRequest)", which names its internals and tells the user
 # nothing about what to do — the same reason llm_errors summarizes by class.
 REJECTED_SUMMARY = (
-    "Telegram rejected this account's session, so the run stopped. "
-    "Reconnect the account and try again."
+    "Telegram rejected this platform connection's session, so the run stopped. "
+    "Reconnect it and try again."
 )
 
 
@@ -68,29 +68,33 @@ def credentials_rejected(exc: BaseException) -> bool:
     return isinstance(exc, (UnauthorizedError, AuthKeyError))
 
 
-async def mark_rejected(db: AsyncSession, connection_id: uuid.UUID | None) -> bool:
+async def mark_rejected(db: AsyncSession, connection_id: uuid.UUID | None) -> None:
     """
-    Record that this connection's credentials were rejected. Returns whether it
-    changed anything, so a caller can log once rather than every tick.
+    Record that this connection's credentials were rejected.
 
-    Re-read by id rather than taking the row the caller already has: these
-    failures surface mid-fetch, after commits that expire every loaded object,
-    and touching an expired attribute there raises MissingGreenlet and loses the
-    write we came to make (#2). The write is scoped to the one id for the same
-    reason every write in this codebase is.
+    Takes an id and re-reads the row, rather than taking the row the caller
+    already holds: the callers reach this from inside a fetch, where what they
+    hold is a relationship loaded ages earlier, and the one thing that must not
+    happen here is the write being skipped because the row in hand is stale.
+    Re-reading also means a caller does not have to have loaded `connection` at
+    all — only the foreign key, which it reads with its other attributes before
+    the loop. The write is scoped to the one id, like every write here.
+
+    A connection already in that state is left alone, so a source failing on
+    every tick writes and logs once rather than every minute. `None` is normal:
+    a YouTube source has no connection to mark.
     """
     if connection_id is None:
-        return False
+        return
     result = await db.execute(
         select(PlatformConnection).where(PlatformConnection.id == connection_id)
     )
     connection = result.scalar_one_or_none()
-    if connection is None or connection.status == REJECTED:
-        return False
-    connection.status = REJECTED
+    if connection is None or connection.status == connection_status.REVOKED:
+        return
+    connection.status = connection_status.REVOKED
     await db.commit()
     log.warning(
-        "Platform connection %s marked %s: its credentials were rejected",
-        connection_id, REJECTED,
+        "Platform connection %s marked %s: Telegram rejected its credentials",
+        connection_id, connection_status.REVOKED,
     )
-    return True

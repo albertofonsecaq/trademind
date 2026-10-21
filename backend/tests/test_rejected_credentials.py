@@ -128,10 +128,12 @@ class _Connector:
         return None
 
 
-def _a_message(rows, *, number: int) -> RawMessage:
+def _a_message(rows, *, number: int, allowed: bool = False) -> RawMessage:
     """
-    A message the source's filters reject, so the position advances without any
-    model call — this file is about the failure, not the pipeline.
+    By default a message the source's filters reject, so the position advances
+    without any model call — this file is about the failure, not the pipeline.
+    `allowed=True` gets one counted as ingested, for the tests about what a run
+    had already achieved when the session died.
     """
     return RawMessage(
         stable_id=f"telegram:chan:{number}",
@@ -139,7 +141,7 @@ def _a_message(rows, *, number: int) -> RawMessage:
         workspace_id=rows.source.workspace_id,
         text=None, author=None, channel="chan",
         timestamp=datetime(2026, 10, 1, tzinfo=timezone.utc) + timedelta(minutes=number),
-        content_type="video",          # filters allow text only
+        content_type="text" if allowed else "video",     # filters allow text only
     )
 
 
@@ -159,7 +161,7 @@ class TestAFetchWhoseSessionIsGone:
     async def test_it_marks_the_connection(self, monkeypatch):
         rows = _rows()
 
-        with pytest.raises(Exception):
+        with pytest.raises(AuthKeyUnregisteredError):
             await _fetch(rows, _rpc(AuthKeyUnregisteredError), monkeypatch)
 
         assert rows.connection.status == "revoked"
@@ -177,7 +179,7 @@ class TestAFetchWhoseSessionIsGone:
         from app.models.workspace import Workspace
 
         rows = _rows()
-        with pytest.raises(Exception):
+        with pytest.raises(SessionRevokedError):
             await _fetch(rows, _rpc(SessionRevokedError), monkeypatch)
 
         workspace = SimpleNamespace(
@@ -203,7 +205,7 @@ class TestAFetchWhoseSessionIsGone:
         rows = _rows()
         messages = [_a_message(rows, number=n) for n in (1, 2, 3)]
 
-        with pytest.raises(Exception):
+        with pytest.raises(SessionExpiredError):
             await _fetch(rows, _rpc(SessionExpiredError), monkeypatch, messages=messages)
 
         assert rows.source.last_fetched_id == "telegram:chan:3"
@@ -216,7 +218,7 @@ class TestAFetchWhoseSessionIsGone:
         """
         rows = _rows()
 
-        with pytest.raises(Exception):
+        with pytest.raises(SessionRevokedError):
             await _fetch(
                 rows, _rpc(SessionRevokedError), monkeypatch,
                 messages=[_a_message(rows, number=1)],
@@ -229,9 +231,13 @@ class TestAFetchThatFailedForOtherReasons:
     @pytest.mark.parametrize("make", INNOCENT, ids=range(len(INNOCENT)))
     async def test_the_connection_is_left_alone(self, make, monkeypatch):
         rows = _rows()
+        error = make()
 
-        with pytest.raises(Exception):
-            await _fetch(rows, make(), monkeypatch)
+        # The exact failure, not merely "something went wrong": a test that
+        # accepts any exception would pass if the fetch died on its way to the
+        # one being simulated, and prove nothing about it.
+        with pytest.raises(type(error)):
+            await _fetch(rows, error, monkeypatch)
 
         assert rows.connection.status == "active"
 
@@ -261,6 +267,11 @@ async def _backfill(rows, error, monkeypatch, *, messages=()):
         ingestion_pipeline, "_build_connector",
         lambda source: _Connector(error, messages=messages),
     )
+
+    async def _ingested(db, msg, topic_scope):
+        return SimpleNamespace(id=uuid.uuid4())      # no model calls in here
+
+    monkeypatch.setattr(ingestion_pipeline, "process_message", _ingested)
     # The runner opens its own session, as a background task must.
     monkeypatch.setattr(sources_api, "AsyncSessionLocal", lambda: rows.db)
     await sources_api._run_backfill_bg(job_id=job.id)
@@ -299,3 +310,22 @@ class TestABackfillThatFailedForOtherReasons:
 
         assert rows.connection.status == "active"
         assert job.status == "failed"       # the job still failed, honestly
+
+
+class TestTheJobRowAfterASessionDies:
+    async def test_it_reports_what_the_run_did_get_through(self, monkeypatch):
+        """
+        A row has to be readable on its own (#9). A backfill that ingested
+        nothing and one that ingested 200 before losing the session both said
+        FAILED, 0 ingested, never completed — and the second row was a lie about
+        work that really happened.
+        """
+        rows = _rows()
+        messages = [_a_message(rows, number=n, allowed=True) for n in (1, 2)]
+
+        job = await _backfill(
+            rows, _rpc(AuthKeyUnregisteredError), monkeypatch, messages=messages,
+        )
+
+        assert job.items_ingested == 2
+        assert job.completed_at is not None

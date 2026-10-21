@@ -503,9 +503,10 @@ async def run_fetch_pipeline(
     filters = source.content_filters or {}
     topic_scope = workspace.topic_scope
     source_id = source.id
-    # Read with the rest: if Telegram rejects the session mid-loop we have to
-    # know which connection to mark, and by then every loaded attribute is a
-    # lazy-load away from MissingGreenlet (#54).
+    # The foreign key, not the relationship: read with the rest by the rule
+    # above, and enough on its own to mark the connection if Telegram rejects
+    # the session mid-loop — so this does not care whether `connection` was
+    # eagerly loaded (#54).
     connection_id = source.platform_connection_id
     initial_position = FetchPosition(
         stable_id=source.last_fetched_id, item_at=source.last_fetched_item_at
@@ -557,11 +558,11 @@ async def run_fetch_pipeline(
             position = FetchPosition(stable_id=msg.stable_id, item_at=msg.timestamp)
 
     except Exception as e:
-        # A rejected session is the one failure that outlives the run: the next
-        # tick, and every tick after it, hits the same wall until the user
-        # reconnects. So it is written onto the connection, and #49's gate turns
-        # the source off on its own (#54). The position is kept and
-        # last_fetched_at left alone, for the reasons the fatal path above gives.
+        # Only what came out of the connector reaches here: a rejected session
+        # raised by a message's own processing would be swallowed by the inner
+        # handler above, which cannot happen today because nothing in there
+        # talks to Telegram. The position is kept and last_fetched_at left
+        # alone, for the reasons the fatal path above gives (#54).
         if not credentials_rejected(e):
             raise
         await _store_position(
