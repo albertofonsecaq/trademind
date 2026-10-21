@@ -34,3 +34,46 @@ def blocked_reason(*, source_paused: bool, workspace_paused: bool) -> str | None
     if workspace_paused:
         return WORKSPACE_PAUSED
     return None
+
+
+# ── the platform connection the source fetches through ──────────────────────
+#
+# A second question, asked with its own function rather than folded into
+# blocked_reason: the pause question is asked at two different moments (the poll
+# asks the source half before it has loaded the workspace row, and both halves
+# after), so a caller at the first moment would have to pass a placeholder for
+# the connection it has not looked at yet — and a placeholder that means "do not
+# check" is how a gate goes quietly missing, which is the thing this module
+# exists to prevent.
+
+CONNECTION_MISSING = "connection_missing"
+CONNECTION_UNUSABLE = "connection_unusable"
+
+# Platforms that fetch as a user, so a source on one is unfetchable without a
+# working platform connection. YouTube authenticates with a server-side API key
+# instead, so a source on it having no connection is normal, not broken.
+_PLATFORMS_FETCHING_AS_A_USER = frozenset({"telegram"})
+
+
+def connection_blocked_reason(
+    *, source_type: str, connection_status: str | None
+) -> str | None:
+    """
+    Why this source's platform connection cannot fetch, or None if it can.
+
+    `connection_status` is None when the source has no connection at all — never
+    connected, or the row is gone. That is reported separately from a connection
+    that exists but is revoked or still pending, because the user fixes them
+    differently: one is "connect an account on that platform", the other
+    "reconnect this one".
+
+    The poll has always refused these sources. The on-demand endpoints accepted
+    them, returned 202, and then dropped the work in the background (#49).
+    """
+    if source_type not in _PLATFORMS_FETCHING_AS_A_USER:
+        return None
+    if connection_status is None:
+        return CONNECTION_MISSING
+    if connection_status != "active":
+        return CONNECTION_UNUSABLE
+    return None

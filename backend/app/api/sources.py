@@ -22,18 +22,42 @@ from app.models.platform_connection import PlatformConnection
 from app.services import source_resume_service as resume_service
 from app.core.clock import as_utc, now_utc
 from app.core.llm_errors import is_fatal_for_run, safe_failure_summary
-from app.services.ingestion_gate import SOURCE_PAUSED, WORKSPACE_PAUSED, blocked_reason
+from app.services.ingestion_gate import (
+    CONNECTION_MISSING,
+    CONNECTION_UNUSABLE,
+    SOURCE_PAUSED,
+    WORKSPACE_PAUSED,
+    blocked_reason,
+    connection_blocked_reason,
+)
 from app.services.source_resume_service import NewestEvidenceUnknown, ResumeMode
 
 router = APIRouter(prefix="/workspaces", tags=["sources"])
 
 # One sentence per reason, so the API says the same thing everywhere it refuses.
 # The UI shows its own translated copy; these are for API clients and logs.
-_PAUSE_DETAIL = {
+_REFUSAL_DETAIL = {
     SOURCE_PAUSED: "This source is paused. Resume it before fetching or backfilling.",
     WORKSPACE_PAUSED: (
         "Ingestion is paused for this workspace. Resume it before fetching or backfilling."
     ),
+    CONNECTION_MISSING: (
+        "This source has no platform connection, so there is nothing to fetch through. "
+        "Connect one for its platform first."
+    ),
+    CONNECTION_UNUSABLE: (
+        "This source's platform connection is not active, so it cannot fetch. "
+        "Reconnect it first."
+    ),
+}
+
+
+# Why a queued backfill was called off, written onto the job itself.
+_CANCELLED_BECAUSE = {
+    SOURCE_PAUSED: "Source was paused before this backfill ran.",
+    WORKSPACE_PAUSED: "Workspace ingestion was paused before this backfill ran.",
+    CONNECTION_MISSING: "Source lost its platform connection before this backfill ran.",
+    CONNECTION_UNUSABLE: "Source's platform connection stopped being active before this backfill ran.",
 }
 
 
@@ -60,7 +84,7 @@ async def _load_ingesting_workspace(db: AsyncSession, workspace_id: uuid.UUID) -
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
     if workspace.ingestion_paused:
-        raise HTTPException(status_code=409, detail=_PAUSE_DETAIL[WORKSPACE_PAUSED])
+        raise HTTPException(status_code=409, detail=_REFUSAL_DETAIL[WORKSPACE_PAUSED])
     return workspace
 
 
@@ -71,7 +95,49 @@ def _assert_not_paused(source: SourceConfig):
     re-read the source and can find it paused after the work was queued (#10).
     """
     if blocked_reason(source_paused=source.is_paused, workspace_paused=False):
-        raise HTTPException(status_code=409, detail=_PAUSE_DETAIL[SOURCE_PAUSED])
+        raise HTTPException(status_code=409, detail=_REFUSAL_DETAIL[SOURCE_PAUSED])
+
+
+def _connection_status_of(source: SourceConfig) -> str | None:
+    """
+    The state of the platform connection this source fetches through, or None
+    when it has none — which the gate reads as its own reason.
+
+    A function here rather than a property on SourceConfig: every fake source in
+    the offline tests would then have to carry the derived value, and a fake that
+    carries the answer cannot check the code that works it out.
+    """
+    return source.connection.status if source.connection else None
+
+
+def _blocked_now(source: SourceConfig, workspace: Workspace) -> str | None:
+    """
+    Every reason a re-read source must not be fetched, for the background
+    runners. They ask after the work was queued, when the source may have been
+    paused, or its platform connection revoked, in between (#10, #49).
+    """
+    return blocked_reason(
+        source_paused=source.is_paused, workspace_paused=workspace.ingestion_paused
+    ) or connection_blocked_reason(
+        source_type=source.source_type,
+        connection_status=_connection_status_of(source),
+    )
+
+
+def _assert_connection_usable(source: SourceConfig):
+    """
+    Refuse work this source cannot do. Accepting it was the whole of #49: the
+    request returned 202, the runner could not build a connector, and the user
+    was left with a button that took the work and dropped it.
+
+    A 409 rather than a 400: the request is fine, the source's state is not.
+    """
+    reason = connection_blocked_reason(
+        source_type=source.source_type,
+        connection_status=_connection_status_of(source),
+    )
+    if reason:
+        raise HTTPException(status_code=409, detail=_REFUSAL_DETAIL[reason])
 
 
 class _ReadsTimestampsAsUtc(BaseModel):
@@ -281,14 +347,15 @@ async def trigger_fetch(
     await _assert_member(db, workspace_id, current_user.id)
     await _load_ingesting_workspace(db, workspace_id)
     result = await db.execute(
-        select(SourceConfig).where(
-            SourceConfig.id == source_id, SourceConfig.workspace_id == workspace_id
-        )
+        select(SourceConfig)
+        .options(selectinload(SourceConfig.connection))
+        .where(SourceConfig.id == source_id, SourceConfig.workspace_id == workspace_id)
     )
     source = result.scalar_one_or_none()
     if not source:
         raise HTTPException(status_code=404, detail="Source not found")
     _assert_not_paused(source)
+    _assert_connection_usable(source)
 
     background_tasks.add_task(_run_fetch_bg, source_id=source_id, workspace_id=workspace_id)
     return {"message": "Fetch triggered in background"}
@@ -348,14 +415,15 @@ async def trigger_backfill(
     await _assert_member(db, workspace_id, current_user.id)
     await _load_ingesting_workspace(db, workspace_id)
     result = await db.execute(
-        select(SourceConfig).where(
-            SourceConfig.id == source_id, SourceConfig.workspace_id == workspace_id
-        )
+        select(SourceConfig)
+        .options(selectinload(SourceConfig.connection))
+        .where(SourceConfig.id == source_id, SourceConfig.workspace_id == workspace_id)
     )
     source = result.scalar_one_or_none()
     if not source:
         raise HTTPException(status_code=404, detail="Source not found")
     _assert_not_paused(source)
+    _assert_connection_usable(source)
 
     job = BackfillJob(
         source_config_id=source_id,
@@ -410,10 +478,7 @@ async def _run_fetch_bg(source_id: uuid.UUID, workspace_id: uuid.UUID):
             )
             workspace = workspace_result.scalar_one_or_none()
             if source is not None and workspace is not None:
-                reason = blocked_reason(
-                    source_paused=source.is_paused,
-                    workspace_paused=workspace.ingestion_paused,
-                )
+                reason = _blocked_now(source, workspace)
                 if reason:
                     log.info("Skipping queued fetch for source %s: %s", source_id, reason)
                     return
@@ -455,18 +520,13 @@ async def _run_backfill_bg(job_id: uuid.UUID):
             workspace = workspace_result.scalar_one_or_none()
             if not source or not workspace:
                 raise ValueError("Source or workspace missing")
-            reason = blocked_reason(
-                source_paused=source.is_paused,
-                workspace_paused=workspace.ingestion_paused,
-            )
+            reason = _blocked_now(source, workspace)
             if reason:
-                # Queued while running, paused before it got here: cancel rather
-                # than spend. Nothing ingested so far is removed (#10, #13).
-                message = (
-                    "Source was paused before this backfill ran."
-                    if reason == SOURCE_PAUSED
-                    else "Workspace ingestion was paused before this backfill ran."
-                )
+                # Queued while runnable, blocked before it got here: cancel
+                # rather than spend, and say which it was on the job so the
+                # reason outlives the logs. Nothing already ingested is removed
+                # (#10, #13, #49).
+                message = _CANCELLED_BECAUSE[reason]
                 log.info("Cancelling backfill job %s: %s", job_id, message)
                 job.status = job_status.CANCELLED
                 job.error_message = message

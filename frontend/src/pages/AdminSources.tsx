@@ -14,6 +14,27 @@ type Source = {
   backfill_start_date: string | null; is_paused: boolean; paused_at: string | null;
 };
 type ResumeMode = "catch_up" | "from_now";
+
+// ── can this source fetch at all? ────────────────────────────────────────────
+// Asks what the backend's `connection_blocked_reason` asks (#49). The API
+// refuses both of these with a 409, so the controls must not offer them: Fetch
+// now used to be accepted, return 202, and then drop the work in the background.
+//
+// The two values are i18n keys, not the backend's reason names — #28 wrote the
+// sentences under `connectionUnhealthy` and `connectionMissing`, and this reuses
+// them rather than inventing a second wording for the same state.
+//
+// YouTube fetches with the server's own API key and needs no connection. That
+// rule is restated here rather than read from the API, which is the one place
+// this can drift: a second platform authenticating as a user would have to be
+// added on both sides.
+type ConnectionBlock = "connectionMissing" | "connectionUnhealthy" | null;
+
+function connectionBlock(source: Source, connection: Connection | undefined): ConnectionBlock {
+  if (source.source_type !== "telegram") return null;
+  if (!connection) return "connectionMissing";
+  return connection.status === "active" ? null : "connectionUnhealthy";
+}
 type BackfillJob = {
   id: string; status: string; items_ingested: number; items_failed: number;
   date_range_start: string; date_range_end: string | null;
@@ -201,8 +222,9 @@ function WorkspaceIngestion({ workspace, busy, error, onToggle }: {
 }
 
 // ── per-source config + backfill panel ────────────────────────────────────────
-function SourcePanel({ source, workspaceId, workspacePaused, onSaved }: {
-  source: Source; workspaceId: string; workspacePaused: boolean; onSaved: () => void;
+function SourcePanel({ source, workspaceId, workspacePaused, connectionBlocked, onSaved }: {
+  source: Source; workspaceId: string; workspacePaused: boolean;
+  connectionBlocked: ConnectionBlock; onSaved: () => void;
 }) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<"settings" | "backfill">("settings");
@@ -272,7 +294,7 @@ function SourcePanel({ source, workspaceId, workspacePaused, onSaved }: {
     }
   };
 
-  const backfillOff = source.is_paused || workspacePaused;
+  const backfillOff = source.is_paused || workspacePaused || connectionBlocked !== null;
 
   const tabBtn = (id: "settings" | "backfill"): React.CSSProperties => ({
     padding: "0.35rem 0.85rem", borderRadius: "4px", cursor: "pointer", fontSize: "0.82rem",
@@ -328,6 +350,9 @@ function SourcePanel({ source, workspaceId, workspacePaused, onSaved }: {
           )}
           {!source.is_paused && workspacePaused && (
             <p style={{ fontSize: "0.82rem", color: PAUSED_COLOR, marginTop: 0 }}>{t("sources.workspacePausedNoFetch")}</p>
+          )}
+          {!source.is_paused && !workspacePaused && connectionBlocked && (
+            <p style={{ fontSize: "0.82rem", color: "#c0392b", marginTop: 0 }}>{t(`sources.${connectionBlocked}`)}</p>
           )}
           <form onSubmit={triggerBackfill} style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "flex-end", marginBottom: "1rem" }}>
             <div>
@@ -456,6 +481,7 @@ function SourceRow({
   onSaved: () => void;
 }) {
   const { t } = useTranslation();
+  const blocked = connectionBlock(source, connection);
   return (
     <div style={{ borderBottom: "1px solid #f0f0f0", padding: "0.75rem 0" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -475,7 +501,10 @@ function SourceRow({
             {expanded ? t("common.collapse") : t("sources.configure")}
           </button>
           <PauseButton source={source} busy={busy} onToggle={onTogglePause} />
-          <FetchButton source={source} busy={fetching} blocked={workspacePaused} onFetch={onFetch} />
+          <FetchButton
+            source={source} busy={fetching}
+            blocked={workspacePaused || blocked !== null} onFetch={onFetch}
+          />
           <button style={btn(false, true)} onClick={onDelete}>{t("common.delete")}</button>
         </div>
       </div>
@@ -483,7 +512,10 @@ function SourceRow({
       <div style={{ marginTop: "0.3rem" }}>
         <SourceConnection source={source} connection={connection} />
       </div>
-      {source.source_type === "telegram" && connection && connection.status !== "active" && (
+      {/* The reason sits on the row rather than on a hover title, so a disabled
+          Fetch now is never unexplained. `connectionMissing` is already printed
+          by SourceConnection just above, so only the other needs saying. */}
+      {blocked === "connectionUnhealthy" && (
         <p style={{ margin: "0.15rem 0 0", fontSize: "0.77rem", color: "#c0392b" }}>
           {t("sources.connectionUnhealthy")}
         </p>
@@ -521,7 +553,8 @@ function SourceRow({
       {expanded && workspaceId && (
         <SourcePanel
           source={source} workspaceId={workspaceId}
-          workspacePaused={workspacePaused} onSaved={onSaved}
+          workspacePaused={workspacePaused} connectionBlocked={blocked}
+          onSaved={onSaved}
         />
       )}
     </div>

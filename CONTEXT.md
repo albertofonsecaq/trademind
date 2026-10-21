@@ -59,7 +59,7 @@ A one-off catch-up fetch of a source's history over a date range, as opposed to 
 _Avoid_: Import, sync, historical load
 
 **Backfill outcome**:
-How a backfill ended, recorded on the job and readable without the logs: _completed_ lost nothing, _partial_ ingested some and lost some, _failed_ hit a failure that would repeat for every remaining message and stopped, _cancelled_ was called off by a pause before it ran. A failure that will repeat — an exhausted account, rejected credentials — ends the run; a rate limit or one unusable message does not.
+How a backfill ended, recorded on the job and readable without the logs: _completed_ lost nothing, _partial_ ingested some and lost some, _failed_ hit a failure that would repeat for every remaining message and stopped, _cancelled_ was called off before it ran, by a pause or by the source losing the platform connection it fetches through. A failure that will repeat — an exhausted account, rejected credentials — ends the run; a rate limit or one unusable message does not.
 _Avoid_: Success/error, done, aborted, batch
 
 **Paused source**:

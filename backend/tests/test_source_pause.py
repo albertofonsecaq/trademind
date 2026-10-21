@@ -45,42 +45,6 @@ def _source(identifier: str, *, is_paused: bool, workspace_id: uuid.UUID) -> Sim
     )
 
 
-@pytest.fixture
-def poll(monkeypatch):
-    """_poll_all_sources wired to a fake session; returns what it tried to fetch."""
-    workspace_id = uuid.uuid4()
-    workspace = SimpleNamespace(id=workspace_id, topic_scope="trading", ingestion_paused=False)
-    fetched: list[str] = []
-    gate_checks: list[uuid.UUID] = []
-
-    from app.services import billing_service, ingestion_pipeline
-
-    async def _fetch(db, *, source, workspace):
-        fetched.append(source.identifier)
-        return 1
-
-    async def _never_lapsed(db, ws_id):
-        gate_checks.append(ws_id)
-        return False
-
-    async def _never_exhausted(db, ws_id):
-        return False
-
-    monkeypatch.setattr(ingestion_pipeline, "run_fetch_pipeline", _fetch)
-    monkeypatch.setattr(billing_service, "is_payment_lapsed", _never_lapsed)
-    monkeypatch.setattr(billing_service, "is_budget_exhausted", _never_exhausted)
-
-    async def run(*sources):
-        session = FakeSession(
-            rows={SourceConfig: list(sources), Workspace: {workspace.id: workspace}}
-        )
-        monkeypatch.setattr(poller, "AsyncSessionLocal", lambda: session)
-        await poller._poll_all_sources()
-        return SimpleNamespace(fetched=fetched, gate_checks=gate_checks, session=session)
-
-    return SimpleNamespace(run=run, workspace_id=workspace_id)
-
-
 # ── the recurring poll ────────────────────────────────────────────────────────
 
 class TestPollSkipsPausedSources:
