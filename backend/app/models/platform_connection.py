@@ -5,6 +5,13 @@ from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 
+# The three states a connection can be in, kept here like backfill_job keeps
+# its own. Status *reads* elsewhere are still bare literals; this is not a
+# sweep, only the two places that write "revoked" agreeing on one spelling.
+PENDING = "pending"          # created, waiting for the user to finish signing in
+ACTIVE = "active"
+REVOKED = "revoked"          # unusable: the user ended it, or Telegram did (#54)
+
 
 class PlatformConnection(Base):
     __tablename__ = "platform_connections"

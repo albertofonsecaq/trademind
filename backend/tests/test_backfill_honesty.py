@@ -107,6 +107,7 @@ def _source() -> SimpleNamespace:
         id=uuid.uuid4(), identifier="chan", source_type="telegram",
         content_filters={"text": True}, is_paused=False, paused_at=None,
         last_fetched_id=None, last_fetched_item_at=None, last_fetched_at=None,
+        platform_connection_id=uuid.uuid4(),
         connection=SimpleNamespace(status="active"),
     )
 

@@ -51,6 +51,7 @@ def pipeline(monkeypatch):
     source = SimpleNamespace(
         id=uuid.uuid4(), content_filters={"text": True},
         last_fetched_id=None, last_fetched_item_at=None,
+        platform_connection_id=uuid.uuid4(),
     )
     workspace = SimpleNamespace(topic_scope="trading")
 

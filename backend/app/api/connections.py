@@ -16,6 +16,7 @@ from app.core.encryption import encrypt_credential, decrypt_credential
 from app.models.user import User
 from app.models.workspace_member import WorkspaceMember
 from app.models.platform_connection import PlatformConnection
+from app.models import platform_connection as connection_status
 
 router = APIRouter(prefix="/workspaces", tags=["connections"])
 
@@ -302,5 +303,5 @@ async def revoke_connection(
     conn = result.scalar_one_or_none()
     if not conn:
         raise HTTPException(status_code=404, detail="Connection not found")
-    conn.status = "revoked"
+    conn.status = connection_status.REVOKED
     await db.commit()

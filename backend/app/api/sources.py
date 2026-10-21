@@ -22,6 +22,11 @@ from app.models.platform_connection import PlatformConnection
 from app.services import source_resume_service as resume_service
 from app.core.clock import as_utc, now_utc
 from app.core.llm_errors import is_fatal_for_run, safe_failure_summary
+from app.services.connection_health import (
+    REJECTED_SUMMARY,
+    credentials_rejected,
+    mark_rejected,
+)
 from app.services.ingestion_gate import (
     CONNECTION_MISSING,
     CONNECTION_UNUSABLE,
@@ -507,6 +512,13 @@ async def _run_backfill_bg(job_id: uuid.UUID):
         job.status = job_status.RUNNING
         await db.commit()
 
+        # Bound before the try, because the handler at the bottom reports them:
+        # a failure before the loop would otherwise make that handler die of an
+        # unbound name while trying to explain itself.
+        count = 0
+        failed = 0
+        connection_id = None
+
         try:
             source_result = await db.execute(
                 select(SourceConfig)
@@ -541,9 +553,11 @@ async def _run_backfill_bg(job_id: uuid.UUID):
             filters = source.content_filters or {}
             topic_scope = workspace.topic_scope
             date_start, date_end = job.date_range_start, job.date_range_end
+            # The foreign key, for the same reason the fetch path reads it:
+            # enough on its own to mark the connection if Telegram rejects the
+            # session mid-range (#54).
+            connection_id = source.platform_connection_id
 
-            count = 0
-            failed = 0
             first_failure: str | None = None
             fatal: Exception | None = None
             stopped_at: datetime | None = None
@@ -601,6 +615,20 @@ async def _run_backfill_bg(job_id: uuid.UUID):
         except Exception as e:
             log.error("Backfill job %s failed: %s", job_id, e, exc_info=True)
             job.status = job_status.FAILED
-            job.error_message = safe_failure_summary(e)[:900]
+            if credentials_rejected(e):
+                # Written onto the connection, which is what stops the source
+                # being offered again — see connection_health (#54).
+                job.error_message = REJECTED_SUMMARY
+                await mark_rejected(db, connection_id)
+            else:
+                job.error_message = safe_failure_summary(e)[:900]
+            # A row has to be readable on its own (#9): a run that ingested 200
+            # messages and then lost the session said FAILED, 0 ingested, never
+            # completed — three claims, two of them false. This path used to be
+            # only for exceptions nothing expected; a rejected session made it
+            # ordinary.
+            job.items_ingested = count
+            job.items_failed = failed
+            job.completed_at = now_utc()
 
         await db.commit()

@@ -199,6 +199,7 @@ class TestThePipelineSuppliesThePosition:
         source = SimpleNamespace(
             id=uuid.uuid4(), content_filters={"text": True}, source_type="youtube",
             last_fetched_id="youtube:v2:full", last_fetched_item_at=recorded,
+            platform_connection_id=None,        # YouTube has no connection
         )
         db = _PipelineSession()
 
@@ -237,7 +238,7 @@ class TestThePipelineSuppliesThePosition:
         source = SimpleNamespace(
             id=uuid.uuid4(), content_filters={"text": True}, source_type="youtube",
             last_fetched_id="youtube:deleted:full", last_fetched_item_at=None,
-            last_fetched_at=None,
+            last_fetched_at=None, platform_connection_id=None,
         )
 
         await ingestion_pipeline.run_fetch_pipeline(

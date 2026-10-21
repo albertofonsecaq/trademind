@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.clock import now_utc
 from app.connectors.base import FetchPosition, RawMessage
 from app.core.llm_errors import is_fatal_for_run
+from app.services.connection_health import credentials_rejected, mark_rejected
 from app.models.evidence_item import EvidenceItem
 from app.models.trade_idea import TradeIdea
 from app.models.embedding_row import EmbeddingRow
@@ -502,6 +503,11 @@ async def run_fetch_pipeline(
     filters = source.content_filters or {}
     topic_scope = workspace.topic_scope
     source_id = source.id
+    # The foreign key, not the relationship: read with the rest by the rule
+    # above, and enough on its own to mark the connection if Telegram rejects
+    # the session mid-loop — so this does not care whether `connection` was
+    # eagerly loaded (#54).
+    connection_id = source.platform_connection_id
     initial_position = FetchPosition(
         stable_id=source.last_fetched_id, item_at=source.last_fetched_item_at
     )
@@ -510,45 +516,60 @@ async def run_fetch_pipeline(
     failed = 0
     position = initial_position
 
-    async for msg in connector.fetch_new(position):
-        # The position advances for everything we have seen, not only what we
-        # store: content that fails a filter or the relevance check is still
-        # content we have got past, and a position that lags behind would make a
-        # recovering connector re-fetch — and re-pay for — all of it (#19).
-        if not _content_type_allowed(msg, filters):
+    try:
+        async for msg in connector.fetch_new(position):
+            # The position advances for everything we have seen, not only what we
+            # store: content that fails a filter or the relevance check is still
+            # content we have got past, and a position that lags behind would make a
+            # recovering connector re-fetch — and re-pay for — all of it (#19).
+            if not _content_type_allowed(msg, filters):
+                position = FetchPosition(stable_id=msg.stable_id, item_at=msg.timestamp)
+                continue
+            try:
+                # A savepoint, not a session rollback: session.rollback() expires every
+                # loaded object, including the SourceConfig rows our caller is still
+                # iterating, which then blow up on attribute access (#2). A savepoint
+                # undoes only this message.
+                async with db.begin_nested():
+                    item = await process_message(db, msg, topic_scope)
+                if item:
+                    count += 1
+            except IntegrityError:
+                log.info("Skipping already-ingested %s", msg.stable_id)
+            except Exception as e:
+                failed += 1
+                log.error("Pipeline error for %s: %s", msg.stable_id, e, exc_info=True)
+                if is_fatal_for_run(e):
+                    # Nothing after this can succeed either, so stop rather than
+                    # spend the rest of the tick proving it. Raising is how the
+                    # poller reports a source's trouble (#9).
+                    #
+                    # The position is kept so the work already done is not repeated,
+                    # but last_fetched_at is deliberately left alone: it drives the
+                    # cadence, and stamping it here would send a daily source quiet
+                    # for 24 hours over a failure it should retry.
+                    await _store_position(
+                        db, source_id, position, initial_position, touch_fetched_at=False
+                    )
+                    raise
+                continue
+            else:
+                await db.commit()
             position = FetchPosition(stable_id=msg.stable_id, item_at=msg.timestamp)
-            continue
-        try:
-            # A savepoint, not a session rollback: session.rollback() expires every
-            # loaded object, including the SourceConfig rows our caller is still
-            # iterating, which then blow up on attribute access (#2). A savepoint
-            # undoes only this message.
-            async with db.begin_nested():
-                item = await process_message(db, msg, topic_scope)
-            if item:
-                count += 1
-        except IntegrityError:
-            log.info("Skipping already-ingested %s", msg.stable_id)
-        except Exception as e:
-            failed += 1
-            log.error("Pipeline error for %s: %s", msg.stable_id, e, exc_info=True)
-            if is_fatal_for_run(e):
-                # Nothing after this can succeed either, so stop rather than
-                # spend the rest of the tick proving it. Raising is how the
-                # poller reports a source's trouble (#9).
-                #
-                # The position is kept so the work already done is not repeated,
-                # but last_fetched_at is deliberately left alone: it drives the
-                # cadence, and stamping it here would send a daily source quiet
-                # for 24 hours over a failure it should retry.
-                await _store_position(
-                    db, source_id, position, initial_position, touch_fetched_at=False
-                )
-                raise
-            continue
-        else:
-            await db.commit()
-        position = FetchPosition(stable_id=msg.stable_id, item_at=msg.timestamp)
+
+    except Exception as e:
+        # Only what came out of the connector reaches here: a rejected session
+        # raised by a message's own processing would be swallowed by the inner
+        # handler above, which cannot happen today because nothing in there
+        # talks to Telegram. The position is kept and last_fetched_at left
+        # alone, for the reasons the fatal path above gives (#54).
+        if not credentials_rejected(e):
+            raise
+        await _store_position(
+            db, source_id, position, initial_position, touch_fetched_at=False
+        )
+        await mark_rejected(db, connection_id)
+        raise
 
     # A connector whose own position was unusable reports where it actually got
     # to, so the next tick is not handed the same dead handle — and does not
