@@ -35,6 +35,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import text
@@ -346,6 +347,74 @@ class _Missing:
 
 
 _MISSING = _Missing()
+
+
+# ── the recurring poll ───────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def poll(monkeypatch):
+    """
+    `_poll_all_sources` against a fake session, with the billing gates open.
+
+    `await poll.run(a, b)` polls those sources in one workspace that is not
+    itself paused, whose id is `poll.workspace_id`. Tests that need several
+    workspaces, or a paused one, pass them: `poll.run(*sources, workspaces=[…])`.
+
+    Returns what the tick fetched, which workspaces were costed, and the session
+    it used, so a test can assert both the fetching and the reads behind it.
+
+    Three test files had their own copy of this, and all three stubbed the fetch
+    as returning a bare int — see below for why that mattered.
+    """
+    from app.models.source_config import SourceConfig
+    from app.models.workspace import Workspace
+    from app.services import billing_service, ingestion_pipeline
+    from app.workers import poller
+
+    default_workspace = SimpleNamespace(
+        id=uuid.uuid4(), name="a workspace", topic_scope="trading",
+        ingestion_paused=False, payment_enabled=False,
+    )
+    fetched: list[str] = []
+    gate_checks: list = []
+
+    async def _fetch(db, *, source, workspace):
+        fetched.append(source.identifier)
+        # The real one returns a FetchOutcome and the poller reads .ingested off
+        # it. Every copy of this fixture returned 1, so each fetch the poll
+        # *allowed* raised AttributeError straight into the poller's except
+        # clause: the assertions still held, because the identifier is recorded
+        # first, and nothing after the call was ever exercised (found reviewing
+        # #49).
+        return ingestion_pipeline.FetchOutcome(ingested=1, failed=0)
+
+    async def _not_lapsed(db, workspace_id):
+        # Recorded, so a test can tell a source turned back at an earlier gate
+        # from one that reached the billing checks and passed them (#13).
+        gate_checks.append(workspace_id)
+        return False
+
+    async def _not_exhausted(db, workspace_id):
+        return False
+
+    # Both are imported inside the function under test, so patching the module
+    # here is what the call will see.
+    monkeypatch.setattr(ingestion_pipeline, "run_fetch_pipeline", _fetch)
+    monkeypatch.setattr(billing_service, "is_payment_lapsed", _not_lapsed)
+    monkeypatch.setattr(billing_service, "is_budget_exhausted", _not_exhausted)
+
+    async def run(*sources, workspaces=None):
+        workspaces = list(workspaces) if workspaces else [default_workspace]
+        session = FakeSession(rows={
+            SourceConfig: list(sources),
+            Workspace: {ws.id: ws for ws in workspaces},
+        })
+        monkeypatch.setattr(poller, "AsyncSessionLocal", lambda: session)
+        await poller._poll_all_sources()
+        return SimpleNamespace(fetched=fetched, gate_checks=gate_checks, session=session)
+
+    return SimpleNamespace(run=run, workspace_id=default_workspace.id)
 
 
 # ── rows for the database-backed tests ───────────────────────────────────────

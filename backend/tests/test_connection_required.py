@@ -119,6 +119,14 @@ class TestBackfillRefuses:
 
         assert exc.value.status_code == 409
 
+    async def test_no_connection_at_all(self):
+        """The states are covered on both endpoints, not one each."""
+        with pytest.raises(HTTPException) as exc:
+            await _backfill(_source(has_connection=False))
+
+        assert exc.value.status_code == 409
+        assert "connection" in exc.value.detail.lower()
+
     async def test_it_creates_no_job_row(self):
         """
         A job row for work that cannot run is a lie in the job list. Asserted
@@ -159,37 +167,6 @@ class TestWhatIsStillAllowed:
 
 # ── the poll's answer and the endpoint's are now the same one ────────────────
 
-@pytest.fixture
-def poll(monkeypatch):
-    """_poll_all_sources against a fake session; returns what it tried to fetch."""
-    from app.services import billing_service, ingestion_pipeline
-    from app.workers import poller
-
-    workspace = _workspace()
-    fetched: list[str] = []
-
-    async def _fetch(db, *, source, workspace):
-        fetched.append(source.identifier)
-        return 1
-
-    async def _no(db, _ws_id):
-        return False
-
-    monkeypatch.setattr(ingestion_pipeline, "run_fetch_pipeline", _fetch)
-    monkeypatch.setattr(billing_service, "is_payment_lapsed", _no)
-    monkeypatch.setattr(billing_service, "is_budget_exhausted", _no)
-
-    async def run(*sources):
-        session = FakeSession(
-            rows={SourceConfig: list(sources), Workspace: {workspace.id: workspace}}
-        )
-        monkeypatch.setattr(poller, "AsyncSessionLocal", lambda: session)
-        await poller._poll_all_sources()
-        return fetched
-
-    return SimpleNamespace(run=run, workspace_id=workspace.id)
-
-
 class TestThePollAgrees:
     """
     The poll skipped these sources long before #49; the point of sharing one
@@ -198,16 +175,16 @@ class TestThePollAgrees:
 
     @pytest.mark.parametrize("state", ["revoked", "pending"])
     async def test_it_skips_a_connection_that_is_not_active(self, poll, state):
-        fetched = await poll.run(
+        result = await poll.run(
             _source(identifier="broken", connection_status=state, workspace_id=poll.workspace_id),
             _source(identifier="fine", workspace_id=poll.workspace_id),
         )
 
-        assert fetched == ["fine"]
+        assert result.fetched == ["fine"]
 
     async def test_it_skips_a_source_with_no_connection(self, poll):
-        fetched = await poll.run(
+        result = await poll.run(
             _source(identifier="orphan", has_connection=False, workspace_id=poll.workspace_id),
         )
 
-        assert fetched == []
+        assert result.fetched == []

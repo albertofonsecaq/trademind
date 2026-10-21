@@ -16,11 +16,18 @@ type Source = {
 type ResumeMode = "catch_up" | "from_now";
 
 // ── can this source fetch at all? ────────────────────────────────────────────
-// Mirrors the backend's `connection_blocked_reason` (#49). The API refuses both
-// of these with a 409, so the controls must not offer them: Fetch now used to
-// be accepted, return 202, and then drop the work in the background. The value
-// is the i18n key for the reason, which the row already shows as text.
-// YouTube fetches with the server's own API key and needs no connection.
+// Asks what the backend's `connection_blocked_reason` asks (#49). The API
+// refuses both of these with a 409, so the controls must not offer them: Fetch
+// now used to be accepted, return 202, and then drop the work in the background.
+//
+// The two values are i18n keys, not the backend's reason names — #28 wrote the
+// sentences under `connectionUnhealthy` and `connectionMissing`, and this reuses
+// them rather than inventing a second wording for the same state.
+//
+// YouTube fetches with the server's own API key and needs no connection. That
+// rule is restated here rather than read from the API, which is the one place
+// this can drift: a second platform authenticating as a user would have to be
+// added on both sides.
 type ConnectionBlock = "connectionMissing" | "connectionUnhealthy" | null;
 
 function connectionBlock(source: Source, connection: Connection | undefined): ConnectionBlock {

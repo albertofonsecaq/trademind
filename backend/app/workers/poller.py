@@ -86,9 +86,14 @@ async def _poll_all_sources():
                 log.debug("Skipping source %s: paused", identifier)
                 continue
 
-            # Gate 0c: the account this source fetches through. The same
-            # predicate the on-demand endpoints use, so a source the poll skips
-            # is one Fetch now refuses rather than accepts and drops (#49).
+            # Gate 0a: the platform connection this source fetches through —
+            # 0a because it sits between the two halves of the pause question,
+            # which is where it can be asked without the workspace row. The same
+            # predicate the on-demand endpoints use, so the set of sources the
+            # poll skips and the set Fetch now refuses are the same set (#49).
+            # Only the order the reasons are reported differs: here a missing
+            # connection is named before a paused workspace, because the
+            # workspace has not been read yet.
             reason = connection_blocked_reason(
                 source_type=planned.source_type,
                 connection_status=planned.connection_status,

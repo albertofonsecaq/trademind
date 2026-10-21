@@ -98,17 +98,29 @@ def _assert_not_paused(source: SourceConfig):
         raise HTTPException(status_code=409, detail=_REFUSAL_DETAIL[SOURCE_PAUSED])
 
 
+def _connection_status_of(source: SourceConfig) -> str | None:
+    """
+    The state of the platform connection this source fetches through, or None
+    when it has none — which the gate reads as its own reason.
+
+    A function here rather than a property on SourceConfig: every fake source in
+    the offline tests would then have to carry the derived value, and a fake that
+    carries the answer cannot check the code that works it out.
+    """
+    return source.connection.status if source.connection else None
+
+
 def _blocked_now(source: SourceConfig, workspace: Workspace) -> str | None:
     """
     Every reason a re-read source must not be fetched, for the background
-    runners. They ask after the work was queued, when the user may have paused
-    the source or revoked its account in between (#10, #49).
+    runners. They ask after the work was queued, when the source may have been
+    paused, or its platform connection revoked, in between (#10, #49).
     """
     return blocked_reason(
         source_paused=source.is_paused, workspace_paused=workspace.ingestion_paused
     ) or connection_blocked_reason(
         source_type=source.source_type,
-        connection_status=source.connection.status if source.connection else None,
+        connection_status=_connection_status_of(source),
     )
 
 
@@ -122,7 +134,7 @@ def _assert_connection_usable(source: SourceConfig):
     """
     reason = connection_blocked_reason(
         source_type=source.source_type,
-        connection_status=source.connection.status if source.connection else None,
+        connection_status=_connection_status_of(source),
     )
     if reason:
         raise HTTPException(status_code=409, detail=_REFUSAL_DETAIL[reason])

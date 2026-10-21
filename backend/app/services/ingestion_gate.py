@@ -36,7 +36,7 @@ def blocked_reason(*, source_paused: bool, workspace_paused: bool) -> str | None
     return None
 
 
-# ── the account the source fetches through ───────────────────────────────────
+# ── the platform connection the source fetches through ──────────────────────
 #
 # A second question, asked with its own function rather than folded into
 # blocked_reason: the pause question is asked at two different moments (the poll
@@ -64,7 +64,8 @@ def connection_blocked_reason(
     `connection_status` is None when the source has no connection at all — never
     connected, or the row is gone. That is reported separately from a connection
     that exists but is revoked or still pending, because the user fixes them
-    differently: one is "add an account", the other "reconnect this one".
+    differently: one is "connect an account on that platform", the other
+    "reconnect this one".
 
     The poll has always refused these sources. The on-demand endpoints accepted
     them, returned 202, and then dropped the work in the background (#49).

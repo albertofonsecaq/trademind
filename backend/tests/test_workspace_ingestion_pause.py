@@ -45,33 +45,6 @@ def _source(identifier: str, *, workspace_id: uuid.UUID, is_paused: bool = False
     )
 
 
-@pytest.fixture
-def poll(monkeypatch):
-    fetched: list[str] = []
-    from app.services import billing_service, ingestion_pipeline
-
-    async def _fetch(db, *, source, workspace):
-        fetched.append(source.identifier)
-        return 1
-
-    async def _no(db, ws_id):
-        return False
-
-    monkeypatch.setattr(ingestion_pipeline, "run_fetch_pipeline", _fetch)
-    monkeypatch.setattr(billing_service, "is_payment_lapsed", _no)
-    monkeypatch.setattr(billing_service, "is_budget_exhausted", _no)
-
-    async def run(sources, workspaces):
-        session = FakeSession(
-            rows={SourceConfig: sources, Workspace: {ws.id: ws for ws in workspaces}}
-        )
-        monkeypatch.setattr(poller, "AsyncSessionLocal", lambda: session)
-        await poller._poll_all_sources()
-        return SimpleNamespace(fetched=fetched, session=session)
-
-    return run
-
-
 # ── the poll ──────────────────────────────────────────────────────────────────
 
 class TestPollSkipsPausedWorkspaces:
@@ -83,7 +56,7 @@ class TestPollSkipsPausedWorkspaces:
             _source("live-chan", workspace_id=live_ws.id),
         ]
 
-        result = await poll(sources, [paused_ws, live_ws])
+        result = await poll.run(*sources, workspaces=[paused_ws, live_ws])
 
         assert result.fetched == ["live-chan"]
 
@@ -94,7 +67,7 @@ class TestPollSkipsPausedWorkspaces:
             _source("chan-b", workspace_id=paused_ws.id),
         ]
 
-        result = await poll(sources, [paused_ws])
+        result = await poll.run(*sources, workspaces=[paused_ws])
 
         assert result.fetched == []
         # Both sources reached the workspace gate and were turned back there,
@@ -114,7 +87,7 @@ class TestTheTwoSwitchesTogether:
             _source("running", workspace_id=ws.id),
         ]
 
-        result = await poll(sources, [ws])
+        result = await poll.run(*sources, workspaces=[ws])
 
         assert result.fetched == ["running"]
         # The paused source never even needed its workspace read.
