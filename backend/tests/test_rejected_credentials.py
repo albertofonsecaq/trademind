@@ -37,15 +37,7 @@ from app.models.platform_connection import PlatformConnection
 from app.models.source_config import SourceConfig
 from app.services import ingestion_pipeline
 from app.services.connection_health import credentials_rejected
-from tests.conftest import FakeSession
-
-
-class _Request:
-    """Stands in for the Telethon request an RPCError names as its cause."""
-
-
-def _rpc(error_class):
-    return error_class(request=_Request())
+from tests.conftest import FakeSession, rpc_error
 
 
 # Every one of these means the stored session will not work again until the user
@@ -62,9 +54,9 @@ REJECTIONS = [
 
 # And these say nothing about our credentials.
 INNOCENT = [
-    lambda: FloodWaitError(request=_Request(), capture=30),
-    lambda: ServerError(request=_Request(), message="Internal server error"),
-    lambda: _rpc(ChannelPrivateError),      # this channel, not this account
+    lambda: rpc_error(FloodWaitError, capture=30),
+    lambda: rpc_error(ServerError, message="Internal server error"),
+    lambda: rpc_error(ChannelPrivateError),      # this channel, not this account
     lambda: TimeoutError("no answer"),
     lambda: ConnectionError("network went away"),
     lambda: ValueError("a bug of ours"),
@@ -74,7 +66,7 @@ INNOCENT = [
 class TestTellingTheTwoApart:
     @pytest.mark.parametrize("error_class", REJECTIONS, ids=lambda c: c.__name__)
     def test_a_rejected_session_is_recognised(self, error_class):
-        assert credentials_rejected(_rpc(error_class)) is True
+        assert credentials_rejected(rpc_error(error_class)) is True
 
     @pytest.mark.parametrize("make", INNOCENT, ids=range(len(INNOCENT)))
     def test_an_unrelated_failure_is_not(self, make):
@@ -90,7 +82,7 @@ class TestTellingTheTwoApart:
 def _rows(*, status="active"):
     """A source, its connection, and a session that answers for both by id."""
     connection = SimpleNamespace(
-        id=uuid.uuid4(), status=status, label="an account",
+        id=uuid.uuid4(), status=status, label="a connection",
         platform="telegram", last_verified_at=None,
     )
     source = SimpleNamespace(
@@ -162,7 +154,7 @@ class TestAFetchWhoseSessionIsGone:
         rows = _rows()
 
         with pytest.raises(AuthKeyUnregisteredError):
-            await _fetch(rows, _rpc(AuthKeyUnregisteredError), monkeypatch)
+            await _fetch(rows, rpc_error(AuthKeyUnregisteredError), monkeypatch)
 
         assert rows.connection.status == "revoked"
 
@@ -180,7 +172,7 @@ class TestAFetchWhoseSessionIsGone:
 
         rows = _rows()
         with pytest.raises(SessionRevokedError):
-            await _fetch(rows, _rpc(SessionRevokedError), monkeypatch)
+            await _fetch(rows, rpc_error(SessionRevokedError), monkeypatch)
 
         workspace = SimpleNamespace(
             id=rows.source.workspace_id, name="ws", topic_scope="forex",
@@ -206,7 +198,7 @@ class TestAFetchWhoseSessionIsGone:
         messages = [_a_message(rows, number=n) for n in (1, 2, 3)]
 
         with pytest.raises(SessionExpiredError):
-            await _fetch(rows, _rpc(SessionExpiredError), monkeypatch, messages=messages)
+            await _fetch(rows, rpc_error(SessionExpiredError), monkeypatch, messages=messages)
 
         assert rows.source.last_fetched_id == "telegram:chan:3"
 
@@ -220,7 +212,7 @@ class TestAFetchWhoseSessionIsGone:
 
         with pytest.raises(SessionRevokedError):
             await _fetch(
-                rows, _rpc(SessionRevokedError), monkeypatch,
+                rows, rpc_error(SessionRevokedError), monkeypatch,
                 messages=[_a_message(rows, number=1)],
             )
 
@@ -282,7 +274,7 @@ class TestABackfillWhoseSessionIsGone:
     async def test_it_marks_the_connection(self, monkeypatch):
         rows = _rows()
 
-        await _backfill(rows, _rpc(AuthKeyUnregisteredError), monkeypatch)
+        await _backfill(rows, rpc_error(AuthKeyUnregisteredError), monkeypatch)
 
         assert rows.connection.status == "revoked"
 
@@ -294,7 +286,7 @@ class TestABackfillWhoseSessionIsGone:
         """
         rows = _rows()
 
-        job = await _backfill(rows, _rpc(SessionRevokedError), monkeypatch)
+        job = await _backfill(rows, rpc_error(SessionRevokedError), monkeypatch)
 
         assert job.status == "failed"
         assert "reconnect" in job.error_message.lower()
@@ -324,7 +316,7 @@ class TestTheJobRowAfterASessionDies:
         messages = [_a_message(rows, number=n, allowed=True) for n in (1, 2)]
 
         job = await _backfill(
-            rows, _rpc(AuthKeyUnregisteredError), monkeypatch, messages=messages,
+            rows, rpc_error(AuthKeyUnregisteredError), monkeypatch, messages=messages,
         )
 
         assert job.items_ingested == 2

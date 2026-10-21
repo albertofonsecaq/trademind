@@ -286,6 +286,7 @@
     "resumeFromNow": "Resume from now",
     "resumeFromNowHint": "Skips ahead to the newest content. Cheap and predictable; the paused window is never ingested. Nothing already stored is removed either way.",
     "resumeFailed": "Could not resume this source. It is still paused.",
+    "resumeNeedsReconnect": "Telegram rejected this source's account, so it is still paused. Reconnect the account, then resume.",
     "paused": "Paused",
     "pausedHint": "Fetching is stopped. Everything already ingested is kept, and resuming continues from where it stopped.",
     "pauseConfirm": "Pause this source?\n\nFetching stops until you resume it. Everything already ingested is kept, and resuming continues from where it stopped.",

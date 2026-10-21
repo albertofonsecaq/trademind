@@ -286,6 +286,7 @@
     "resumeFromNow": "Reanudar desde ahora",
     "resumeFromNowHint": "Salta al contenido más reciente. Económico y predecible; la ventana pausada nunca se ingiere. En ambos casos, nada de lo ya almacenado se elimina.",
     "resumeFailed": "No se pudo reanudar esta fuente. Sigue pausada.",
+    "resumeNeedsReconnect": "Telegram rechazó la cuenta de esta fuente, así que sigue pausada. Vuelve a conectar la cuenta y reanuda.",
     "paused": "Pausada",
     "pausedHint": "La obtención está detenida. Todo lo ya ingerido se conserva, y al reanudar continúa desde donde se detuvo.",
     "pauseConfirm": "¿Pausar esta fuente?\n\nLa obtención se detiene hasta que la reanudes. Todo lo ya ingerido se conserva, y al reanudar continúa desde donde se detuvo.",
