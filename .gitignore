@@ -32,6 +32,9 @@ frontend/tsconfig.tsbuildinfo
 backups/*.dump
 backups/*.sql
 backups/*.gz
+# Written by the scheduled run: which attempt failed, and why. Local state
+# about this machine, and never interesting to anybody else's checkout.
+backups/LAST-RUN-FAILED
 
 # OS
 .DS_Store
