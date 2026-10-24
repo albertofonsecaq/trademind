@@ -289,3 +289,95 @@ class TestAVideoTheWorkspaceAlreadyHoldsIsSkipped:
         item = await ingestion_pipeline.process_message(db, _link(_WATCH), "forex")
 
         assert item is not None
+
+
+class TestOneChunkFailingDoesNotUndoTheOthers:
+    """
+    A link's chunks all ran inside the link's one savepoint, so a chunk that
+    failed rolled back the ones already stored, while the Whisper cost survived
+    on its own session — and the next attempt paid for the video again. Each
+    chunk is its own savepoint now, as it is for a YouTube source.
+    """
+
+    @pytest.fixture
+    def three_chunks(self, videos, monkeypatch):
+        monkeypatch.setattr(youtube_transcript.settings, "YOUTUBE_CHUNK_SECONDS", 300)
+        videos["captions"][_VIDEO] = _captions(12)
+
+    def _failing_on(self, monkeypatch, stable_id, error):
+        async def _distill(db, item, msg, text, lang):
+            if item.stable_id == stable_id:
+                raise error
+
+        monkeypatch.setattr(ingestion_pipeline, "_distill_and_embed", _distill)
+
+    async def test_the_chunks_either_side_are_kept(self, three_chunks, monkeypatch):
+        self._failing_on(monkeypatch, f"youtube:{_VIDEO}:chunk_1", RuntimeError("distillation failed"))
+        db = FakeWorkspace()
+
+        item = await ingestion_pipeline.process_message(db, _link(_WATCH), "forex")
+
+        assert item.stable_id == f"youtube:{_VIDEO}:chunk_0"
+        assert db.savepoints == ["enter", "release", "enter", "rollback", "enter", "release"]
+
+    async def test_a_failure_that_dooms_the_run_still_stops_it(self, three_chunks, monkeypatch):
+        import anthropic
+        import httpx
+
+        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        response = httpx.Response(401, request=request, json={"error": {"message": "bad key"}})
+        doomed = anthropic.AuthenticationError("bad key", response=response, body=None)
+        self._failing_on(monkeypatch, f"youtube:{_VIDEO}:chunk_1", doomed)
+
+        with pytest.raises(anthropic.AuthenticationError):
+            await ingestion_pipeline.process_message(FakeWorkspace(), _link(_WATCH), "forex")
+
+
+@pytest.mark.db
+class TestTheHeldCheckAgainstARealDatabase:
+    """
+    The check is a prefix LIKE, and video ids may contain `_` — a LIKE wildcard.
+    Unescaped, a different video one character apart would count as held and
+    the link would be skipped for good. Only Postgres can say what the query
+    really matches, so these run against one (see conftest.py).
+    """
+
+    _ID = "ab_cdefghij"
+
+    async def _hold(self, db_session, source, stable_id):
+        from datetime import datetime, timezone
+
+        db_session.add(EvidenceItem(
+            id=uuid.uuid4(), workspace_id=source.workspace_id,
+            source_config_id=source.id, stable_id=stable_id,
+            source_type="youtube", type="video_transcript", content="EURUSD",
+            confidence=1.0, message_timestamp=datetime(2026, 10, 1, tzinfo=timezone.utc),
+        ))
+        await db_session.flush()
+
+    def _link_for(self, source):
+        return _link(
+            f"https://youtu.be/{self._ID}",
+            source_config_id=source.id, workspace_id=source.workspace_id,
+        )
+
+    async def test_any_chunk_of_the_video_counts_as_held(self, db_session, videos):
+        from tests.conftest import make_source
+
+        source = await make_source(db_session)
+        await self._hold(db_session, source, f"youtube:{self._ID}:chunk_3")
+
+        item = await ingestion_pipeline.process_message(db_session, self._link_for(source), "forex")
+
+        assert item is None
+        assert videos["asked"] == []
+
+    async def test_an_underscore_is_not_a_wildcard(self, db_session, videos):
+        from tests.conftest import make_source
+
+        source = await make_source(db_session)
+        await self._hold(db_session, source, "youtube:abXcdefghij:full")
+
+        await ingestion_pipeline.process_message(db_session, self._link_for(source), "forex")
+
+        assert videos["asked"] == [("captions", self._ID)]

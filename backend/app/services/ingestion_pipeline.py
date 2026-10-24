@@ -353,7 +353,16 @@ async def _process_youtube_link(
     for chunk in chunks:
         # Each chunk is an ordinary video_transcript message from here: its
         # Whisper cost is logged, and its relevance checked, like any other.
-        item = await process_message(db, chunk, topic_scope)
+        # And its own savepoint, as for a YouTube source: one failed chunk must
+        # not undo the others, or the next attempt pays Whisper for them again.
+        try:
+            async with db.begin_nested():
+                item = await process_message(db, chunk, topic_scope)
+        except Exception as e:
+            if is_fatal_for_run(e):
+                raise
+            log.error("Pipeline error for %s: %s", chunk.stable_id, e, exc_info=True)
+            continue
         first = first or item
     return first
 
