@@ -43,6 +43,13 @@ Issues live as GitHub issues in `albertofonsecaq/trademind`, managed via the `gh
 
 The five canonical triage roles, using their default label strings. See `docs/agents/triage-labels.md`.
 
+### Live data
+
+The local database is months of paid ingestion and cannot be rebuilt. An agent
+reviewing or analysing code never executes anything against it — including by
+importing a function out of a script — and a review that claims code works says
+what it ran. See `docs/agents/live-data.md`.
+
 ### Domain docs
 
 Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
