@@ -171,6 +171,24 @@ class TestAYouTubeLinkIsNotScrapedAsAPage:
         assert fetched == []
         assert [e.type for e in db.added if isinstance(e, EvidenceItem)] == []
 
+    @pytest.mark.parametrize("url", [
+        "https://www.youtube.com/@MarketWizards",
+        "https://www.youtube.com/channel/UCxxxxxxxxxxxxxxxxxxxxxx",
+        "https://www.youtube.com/playlist?list=PL123",
+        "https://youtube.com/",
+        "https://www.youtube.com/watch?v=not-an-id",
+    ])
+    async def test_a_youtube_page_that_is_not_one_video_is_left_alone(self, pages, videos, url):
+        known, fetched = pages
+        known[url] = {"url": url, "title": "YouTube", "text": _ARTICLE}
+        db = FakeWorkspace()
+
+        item = await ingestion_pipeline.process_message(db, _link(url), "forex")
+
+        assert item is None
+        assert fetched == []
+        assert videos["asked"] == []
+
     async def test_a_page_that_only_mentions_youtube_is_still_fetched(self, pages):
         known, fetched = pages
         url = "https://example.com/why-youtube.com-traders-are-wrong"

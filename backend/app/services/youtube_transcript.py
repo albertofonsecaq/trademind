@@ -15,10 +15,12 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from app.connectors.base import RawMessage
 from app.core.config import settings
 from app.services import transcription_service
+from app.services.usage_service import log_usage_event
 
 log = logging.getLogger(__name__)
 
@@ -134,14 +136,13 @@ async def video_transcript_messages(
     when it has neither captions nor a Whisper result.
 
     The caller says whose evidence this is; `metadata` is merged under the
-    chunk's own fields. Whisper cost is carried on the first chunk only.
+    chunk's own fields. Whisper cost rides on the first message only — the
+    first one there is, since a chunk with no text is not one — and is
+    recorded here when there are none, because nothing downstream would see it.
     """
-    segments, whisper_cost = await _segments_for_video(video_id)
-    if not segments:
-        return []
-
+    segments, owed = await _segments_for_video(video_id)
     chunks = _chunk_segments(
-        segments,
+        segments or [],
         max_seconds=settings.YOUTUBE_CHUNK_SECONDS,
     )
 
@@ -159,8 +160,8 @@ async def video_transcript_messages(
         start_s = _chunk_start(chunk)
         end_s = _chunk_end(chunk)
 
-        # Whisper cost is only charged once per video (first chunk); rest are free
-        chunk_whisper_cost = whisper_cost if i == 0 else "0"
+        # Whisper cost is only charged once per video; the rest are free
+        chunk_whisper_cost, owed = owed, "0"
 
         messages.append(RawMessage(
             stable_id=stable_id,
@@ -185,4 +186,11 @@ async def video_transcript_messages(
             pre_pipeline_model=settings.WHISPER_MODEL if float(chunk_whisper_cost) > 0 else None,
         ))
 
+    if Decimal(owed) > 0:
+        await log_usage_event(
+            workspace_id=workspace_id,
+            task_type="transcription",
+            provider_model=settings.WHISPER_MODEL,
+            cost_usd=Decimal(owed),
+        )
     return messages

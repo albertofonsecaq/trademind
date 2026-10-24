@@ -273,8 +273,11 @@ async def _process_url(db: AsyncSession, msg: RawMessage, topic_scope: str) -> E
     url = meta.get("url")
     if not url:
         return None
-    video_id = url_service.youtube_video_id(url)
-    if video_id:
+    if url_service.is_youtube(url):
+        video_id = url_service.youtube_video_id(url)
+        # A channel, playlist or home page: nothing to transcribe, nothing to scrape.
+        if not video_id:
+            return None
         return await _process_youtube_link(db, msg, video_id, topic_scope)
 
     fetched = await url_service.extract(url)

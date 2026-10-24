@@ -113,29 +113,36 @@ _YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.yout
 _YOUTUBE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
+def is_youtube(url: str) -> bool:
+    """
+    Whether a link points anywhere on YouTube. No YouTube page has readable text
+    worth keeping, so none is scraped — whether or not it is one video.
+    """
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    return host == "youtu.be" or host in _YOUTUBE_HOSTS
+
+
 def youtube_video_id(url: str) -> str | None:
     """
     The video id a link points at, or None if it is not a link to one video.
 
-    A YouTube watch page has no readable text worth keeping, so a caller that
-    finds an id here gets the video's transcript instead of scraping the page.
+    A caller that finds an id here gets the video's transcript instead of
+    scraping the page.
     """
-    try:
-        parsed = urlparse(url)
-    except Exception:
+    if not is_youtube(url):
         return None
-    host = (parsed.hostname or "").lower()
+    parsed = urlparse(url)
     parts = [p for p in parsed.path.split("/") if p]
 
-    if host == "youtu.be":
+    if parsed.hostname.lower() == "youtu.be":
         candidate = parts[0] if parts else None
-    elif host in _YOUTUBE_HOSTS:
-        if parsed.path == "/watch":
-            candidate = parse_qs(parsed.query).get("v", [None])[0]
-        elif len(parts) >= 2 and parts[0] in ("shorts", "live", "embed"):
-            candidate = parts[1]
-        else:
-            candidate = None
+    elif parsed.path == "/watch":
+        candidate = parse_qs(parsed.query).get("v", [None])[0]
+    elif len(parts) >= 2 and parts[0] in ("shorts", "live", "embed"):
+        candidate = parts[1]
     else:
-        return None
+        candidate = None
     return candidate if candidate and _YOUTUBE_ID_RE.match(candidate) else None

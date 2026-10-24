@@ -119,3 +119,42 @@ class TestTheCallerSaysWhoseEvidenceItIs:
         assert msg.metadata["url"] == "https://youtu.be/dQw4w9WgXcQ"
         assert msg.metadata["video_id"] == "dQw4w9WgXcQ"
         assert msg.metadata["chunk_index"] == 0
+
+
+class TestWhatWhisperCostIsNeverLost:
+    """
+    The cost rode on chunk 0, and a chunk with no text is not yielded — so a
+    video whose opening minutes Whisper heard as silence was paid for and never
+    recorded. The cost rides on the first message there is instead, and with
+    none at all it is recorded here, since nothing downstream will see it.
+    """
+
+    @pytest.fixture
+    def usage_log(self, monkeypatch):
+        from app.services import usage_service
+        from tests.conftest import FakeSession
+
+        written = FakeSession()
+        monkeypatch.setattr(usage_service, "AsyncSessionLocal", lambda: written)
+        return written
+
+    async def test_a_silent_opening_does_not_take_the_cost_with_it(self, youtube, usage_log):
+        silent = [{"text": "  ", "start": i * 60.0, "duration": 60.0} for i in range(5)]
+        youtube["whisper"] = (silent + _segments(5)[:5], Decimal("0.06"))
+
+        msgs = await _messages()
+
+        assert [m.pre_pipeline_cost_usd for m in msgs] == ["0.06"]
+        assert msgs[0].pre_pipeline_task_type == "transcription"
+        assert usage_log.added == []           # carried, so logged downstream, once
+
+    async def test_a_transcript_with_no_text_at_all_is_still_recorded(self, youtube, usage_log):
+        youtube["whisper"] = ([{"text": "", "start": 0.0, "duration": 60.0}], Decimal("0.006"))
+        workspace_id = uuid.uuid4()
+
+        assert await _messages(workspace_id=workspace_id) == []
+
+        [event] = usage_log.added
+        assert event.task_type == "transcription"
+        assert event.cost_usd == Decimal("0.006")
+        assert event.workspace_id == workspace_id
