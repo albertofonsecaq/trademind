@@ -46,7 +46,11 @@ BACKUP_DIR = REPO_ROOT / "backups"
 # Mirrored here when BACKUP_MIRROR_DIR says nothing and this directory exists,
 # so the folder's existence is the configuration and nobody has to remember an
 # environment variable — remembering is the failure this whole script is about.
-# It is on the same disk, which the warning below says out loud.
+#
+# It is inside the repo, which means two things worth knowing and recorded in
+# backup-mirror/README.md rather than in a log line: it is the same disk, so it
+# is not the off-machine copy #51 asks for, and `git clean -xdf` would take it
+# along with the dumps it is a copy of.
 DEFAULT_MIRROR = REPO_ROOT / "backup-mirror"
 LOG_FILE = BACKUP_DIR / "backup.log"
 FAILURE_MARKER = BACKUP_DIR / "LAST-RUN-FAILED"
@@ -370,48 +374,34 @@ def mirror_destination(configured: str, default: Path) -> Path | None:
     return None
 
 
-def _warn_if_one_disk(mirror: Path) -> None:
-    """
-    Say so when the copy cannot survive what the original cannot survive.
-
-    The check that matters is not whether a mirror is configured — it is whether
-    it is somewhere else. A second folder on the same disk protects against the
-    first being deleted and against nothing else, and a backup you believe is
-    off-machine when it is not is worse than knowing it is not.
-    """
-    try:
-        same = mirror.stat().st_dev == BACKUP_DIR.stat().st_dev
-    except OSError:
-        return
-    if same:
-        log.warning(
-            "the mirror %s is on the same disk as %s, so neither copy survives losing "
-            "it. Point BACKUP_MIRROR_DIR at an external volume or a synced folder.",
-            mirror, BACKUP_DIR.name,
-        )
-
-
 def _mirror(dump: Path, *, dry_run: bool) -> None:
     """
-    Copy the verified dump somewhere the original's disk failing would not take
-    with it.
+    Copy the verified dump to a second place, and say which place that was.
 
-    Configured rather than chosen here: an external disk one person uses and a
-    synced folder another does are the same copy as far as this is concerned.
-    No destination at all is a loud warning and not a failure — the local dump
-    is still worth having, and a backup script that refuses to run because a
-    disk is unplugged protects nobody.
+    Deliberately no judgement about whether that place survives losing this
+    machine. The first version of this compared the two directories' devices and
+    warned when they matched, which was wrong in both directions — a synced
+    folder sits on the same device as the repo, so it warned about the very
+    destination the docs recommend, while a second volume on the same physical
+    disk passed silently. Worse, with a mirror inside the repo it fired on every
+    healthy run, which is the alternative ADR 0003 rejects in as many words: an
+    alarm that goes off on good days is one nobody reads, and that costs the
+    next real failure.
+
+    So the run states where the copy went and leaves the judgement to the person
+    who chose the path — `backups/README.md` and #51 carry it. No destination at
+    all is still a warning, because that one is a fact about this run and not a
+    guess: the local dump is worth having, and a backup script that refuses to
+    run because a disk is unplugged protects nobody.
     """
     mirror = mirror_destination(os.environ.get("BACKUP_MIRROR_DIR", ""), DEFAULT_MIRROR)
     if mirror is None:
         log.warning(
-            "No mirror: this dump exists only in %s, on one disk. Set "
-            "BACKUP_MIRROR_DIR, or create %s for a second copy on this machine.",
+            "No mirror: this dump exists only in %s. Set BACKUP_MIRROR_DIR, or "
+            "create %s, for a second copy.",
             BACKUP_DIR.name, DEFAULT_MIRROR.name,
         )
         return
-
-    _warn_if_one_disk(mirror)
 
     if not mirror.is_dir():
         # A destination was configured and is not usable — an unplugged disk, a
@@ -423,6 +413,8 @@ def _mirror(dump: Path, *, dry_run: bool) -> None:
             f"off this machine"
         )
 
+    # Named on every run, so "where is the second copy" is answered by the log
+    # rather than by reading this file.
     log.info("copying to %s", mirror)
     if not dry_run:
         # Copy beside the final name, then move: an interrupted copy must not

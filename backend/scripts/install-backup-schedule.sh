@@ -41,8 +41,9 @@ fi
 [[ -x "$PYTHON" ]] || { echo "No interpreter at $PYTHON — create the venv first." >&2; exit 1; }
 
 if [[ -z "$MIRROR" ]]; then
-  echo "WARNING: no --mirror given, so dumps will exist only on this machine."
-  echo "         Losing the disk loses the backups with it (#51, criterion 4)."
+  echo "No --mirror given, so the scheduled run copies to backup-mirror/ if that"
+  echo "folder exists. That is a second copy on this machine, not an off-machine"
+  echo "one — pass --mirror with an external volume or a synced folder for that."
 else
   mkdir -p "$MIRROR"
   [[ -d "$MIRROR" ]] || { echo "Mirror $MIRROR is not a directory." >&2; exit 1; }
