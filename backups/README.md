@@ -151,10 +151,34 @@ need to know before trusting one. The scheduled dumps carry it too, plus a
 timestamp and an `-auto` suffix that keeps the retention rule away from
 anything taken by hand.
 
+## A copy to break
+
+Anything destructive goes against a disposable copy, never the live database.
+One command makes one from the newest verified dump, gives it the same roles,
+and tells you how to throw it away:
+
+```bash
+python backend/scripts/scratch_db.py            # make one
+python backend/scripts/scratch_db.py --list     # what exists
+python backend/scripts/scratch_db.py --drop <name>
+```
+
+Dropping a table to see whether a permission holds, exercising a guard, trying
+a migration's downgrade, rehearsing a restore: all of it belongs there. On
+2026-10-22 a tool ran a `dropdb` guard against the live database to find out
+whether the guard worked, and destroyed it — the guard was correct, and
+production was simply the only database to hand (#60).
+
+It will only drop a database whose name it made itself, so it cannot be turned
+on the live one or on the backup's template.
+
 ## Checking one is real
 
-A dump you have not restored is not a backup. Restore it into a throwaway
-database — never over the live one — and compare:
+A dump you have not restored is not a backup. The scheduled run does this for
+every dump it keeps, and `scratch_db.py` above does it for you on demand — what
+follows is the same thing by hand, for a dump you want to check specifically.
+
+Restore it into a throwaway database — never over the live one — and compare:
 
 ```bash
 docker compose exec -T db createdb -U trademind trademind_hand_check

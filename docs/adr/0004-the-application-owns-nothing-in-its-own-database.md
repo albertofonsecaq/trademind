@@ -60,6 +60,11 @@ owned by whoever restored it and has no grants, so the setup step has to run
 against it before the application can use it. That is written into the restore
 procedure, where somebody under pressure will read it.
 
+Because the roles make a copy of the database cheap to hand out safely, the
+standing rule becomes possible to follow: anything destructive runs against a
+disposable copy rather than the live database. The copy is created by a role
+that cannot drop the live one, so the rule does not rest on remembering it.
+
 Reverting is one command — `setup_db_roles.py --revert --yes` — and it is
 gated, because it hands the application back the power to drop this database.
 The round trip is rehearsed on a scratch copy rather than improvised at the
