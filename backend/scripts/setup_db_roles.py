@@ -55,16 +55,38 @@ VERIFY_TEMPLATE = "trademind_verify_template"
 BOOTSTRAP = os.environ.get("POSTGRES_SUPERUSER", "trademind")
 
 
+def password_variable(role: str) -> str:
+    """The environment variable holding one role's password."""
+    return f"{role.upper()}_PASSWORD"
+
+
 def _password(role: str) -> str:
     """
     The password for one role.
 
     Defaulted for local development and CI, exactly as DATABASE_URL is: a
     database reachable only on a loopback port, holding nothing until somebody
-    ingests into it. Anywhere else, set these.
+    ingests into it. Anywhere else, set the variables named by
+    `password_variable` — they are listed in backend/.env.example.
     """
-    variable = f"{role.upper()}_PASSWORD"
-    return os.environ.get(variable, "trademind")
+    return os.environ.get(password_variable(role), "trademind")
+
+
+def _quote_literal(value: str) -> str:
+    """
+    A single-quoted SQL string, with the quotes inside it doubled.
+
+    Everything else interpolated here is a module constant; a password and a
+    database name are not. A password containing an apostrophe would otherwise
+    end the literal early — breaking the statement at best, and at worst
+    appending SQL that the only role allowed to run this would execute.
+    """
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _quote_identifier(name: str) -> str:
+    """A double-quoted SQL identifier, for the database name out of the URL."""
+    return '"' + name.replace('"', '""') + '"'
 
 
 def statements(database: str) -> list[str]:
@@ -88,11 +110,13 @@ def statements(database: str) -> list[str]:
             f"IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') "
             f"THEN CREATE ROLE {role} LOGIN; END IF; END $$"
         )
-        plan.append(f"ALTER ROLE {role} WITH LOGIN PASSWORD '{_password(role)}'")
+        plan.append(
+            f"ALTER ROLE {role} WITH LOGIN PASSWORD {_quote_literal(_password(role))}"
+        )
 
     plan += [
         # The database itself.
-        f"ALTER DATABASE {database} OWNER TO {OWNER}",
+        f"ALTER DATABASE {_quote_identifier(database)} OWNER TO {OWNER}",
 
         # And every object in public, one at a time rather than with REASSIGN
         # OWNED: the bootstrap role also owns objects the database system
@@ -104,32 +128,7 @@ def statements(database: str) -> list[str]:
         # and operators live in public and are the extension's to own, not ours.
         # The migrations need ownership of the tables they alter; they never
         # alter pgvector.
-        f"""
-        DO $$
-        DECLARE relation record;
-        BEGIN
-          FOR relation IN
-            SELECT c.relname, c.relkind
-            FROM pg_class c
-            JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname = 'public'
-              AND c.relkind IN ('r', 'p', 'S', 'v', 'm')
-              AND NOT EXISTS (
-                SELECT 1 FROM pg_depend d WHERE d.objid = c.oid AND d.deptype = 'e'
-              )
-          LOOP
-            EXECUTE format(
-              'ALTER %s %I OWNER TO %I',
-              CASE relation.relkind
-                WHEN 'r' THEN 'TABLE' WHEN 'p' THEN 'TABLE'
-                WHEN 'S' THEN 'SEQUENCE'
-                WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW'
-              END,
-              relation.relname, '{OWNER}'
-            );
-          END LOOP;
-        END $$
-        """,
+        reassign_public_objects(OWNER),
 
         # Nobody creates objects in public except the owner. Without this,
         # PUBLIC keeps the CREATE it has by default on older clusters, and the
@@ -164,21 +163,21 @@ def statements(database: str) -> list[str]:
     return plan
 
 
-def revert_statements(database: str) -> list[str]:
+def reassign_public_objects(to_role: str) -> str:
     """
-    Hand everything back to the bootstrap role.
+    One statement that hands every object in public to one role.
 
-    Here because a change to ownership on a database nobody can replace needs a
-    way back that has been tried, not improvised at the point it is needed. It
-    leaves the roles in place: dropping a role that still owns something fails,
-    and a role nothing connects as costs nothing.
+    Defined once because both directions need it: applying gives the objects to
+    the owner, reverting gives them back. Two copies would drift, and the copy
+    that drifts is the one somebody reaches for when things have already gone
+    wrong.
 
-    Reverting means the application's credentials can destroy the database
-    again, so this is for getting out of trouble, not for staying anywhere.
+    Not REASSIGN OWNED, which refuses the whole operation — the bootstrap role
+    also owns objects the database system requires and it will not separate
+    those from ours. Objects belonging to an extension are skipped: pgvector's
+    functions and operators live in public and are the extension's to own.
     """
-    return [
-        f"ALTER DATABASE {database} OWNER TO {BOOTSTRAP}",
-        f"""
+    return f"""
         DO $$
         DECLARE relation record;
         BEGIN
@@ -199,11 +198,28 @@ def revert_statements(database: str) -> list[str]:
                 WHEN 'S' THEN 'SEQUENCE'
                 WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW'
               END,
-              relation.relname, '{BOOTSTRAP}'
+              relation.relname, '{to_role}'
             );
           END LOOP;
         END $$
-        """,
+    """
+
+
+def revert_statements(database: str) -> list[str]:
+    """
+    Hand everything back to the bootstrap role.
+
+    Here because a change to ownership on a database nobody can replace needs a
+    way back that has been tried, not improvised at the point it is needed. It
+    leaves the roles in place: dropping a role that still owns something fails,
+    and a role nothing connects as costs nothing.
+
+    Reverting means the application's credentials can destroy the database
+    again, so this is for getting out of trouble, not for staying anywhere.
+    """
+    return [
+        f"ALTER DATABASE {_quote_identifier(database)} OWNER TO {BOOTSTRAP}",
+        reassign_public_objects(BOOTSTRAP),
     ]
 
 
@@ -218,6 +234,19 @@ def template_statements() -> list[str]:
         # run against VERIFY_TEMPLATE, not the live database
         "CREATE EXTENSION IF NOT EXISTS vector",
     ]
+
+
+def _without_passwords(statement: str) -> str:
+    """
+    The statement with any password replaced.
+
+    --dry-run exists to be read, and in CI it is read into a log that outlives
+    the run. Printing the thing the statement sets would make the safe option
+    the leaky one.
+    """
+    import re
+
+    return re.sub(r"PASSWORD '(?:[^']|'')*'", "PASSWORD '<redacted>'", statement)
 
 
 def _report(cursor) -> None:
@@ -270,7 +299,11 @@ def _ensure_verify_template(superuser_url: str) -> None:
     finally:
         connection.close()
 
-    connection = _connect(superuser_url.rsplit("/", 1)[0] + f"/{VERIFY_TEMPLATE}")
+    # Rebuilt through urlparse rather than by cutting at the last slash: that
+    # loses anything after the database name, so a URL carrying ?sslmode=require
+    # would quietly connect somewhere else, or not at all.
+    parsed = urlparse(superuser_url)
+    connection = _connect(parsed._replace(path=f"/{VERIFY_TEMPLATE}").geturl())
     try:
         with connection.cursor() as cursor:
             cursor.execute(extension)
@@ -286,7 +319,12 @@ def main() -> int:
     parser.add_argument("--show", action="store_true", help="report the current roles and owners")
     parser.add_argument(
         "--revert", action="store_true",
-        help="hand ownership back to the bootstrap role (see revert_statements)",
+        help="hand ownership back to the bootstrap role; needs --yes to apply",
+    )
+    parser.add_argument(
+        "--yes", action="store_true",
+        help="confirm a --revert, which puts the power to drop this database "
+             "back into the application's credentials",
     )
     parser.add_argument(
         "--url",
@@ -301,9 +339,19 @@ def main() -> int:
     database = urlparse(args.url).path.lstrip("/") or "trademind"
     plan = revert_statements(database) if args.revert else statements(database)
 
+    if args.revert and not args.yes:
+        # Gated like the other scripts here that undo something, and for a
+        # reason learned the hard way: an unguarded --revert was run by accident
+        # against the live database while this very gate was being added.
+        print("This would hand ownership back to the bootstrap role:\n")
+        for statement in plan:
+            print(f"{_without_passwords(statement)};")
+        print("\nRe-run with --yes to apply it.")
+        return 0
+
     if args.dry_run:
         for statement in plan:
-            print(f"{statement};")
+            print(f"{_without_passwords(statement)};")
         return 0
 
     connection = _connect(args.url)

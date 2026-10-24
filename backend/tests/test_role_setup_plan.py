@@ -12,7 +12,17 @@ The script builds its statements and returns them before executing anything, so
 """
 import pytest
 
-from scripts.setup_db_roles import APP, BACKUP, OWNER, statements
+from scripts.setup_db_roles import (
+    APP,
+    BACKUP,
+    BOOTSTRAP,
+    OWNER,
+    VERIFY_TEMPLATE,
+    reassign_public_objects,
+    revert_statements,
+    statements,
+    template_statements,
+)
 
 
 @pytest.fixture
@@ -25,7 +35,7 @@ def _joined(plan: list[str]) -> str:
 
 
 class TestWhatTheApplicationRoleNeverGets:
-    @pytest.mark.parametrize("privilege", ["SUPERUSER", "CREATEROLE"])
+    @pytest.mark.parametrize("privilege", ["SUPERUSER", "CREATEROLE", "CREATEDB"])
     def test_it_is_never_granted(self, plan, privilege):
         granting = [
             statement for statement in plan
@@ -53,7 +63,8 @@ class TestWhatTheApplicationRoleNeverGets:
 
 class TestOwnershipMoves:
     def test_the_database_changes_hands(self, plan):
-        assert f"ALTER DATABASE trademind OWNER TO {OWNER}" in plan
+        """Quoted, because the name arrives from a URL rather than a constant."""
+        assert f'ALTER DATABASE "trademind" OWNER TO {OWNER}' in plan
 
     def test_it_does_not_use_reassign_owned(self, plan):
         """
@@ -122,3 +133,72 @@ class TestItIsSafeToRunTwice:
         no business containing the word at all.
         """
         assert "DROP" not in _joined(plan).upper()
+
+
+class TestTheWayBack:
+    """
+    revert_statements had no coverage at all, while its own docstring claimed
+    to be "a way back that has been tried". The round trip is rehearsed against
+    a scratch copy; this pins the shape of it offline.
+    """
+
+    @pytest.fixture
+    def plan(self) -> list[str]:
+        return revert_statements("trademind")
+
+    def test_it_hands_the_database_back(self, plan):
+        assert f'ALTER DATABASE "trademind" OWNER TO {BOOTSTRAP}' in plan
+
+    def test_it_hands_the_objects_back_the_same_way_they_came(self, plan):
+        """
+        The same statement as the forward direction with a different target, so
+        a relkind added to one is added to both.
+        """
+        assert reassign_public_objects(BOOTSTRAP) in plan
+
+    def test_it_drops_nothing(self, plan):
+        """
+        Reverting is for getting out of trouble. Deleting roles on the way would
+        fail anyway while they still own things, and would make the round trip
+        one-way.
+        """
+        assert "DROP" not in "\n".join(plan).upper()
+
+    def test_it_is_the_mirror_of_applying(self):
+        """
+        Both directions move the same set of objects. If one grows a relkind and
+        the other does not, ownership is stranded — which is the state you would
+        be reverting to escape.
+        """
+        forwards = reassign_public_objects(OWNER).replace(OWNER, "ROLE")
+        backwards = reassign_public_objects(BOOTSTRAP).replace(BOOTSTRAP, "ROLE")
+
+        assert forwards == backwards
+
+
+class TestTheVerifyTemplate:
+    def test_it_is_owned_by_the_backup_role(self):
+        """
+        Copying a database requires owning the one you copy, and the backup role
+        is what does the copying.
+        """
+        create, _ = template_statements()
+
+        assert f"CREATE DATABASE {VERIFY_TEMPLATE} OWNER {BACKUP}" == create
+
+    def test_it_gets_the_extension_the_dumps_ask_for(self):
+        """
+        A dump of this database replays CREATE EXTENSION vector, which only a
+        superuser may do — so the template has it already and the statement is
+        a notice instead of a refusal.
+        """
+        _, extension = template_statements()
+
+        assert extension == "CREATE EXTENSION IF NOT EXISTS vector"
+
+    def test_it_shares_the_throwaway_prefix_on_purpose(self):
+        """
+        It is named like the throwaways it seeds, which is also why the drop
+        guard in backup.py has to name it rather than trust the prefix.
+        """
+        assert VERIFY_TEMPLATE.startswith("trademind_verify_")

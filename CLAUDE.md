@@ -24,6 +24,10 @@ The application's credentials cannot drop a table or the database. That is
 deliberate and load-bearing; `backend/tests/test_database_privileges.py` fails if
 it stops being true.
 
+`--show` reports who owns what, and `--revert --yes` hands everything back to
+the bootstrap superuser — the way out if the roles are ever what is in the way.
+`backups/README.md` has both, next to the restore procedure.
+
 ## Agent skills
 
 ### Issue tracker

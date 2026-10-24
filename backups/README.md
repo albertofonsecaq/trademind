@@ -65,6 +65,33 @@ real run failed — which is exactly when somebody is in here poking by hand.
 A failed run keeps its dump as `*.FAILED-VERIFICATION`, writes the marker file,
 logs why, and raises a desktop notification. It does not delete anything.
 
+## If the roles are the problem
+
+The application, the migrations and the backup use three different roles, and
+the application's owns nothing (#59, ADR 0004). If that arrangement is what is
+in your way — a restored copy nothing can read, a migration refused, a role
+whose password nobody has — there are two commands:
+
+```bash
+# Put the roles on a database that has none. Any restored copy needs this.
+SUPERUSER_DATABASE_URL=postgresql://trademind:trademind@localhost:5432/<database> \
+  python backend/scripts/setup_db_roles.py
+
+# See who owns what, before changing anything.
+python backend/scripts/setup_db_roles.py --show
+```
+
+And one way back, which hands everything to the bootstrap superuser again:
+
+```bash
+python backend/scripts/setup_db_roles.py --revert          # says what it would do
+python backend/scripts/setup_db_roles.py --revert --yes     # does it
+```
+
+Reverting means the application's credentials can destroy the database again, so
+it is for getting out of trouble rather than somewhere to stay. It moves no
+rows, and applying afterwards is the same command as the first time.
+
 ## Restoring, under pressure
 
 Read this first: **restore into a new database, look at it, and only then swap.**

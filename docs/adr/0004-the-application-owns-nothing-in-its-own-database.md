@@ -25,7 +25,7 @@ prove a dump is real. Those were one role because one role was easy.
 
 ## Decision
 
-Three roles, by job, and the application's owns nothing.
+Three roles, one per job, and the application's role owns nothing.
 
 The **owner** owns the database and every object in it, and only `alembic
 upgrade` connects as it. The **application** role may select, insert, update and
@@ -59,6 +59,11 @@ Restoring into a fresh database now has a second step. The restored copy is
 owned by whoever restored it and has no grants, so the setup step has to run
 against it before the application can use it. That is written into the restore
 procedure, where somebody under pressure will read it.
+
+Reverting is one command — `setup_db_roles.py --revert --yes` — and it is
+gated, because it hands the application back the power to drop this database.
+The round trip is rehearsed on a scratch copy rather than improvised at the
+moment it is needed.
 
 **This does not make the database safe from everyone.** The bootstrap superuser
 the container creates still exists and still trusts local socket connections, so

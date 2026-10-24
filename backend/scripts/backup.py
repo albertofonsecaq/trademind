@@ -262,7 +262,14 @@ def _ensure_database_is_up() -> None:
 
 def _drop_throwaway(database: str) -> None:
     """Drop a database, having first refused to drop anything but a throwaway."""
-    if not database.startswith(VERIFY_DB_PREFIX) or database == LIVE_DB:
+    if (
+        not database.startswith(VERIFY_DB_PREFIX)
+        or database == LIVE_DB
+        # The template shares the throwaway prefix, and only a superuser can
+        # put it back — so the guard has to name it rather than trust the
+        # prefix. No caller passes it today; a guard is for the day one does.
+        or database == VERIFY_TEMPLATE
+    ):
         raise RuntimeError(f"refusing to drop {database!r}: not a throwaway name")
     dropped = _compose("exec", "-T", "db", "dropdb", "-U", DB_USER, "--if-exists", database)
     if dropped.returncode != 0:
