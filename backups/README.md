@@ -9,7 +9,99 @@ evidence that cost relevance checks, images that cost vision calls, transcripts
 that cost Whisper. Re-running the pipeline would re-pay for all of it, and some
 of the Telegram history behind it may no longer be fetchable at all.
 
-## Taking one
+## The schedule
+
+`backend/scripts/backup.py` dumps the database, restores the dump into a
+throwaway database to prove it is real, copies it to `BACKUP_MIRROR_DIR` if one
+is set, and prunes under the rule below.
+
+**Nothing runs it until you install the agent.** Until then this is a script you
+can run by hand, which is not a backup arrangement:
+
+```bash
+backend/scripts/install-backup-schedule.sh --mirror ~/path/to/a/synced/folder
+backend/scripts/install-backup-schedule.sh --uninstall
+```
+
+Installed, it runs daily at 03:00. launchd runs a calendar job it missed once
+the machine wakes, so a laptop asleep at 03:00 still gets its dump. The script
+starts the database container if it is not running — and leaves it running,
+because stopping something somebody else started is not its business.
+
+**Retention: the newest dump of each of the last 7 days, plus the newest of
+each of the last 4 ISO weeks.** About 1.3 GB at today's sizes. Days and weeks,
+not files: this script is runnable by hand, and counting files would let an
+afternoon of manual runs pass as a week of history and delete the real one. Two
+dumps on one day is one day of history, and the later one is it.
+
+The weekly half is the half that matters — seven days only covers damage
+somebody noticed inside a week, and nobody is watching. It buckets by ISO week
+rather than looking for Sundays, so a month of missed Sundays still leaves
+weekly history.
+
+**It will never delete a dump whose name does not end in `-auto.dump`.** That is
+the three below, and anything you take with `pg_dump` yourself. Note what this
+does *not* mean: a dump from running `backup.py` by hand is an `-auto` dump and
+is pruned like any other. If you want one kept for ever, take it by hand.
+
+**Set `BACKUP_MIRROR_DIR`.** Without it every copy is on this machine, and the
+machine is the thing most likely to be lost. The script says so, loudly, on
+every run. If it is set and the directory is missing — an unplugged disk — the
+run fails rather than quietly keeping the dump local.
+
+### Is it working?
+
+```bash
+tail -5 backups/backup.log              # what the last runs did
+ls backups/LAST-RUN-FAILED              # exists ⇒ the last real attempt did not finish
+launchctl print gui/$UID/com.trademind.backup | head -20
+launchctl kickstart -p gui/$UID/com.trademind.backup    # run it now
+```
+
+A `--dry-run` or a `--prune-only` deliberately leaves that marker alone: neither
+proves backups work, and clearing it would erase the evidence that last night's
+real run failed — which is exactly when somebody is in here poking by hand.
+
+A failed run keeps its dump as `*.FAILED-VERIFICATION`, writes the marker file,
+logs why, and raises a desktop notification. It does not delete anything.
+
+## Restoring, under pressure
+
+Read this first: **restore into a new database, look at it, and only then swap.**
+Restoring over the live database is the one move that cannot be undone.
+
+```bash
+# 1. Pick the newest dump whose revision matches the code you are running.
+ls -lt backups/*.dump                   # the revision is in the filename
+
+# 2. Restore it beside the live one, never over it.
+docker compose up -d db
+docker compose exec -T db createdb -U trademind trademind_restored
+cat backups/<file>.dump | docker compose exec -T db \
+  pg_restore -U trademind -d trademind_restored --no-owner --exit-on-error
+
+# 3. Look at what you got before trusting it.
+docker compose exec -T db psql -U trademind -d trademind_restored -tAc \
+  "SELECT 'evidence='||(SELECT count(*) FROM evidence_items)
+        ||' ideas='||(SELECT count(*) FROM trade_ideas)
+        ||' usage='||(SELECT count(*) FROM usage_events)
+        ||' rev='||(SELECT version_num FROM alembic_version)"
+
+# 4. Point the application at it — no rename, nothing destroyed.
+#    In backend/.env:
+#      DATABASE_URL=postgresql+asyncpg://trademind:trademind@localhost:5432/trademind_restored
+```
+
+Step 4 is deliberately not "rename the databases". Leaving the damaged one in
+place costs 120 MB of disk and keeps every option open; renaming over it closes
+them for good. Rename later, once the restored database has been running for a
+while.
+
+If the dump's revision is *older* than the code, run `alembic upgrade head`
+against the restored database before step 4. If it is *newer*, check out the
+commit that matches it instead — migrations do not run backwards for free.
+
+## Taking one by hand
 
 ```bash
 docker compose up -d db
@@ -22,7 +114,9 @@ docker compose exec -T db pg_dump -U trademind -d trademind -Fc \
 
 The migration revision is in the filename on purpose: a dump only restores
 cleanly against code that expects its schema, so the revision is the thing you
-need to know before trusting one.
+need to know before trusting one. The scheduled dumps carry it too, plus a
+timestamp and an `-auto` suffix that keeps the retention rule away from
+anything taken by hand.
 
 ## Checking one is real
 
@@ -30,14 +124,24 @@ A dump you have not restored is not a backup. Restore it into a throwaway
 database — never over the live one — and compare:
 
 ```bash
-docker compose exec -T db createdb -U trademind trademind_verify
-cat backups/<file>.dump | docker compose exec -T db pg_restore -U trademind -d trademind_verify --no-owner
-docker compose exec -T db psql -U trademind -d trademind_verify -tAc \
+docker compose exec -T db createdb -U trademind trademind_hand_check
+cat backups/<file>.dump | docker compose exec -T db \
+  pg_restore -U trademind -d trademind_hand_check --no-owner --exit-on-error
+docker compose exec -T db psql -U trademind -d trademind_hand_check -tAc \
   "SELECT 'evidence='||(SELECT count(*) FROM evidence_items)||' usage='||(SELECT count(*) FROM usage_events)"
-docker compose exec -T db dropdb -U trademind trademind_verify
+docker compose exec -T db dropdb -U trademind trademind_hand_check
 ```
 
+`--exit-on-error` is not optional: without it `pg_restore` reports problems and
+carries on, exits 0, and the counts you then read come from a partial restore.
+The name avoids `trademind_verify_*`, which the script uses for its own
+throwaways and is the only name it will agree to drop.
+
 ## What is here
+
+Hand-taken dumps only. The scheduled ones come and go under the retention rule,
+so a table of them would be wrong within a week — `ls -lt backups/*-auto.dump`
+is the answer to "what do we have", and `backups/backup.log` to "did it work".
 
 | File | Taken | Revision | Verified | Why |
 | --- | --- | --- | --- | --- |

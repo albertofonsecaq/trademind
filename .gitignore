@@ -32,6 +32,13 @@ frontend/tsconfig.tsbuildinfo
 backups/*.dump
 backups/*.sql
 backups/*.gz
+# Written by the scheduled run: which attempt failed, and why. Local state
+# about this machine, and never interesting to anybody else's checkout.
+backups/LAST-RUN-FAILED
+# A dump that failed verification is kept as evidence and is still a full copy
+# of real data — the rule above stops matching once the extension changes.
+backups/*.FAILED-VERIFICATION
+backups/.*.partial
 
 # OS
 .DS_Store
