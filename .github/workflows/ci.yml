@@ -86,10 +86,19 @@ jobs:
         working-directory: backend
         run: pip install -r requirements-dev.txt
 
+      # Runs on an empty database, as it does on a new machine — so CI is where
+      # the setup step is proved, not only the privileges it produces (#59).
+      - name: Split the database roles
+        working-directory: backend
+        env:
+          SUPERUSER_DATABASE_URL: postgresql://trademind:trademind@localhost:5432/trademind
+        run: python scripts/setup_db_roles.py
+
       - name: Migrate the database to head
         working-directory: backend
         env:
-          DATABASE_URL_SYNC: postgresql+psycopg2://trademind:trademind@localhost:5432/trademind
+          # The owner, and the only step that connects as it.
+          DATABASE_URL_SYNC: postgresql+psycopg2://trademind_owner:trademind@localhost:5432/trademind
         # Before the tests, not as part of them: they read the real schema, and
         # the fixture fails with a readable message if the revision is behind.
         run: alembic upgrade head
@@ -97,7 +106,9 @@ jobs:
       - name: Run the whole suite, database included
         working-directory: backend
         env:
-          TEST_DATABASE_URL: postgresql+asyncpg://trademind:trademind@localhost:5432/trademind
+          # As the application connects: the privilege tests assert what this
+          # role cannot do, so running them as anything else proves nothing.
+          TEST_DATABASE_URL: postgresql+asyncpg://trademind_app:trademind@localhost:5432/trademind
         run: pytest -q
 
   frontend:

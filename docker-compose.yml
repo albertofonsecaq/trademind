@@ -22,8 +22,10 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     env_file: ./backend/.env
     environment:
-      DATABASE_URL: postgresql+asyncpg://trademind:trademind@db:5432/trademind
-      DATABASE_URL_SYNC: postgresql+psycopg2://trademind:trademind@db:5432/trademind
+      # The application owns nothing, and the owner's credential is not in
+      # here with it: migrations are run deliberately, as the owner, not by the
+      # process serving requests (#59).
+      DATABASE_URL: postgresql+asyncpg://trademind_app:trademind@db:5432/trademind
       CORS_ORIGINS: '["http://localhost:5173"]'
     ports:
       - "8000:8000"
