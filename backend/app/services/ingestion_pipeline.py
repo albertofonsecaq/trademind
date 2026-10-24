@@ -259,6 +259,8 @@ async def _process_url(db: AsyncSession, msg: RawMessage, topic_scope: str) -> E
     url = meta.get("url")
     if not url:
         return None
+    if url_service.youtube_video_id(url):
+        return None
 
     fetched = await url_service.extract(url)
     if not fetched:
@@ -417,7 +419,9 @@ async def process_message(
         log.debug("Skipping duplicate: %s", msg.stable_id)
         return None
 
-    if not msg.text and msg.content_type in ("text", "video_transcript", "url"):
+    # Not `url`: a link arrives with no text of its own — its text is the page,
+    # which only _process_url fetches — so it was dropped here unread (#68).
+    if not msg.text and msg.content_type in ("text", "video_transcript"):
         return None
 
     ct = msg.content_type

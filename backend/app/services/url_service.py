@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 log = logging.getLogger(__name__)
 
@@ -107,3 +107,35 @@ async def extract(url: str) -> dict | None:
     Run synchronous HTTP/parsing in a thread pool.
     """
     return await asyncio.get_event_loop().run_in_executor(None, _extract_sync, url)
+
+
+_YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"}
+_YOUTUBE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def youtube_video_id(url: str) -> str | None:
+    """
+    The video id a link points at, or None if it is not a link to one video.
+
+    A YouTube watch page has no readable text worth keeping, so a caller that
+    finds an id here gets the video's transcript instead of scraping the page.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return None
+    host = (parsed.hostname or "").lower()
+    parts = [p for p in parsed.path.split("/") if p]
+
+    if host == "youtu.be":
+        candidate = parts[0] if parts else None
+    elif host in _YOUTUBE_HOSTS:
+        if parsed.path == "/watch":
+            candidate = parse_qs(parsed.query).get("v", [None])[0]
+        elif len(parts) >= 2 and parts[0] in ("shorts", "live", "embed"):
+            candidate = parts[1]
+        else:
+            candidate = None
+    else:
+        return None
+    return candidate if candidate and _YOUTUBE_ID_RE.match(candidate) else None
