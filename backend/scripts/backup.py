@@ -42,6 +42,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BACKUP_DIR = REPO_ROOT / "backups"
+
+# Mirrored here when BACKUP_MIRROR_DIR says nothing and this directory exists,
+# so the folder's existence is the configuration and nobody has to remember an
+# environment variable — remembering is the failure this whole script is about.
+# It is on the same disk, which the warning below says out loud.
+DEFAULT_MIRROR = REPO_ROOT / "backup-mirror"
 LOG_FILE = BACKUP_DIR / "backup.log"
 FAILURE_MARKER = BACKUP_DIR / "LAST-RUN-FAILED"
 
@@ -348,25 +354,65 @@ def _prune(directory: Path, *, dry_run: bool) -> list[str]:
     return doomed
 
 
+def mirror_destination(configured: str, default: Path) -> Path | None:
+    """
+    Where a copy goes, or None if nowhere.
+
+    An explicit BACKUP_MIRROR_DIR wins. Failing that, the default directory is
+    used if it exists — somebody made that folder on purpose, and treating its
+    existence as the instruction is one less thing to remember. If neither, the
+    dump lives in one place and the caller says so.
+    """
+    if configured.strip():
+        return Path(configured.strip()).expanduser()
+    if default.is_dir():
+        return default
+    return None
+
+
+def _warn_if_one_disk(mirror: Path) -> None:
+    """
+    Say so when the copy cannot survive what the original cannot survive.
+
+    The check that matters is not whether a mirror is configured — it is whether
+    it is somewhere else. A second folder on the same disk protects against the
+    first being deleted and against nothing else, and a backup you believe is
+    off-machine when it is not is worse than knowing it is not.
+    """
+    try:
+        same = mirror.stat().st_dev == BACKUP_DIR.stat().st_dev
+    except OSError:
+        return
+    if same:
+        log.warning(
+            "the mirror %s is on the same disk as %s, so neither copy survives losing "
+            "it. Point BACKUP_MIRROR_DIR at an external volume or a synced folder.",
+            mirror, BACKUP_DIR.name,
+        )
+
+
 def _mirror(dump: Path, *, dry_run: bool) -> None:
     """
-    Copy the verified dump somewhere that does not depend on this machine.
+    Copy the verified dump somewhere the original's disk failing would not take
+    with it.
 
     Configured rather than chosen here: an external disk one person uses and a
     synced folder another does are the same copy as far as this is concerned.
-    An unset destination is a loud warning and not a failure — the local dump is
-    still worth having, and a backup script that refuses to run because a disk
-    is unplugged protects nobody.
+    No destination at all is a loud warning and not a failure — the local dump
+    is still worth having, and a backup script that refuses to run because a
+    disk is unplugged protects nobody.
     """
-    destination = os.environ.get("BACKUP_MIRROR_DIR", "").strip()
-    if not destination:
+    mirror = mirror_destination(os.environ.get("BACKUP_MIRROR_DIR", ""), DEFAULT_MIRROR)
+    if mirror is None:
         log.warning(
-            "BACKUP_MIRROR_DIR is not set, so this dump exists only on this machine. "
-            "Losing the disk loses the backups with it."
+            "No mirror: this dump exists only in %s, on one disk. Set "
+            "BACKUP_MIRROR_DIR, or create %s for a second copy on this machine.",
+            BACKUP_DIR.name, DEFAULT_MIRROR.name,
         )
         return
 
-    mirror = Path(destination).expanduser()
+    _warn_if_one_disk(mirror)
+
     if not mirror.is_dir():
         # A destination was configured and is not usable — an unplugged disk, a
         # sync folder that moved. That is a backup silently not leaving the

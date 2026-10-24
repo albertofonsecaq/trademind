@@ -44,10 +44,17 @@ the three below, and anything you take with `pg_dump` yourself. Note what this
 does *not* mean: a dump from running `backup.py` by hand is an `-auto` dump and
 is pruned like any other. If you want one kept for ever, take it by hand.
 
-**Set `BACKUP_MIRROR_DIR`.** Without it every copy is on this machine, and the
-machine is the thing most likely to be lost. The script says so, loudly, on
-every run. If it is set and the directory is missing — an unplugged disk — the
-run fails rather than quietly keeping the dump local.
+**A second copy goes to `backup-mirror/`** if that folder exists, or wherever
+`BACKUP_MIRROR_DIR` points if it is set. The folder existing is the
+configuration, so there is no variable to remember.
+
+`backup-mirror/` is on this disk, which protects against `backups/` being lost
+on its own and against nothing else — the run says so on every copy. A copy
+whose survival does not depend on this machine means pointing
+`BACKUP_MIRROR_DIR` at an external volume or a folder a sync client watches, and
+that is still #51's one unmet criterion. If it is set and the directory is
+missing — an unplugged disk — the run fails rather than quietly keeping the dump
+local.
 
 ### Is it working?
 

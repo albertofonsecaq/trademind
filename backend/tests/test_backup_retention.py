@@ -2,8 +2,8 @@
 Tests for #51 — the scheduled backup's two judgements.
 
 The script is mostly subprocess calls to pg_dump and pg_restore, which these
-tests do not touch. Two decisions inside it are worth pinning, because both fail
-quietly and both are unrecoverable when they do:
+tests do not touch. Three decisions inside it are worth pinning, because they
+fail quietly and two of them are unrecoverable when they do:
 
 - Which dumps get deleted. A retention rule that deletes the wrong file is worse
   than no retention rule, and the files it could delete are the only copies of
@@ -12,12 +12,16 @@ quietly and both are unrecoverable when they do:
   that restores "successfully" into an empty schema: pg_restore exits 0, the
   file looks fine, and it is worth nothing.
 
-The third thing pinned here is the refusal to drop anything that is not a
-throwaway, because that one is a `dropdb` away from the live database.
+The third is the refusal to drop anything that is not a throwaway, because that
+one is a `dropdb` away from the live database. The fourth is where a second copy
+goes, which fails quietly in the other direction: believing a copy is somewhere
+else when it is on the same disk.
 """
 from datetime import datetime, timedelta, timezone
 
 import pytest
+
+from pathlib import Path
 
 from scripts.backup import (
     MUST_NOT_BE_EMPTY,
@@ -25,6 +29,7 @@ from scripts.backup import (
     _drop_throwaway,
     dump_name,
     prune_plan,
+    mirror_destination,
     taken_at,
     verification_verdict,
 )
@@ -314,3 +319,50 @@ def _rest() -> dict[str, int]:
     from scripts.backup import COUNTED_TABLES
 
     return {table: 10 for table in COUNTED_TABLES}
+
+
+class TestWhereASecondCopyGoes:
+    def test_an_explicit_destination_wins(self, tmp_path):
+        default = tmp_path / "default"
+        default.mkdir()
+        explicit = tmp_path / "elsewhere"
+
+        assert mirror_destination(str(explicit), default) == explicit
+
+    def test_the_default_is_used_when_it_exists(self, tmp_path):
+        """
+        Somebody made that folder on purpose. Treating its existence as the
+        instruction is one less thing to remember, and remembering is the
+        failure this whole script exists to remove.
+        """
+        default = tmp_path / "backup-mirror"
+        default.mkdir()
+
+        assert mirror_destination("", default) == default
+
+    def test_nowhere_when_the_default_is_not_there(self, tmp_path):
+        """
+        Then the caller says the dump is on one disk, rather than copying it
+        into a directory it just invented.
+        """
+        assert mirror_destination("", tmp_path / "absent") is None
+
+    def test_an_empty_setting_is_not_a_destination(self, tmp_path):
+        """
+        `BACKUP_MIRROR_DIR=""` in a plist or a shell is unset, not the current
+        directory — which is what a bare Path("") would mean.
+        """
+        default = tmp_path / "default"
+        default.mkdir()
+
+        assert mirror_destination("   ", default) == default
+
+    def test_a_home_relative_path_is_expanded(self):
+        """
+        The obvious place to put one is under ~, and a literal "~" directory is
+        not what anybody means.
+        """
+        destination = mirror_destination("~/dumps", Path("/nonexistent"))
+
+        assert destination is not None
+        assert "~" not in str(destination)
