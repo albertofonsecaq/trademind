@@ -12,6 +12,18 @@ offline suite in two time zones, the full suite against a Postgres service
 migrated from empty, and `npm run build` for the frontend's only typecheck. If a
 check only passes locally, it does not pass.
 
+## Database roles
+
+Three roles, by job: `trademind_owner` owns everything and is used by `alembic`
+alone, `trademind_app` reads and writes rows and owns nothing, `trademind_backup`
+reads everything and can create its own databases. `backend/scripts/setup_db_roles.py`
+produces them and is safe to run repeatedly — run it against any database you
+restore, or the application cannot read it. See `docs/adr/0004-the-application-owns-nothing-in-its-own-database.md`.
+
+The application's credentials cannot drop a table or the database. That is
+deliberate and load-bearing; `backend/tests/test_database_privileges.py` fails if
+it stops being true.
+
 ## Agent skills
 
 ### Issue tracker

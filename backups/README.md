@@ -87,18 +87,24 @@ docker compose exec -T db psql -U trademind -d trademind_restored -tAc \
         ||' usage='||(SELECT count(*) FROM usage_events)
         ||' rev='||(SELECT version_num FROM alembic_version)"
 
-# 4. Point the application at it — no rename, nothing destroyed.
+# 4. Give the restored copy the same roles the live one has. It is owned by
+#    whoever restored it and has no grants, so the application cannot read it
+#    until this runs (#59, ADR 0004).
+SUPERUSER_DATABASE_URL=postgresql://trademind:trademind@localhost:5432/trademind_restored \
+  python backend/scripts/setup_db_roles.py
+
+# 5. Point the application at it — no rename, nothing destroyed.
 #    In backend/.env:
-#      DATABASE_URL=postgresql+asyncpg://trademind:trademind@localhost:5432/trademind_restored
+#      DATABASE_URL=postgresql+asyncpg://trademind_app:trademind@localhost:5432/trademind_restored
 ```
 
-Step 4 is deliberately not "rename the databases". Leaving the damaged one in
+Step 5 is deliberately not "rename the databases". Leaving the damaged one in
 place costs 120 MB of disk and keeps every option open; renaming over it closes
 them for good. Rename later, once the restored database has been running for a
 while.
 
 If the dump's revision is *older* than the code, run `alembic upgrade head`
-against the restored database before step 4. If it is *newer*, check out the
+against the restored database before step 5. If it is *newer*, check out the
 commit that matches it instead — migrations do not run backwards for free.
 
 ## Taking one by hand
@@ -131,6 +137,12 @@ docker compose exec -T db psql -U trademind -d trademind_hand_check -tAc \
   "SELECT 'evidence='||(SELECT count(*) FROM evidence_items)||' usage='||(SELECT count(*) FROM usage_events)"
 docker compose exec -T db dropdb -U trademind trademind_hand_check
 ```
+
+As the superuser above, that replays everything in the dump. The scheduled run
+is not a superuser (#59, ADR 0004), so it adds `--no-acl --no-comments` and
+copies its throwaway from a template that already has pgvector — ownership,
+grants, comments and `CREATE EXTENSION` all need privileges it deliberately
+lacks, and none of them say anything about whether the rows are there.
 
 `--exit-on-error` is not optional: without it `pg_restore` reports problems and
 carries on, exits 0, and the counts you then read come from a partial restore.

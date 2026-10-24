@@ -46,12 +46,22 @@ LOG_FILE = BACKUP_DIR / "backup.log"
 FAILURE_MARKER = BACKUP_DIR / "LAST-RUN-FAILED"
 
 LIVE_DB = "trademind"
-DB_USER = "trademind"
+
+# Reads everything and can create its own databases, so it can dump and verify
+# by restore — and cannot drop the live database, whatever happens to the guard
+# below. That is the lesson of 2026-10-22 written into the credentials (#59).
+DB_USER = os.environ.get("BACKUP_DB_USER", "trademind_backup")
 
 # Every throwaway database this script makes starts with this, and nothing is
 # dropped whose name does not. The live database is one typo away from a drop
 # command otherwise, and there is no undo for that.
 VERIFY_DB_PREFIX = "trademind_verify_"
+
+# Copied rather than created empty: a dump of this database replays CREATE
+# EXTENSION vector, which only a superuser may do, and the role this script uses
+# is deliberately not one. The template already has the extension, so that
+# statement is a notice instead of a refusal. setup_db_roles.py creates it (#59).
+VERIFY_TEMPLATE = "trademind_verify_template"
 
 # Dumps this script wrote. The -auto suffix is what separates them from one
 # somebody took by hand, which the retention rule must never remove.
@@ -272,15 +282,27 @@ def _verify(dump: Path, live: dict[str, int]) -> dict[str, int]:
     """
     database = f"{VERIFY_DB_PREFIX}{os.getpid()}"
     _drop_throwaway(database)                       # a previous crash may have left one
-    created = _compose("exec", "-T", "db", "createdb", "-U", DB_USER, database)
+    created = _compose(
+        "exec", "-T", "db", "createdb", "-U", DB_USER, "-T", VERIFY_TEMPLATE, database,
+    )
     if created.returncode != 0:
-        raise RuntimeError(f"could not create {database}: {created.stderr.strip()}")
+        raise RuntimeError(
+            f"could not create {database} from {VERIFY_TEMPLATE}: {created.stderr.strip()} "
+            f"— run scripts/setup_db_roles.py if the template is missing"
+        )
     try:
         with dump.open("rb") as handle:
             restored = subprocess.run(
                 _in_db_container(
                     "pg_restore", "-U", DB_USER, "-d", database,
-                    "--no-owner", "--exit-on-error",
+                    # A dump carries ownership, grants and comments as well as
+                    # rows, and replaying any of the three needs privileges this
+                    # role deliberately does not have: it is not the owner of
+                    # the tables, not a member of the owner role, and not the
+                    # owner of the pgvector extension. None of them bear on
+                    # whether the rows are all here, which is the only question
+                    # this restore asks — so all three are skipped (#59).
+                    "--no-owner", "--no-acl", "--no-comments", "--exit-on-error",
                 ),
                 cwd=REPO_ROOT, stdin=handle, capture_output=True, text=True, check=False,
             )

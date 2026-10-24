@@ -5,8 +5,11 @@ from typing import List
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    DATABASE_URL: str = "postgresql+asyncpg://trademind:trademind@localhost:5432/trademind"
-    DATABASE_URL_SYNC: str = "postgresql+psycopg2://trademind:trademind@localhost:5432/trademind"
+    # trademind_app reads and writes rows and owns nothing, so these
+    # credentials cannot drop a table or the database (#59). Migrations are
+    # the only thing that connects as the owner, via alembic's own URL.
+    DATABASE_URL: str = "postgresql+asyncpg://trademind_app:trademind@localhost:5432/trademind"
+    DATABASE_URL_SYNC: str = "postgresql+psycopg2://trademind_owner:trademind@localhost:5432/trademind"
 
     SECRET_KEY: str = "dev-secret-key-change-in-production"
     ALGORITHM: str = "HS256"

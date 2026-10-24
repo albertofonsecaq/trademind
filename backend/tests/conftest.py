@@ -11,9 +11,10 @@ that is exactly where #8 hides. Those tests are marked `db` and are **skipped
 unless a database is configured for tests**, so the default run stays offline:
 
     docker compose up -d db
-    cd backend && DATABASE_URL_SYNC=postgresql+psycopg2://trademind:trademind@localhost:5432/trademind \
+    cd backend && python scripts/setup_db_roles.py        # once, as the superuser
+    DATABASE_URL_SYNC=postgresql+psycopg2://trademind_owner:trademind@localhost:5432/trademind \
         alembic upgrade head
-    TEST_DATABASE_URL=postgresql+asyncpg://trademind:trademind@localhost:5432/trademind pytest
+    TEST_DATABASE_URL=postgresql+asyncpg://trademind_app:trademind@localhost:5432/trademind pytest
 
 The `alembic upgrade head` matters: these tests read the real schema, so a
 database on an older revision fails in ways that look like code bugs. The
@@ -23,6 +24,11 @@ The variable is deliberately its own, not `DATABASE_URL`: that one has a
 default pointing at localhost, so reading it would mean a contributor with
 Postgres running locally had tests writing to their development data without
 ever asking for it.
+
+Connect it as `trademind_app`, the role the application itself uses. The
+privilege tests assert what that role cannot do (#59), so running them as the
+owner or the superuser would pass them for the wrong reason — or rather, would
+fail them, which is the point.
 
 Whatever a `db` test writes is rolled back when it finishes, so a run leaves no
 rows behind — including when the test fails, when the failure is a statement
