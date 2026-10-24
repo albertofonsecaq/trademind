@@ -58,7 +58,7 @@ class TestWhatGetsKept:
         assert _auto(SUNDAY - timedelta(days=8)) in doomed
         assert _auto(SUNDAY - timedelta(days=7)) not in doomed
 
-    def test_sundays_survive_past_the_daily_window(self):
+    def test_weeklies_survive_past_the_daily_window(self):
         """
         The point of the weekly half: damage noticed after a week is exactly
         what seven dailies cannot help with.
@@ -67,7 +67,7 @@ class TestWhatGetsKept:
 
         assert prune_plan(names) == []
 
-    def test_only_four_sundays_are_kept(self):
+    def test_only_four_weeks_are_kept(self):
         """
         A week of dailies plus older Sundays, so the daily window does not
         already cover every file — with seven Sundays and nothing else, all
@@ -87,6 +87,125 @@ class TestWhatGetsKept:
 
     def test_nothing_to_do_with_too_few(self):
         assert prune_plan(_days(3)) == []
+
+
+class TestMoreThanOneDumpInADay:
+    """
+    The script is runnable by hand, so this is not hypothetical — two dumps were
+    taken on the day it was written. These are the tests the first version of
+    the rule passed by never being given a day with two dumps in it.
+    """
+
+    def test_an_afternoon_of_manual_runs_does_not_eat_the_week(self):
+        """
+        The bug: seven runs in one afternoon counted as seven "dailies" and
+        deleted every earlier day. A week of history collapsed into one day,
+        which is the exact opposite of what a retention rule is for.
+        """
+        week = _days(7)
+        afternoon = [_auto(SUNDAY + timedelta(hours=hour)) for hour in range(1, 8)]
+
+        doomed = prune_plan(week + afternoon)
+        surviving_days = {
+            taken_at(name).date() for name in week + afternoon if name not in doomed
+        }
+
+        assert len(surviving_days) == 7
+
+    def test_a_day_keeps_its_newest_dump(self):
+        """Two dumps on one day is one day of history, and the later one is it."""
+        first = _auto(SUNDAY)
+        second = _auto(SUNDAY + timedelta(hours=6))
+
+        doomed = prune_plan(_days(7) + [second])
+
+        assert first in doomed and second not in doomed
+
+    def test_the_redundant_ones_are_what_goes(self):
+        """Ten runs in a day leave one file, not ten, and not none."""
+        same_day = [_auto(SUNDAY + timedelta(minutes=10 * n)) for n in range(10)]
+
+        kept = [name for name in same_day if name not in prune_plan(same_day)]
+
+        assert len(kept) == 1
+
+
+class TestWeeksNotSundays:
+    """
+    "7 daily" means the seven most recent days that have a dump, as the backup
+    tools everyone knows mean it — not the last seven calendar days. A dump a
+    week apart is still its own day, so these tests use daily dumps, which is
+    the only shape where the weekly rule is doing any work.
+    """
+
+    def test_history_reaches_past_the_daily_window(self):
+        """
+        Six weeks of daily dumps leave ten files: the seven newest days, which
+        all fall inside one ISO week, plus the newest dump of each of the three
+        weeks before it. The fourth weekly bucket is that current week, already
+        paid for by the dailies — so "7 daily + 4 weekly" is ten files here, not
+        eleven, and the overlap is the rule working rather than a miscount.
+        """
+        six_weeks = [_auto(SUNDAY - timedelta(days=offset)) for offset in range(42)]
+
+        kept = [name for name in six_weeks if name not in prune_plan(six_weeks)]
+        weeks_kept = {taken_at(name).isocalendar()[:2] for name in kept}
+        newest_seven = [
+            name for name in kept if taken_at(name) > SUNDAY - timedelta(days=7)
+        ]
+
+        assert len(newest_seven) == 7
+        assert len(weeks_kept) == 4
+        assert len(kept) == 10
+
+    def test_a_month_of_missed_sundays_still_keeps_weeklies(self):
+        """
+        This runs on a laptop that is asleep at 03:00 often enough, so some
+        weekday is always being skipped. A rule that recognised only dumps
+        landing on a Sunday would keep nothing at all from a month where every
+        Sunday was missed — which is the month you would most want history from.
+        """
+        no_sundays = [
+            _auto(SUNDAY - timedelta(days=offset))
+            for offset in range(1, 43)
+            if (SUNDAY - timedelta(days=offset)).weekday() != 6
+        ]
+
+        kept = [name for name in no_sundays if name not in prune_plan(no_sundays)]
+        weeks_kept = {taken_at(name).isocalendar()[:2] for name in kept}
+
+        assert not any(taken_at(name).weekday() == 6 for name in no_sundays)
+        assert len(weeks_kept) >= 4
+
+    def test_the_daily_rule_keeps_exactly_seven_days(self):
+        """
+        Each rule is pinned with the other switched off, because together they
+        hide an off-by-one in either: keeping an eighth daily only borrows a file
+        the weekly rule was keeping anyway, so the total does not move and every
+        assertion about the total still passes. This is the test that fails when
+        "7" becomes "8".
+        """
+        ten_days = [_auto(SUNDAY - timedelta(days=offset)) for offset in range(10)]
+
+        kept = [name for name in ten_days if name not in prune_plan(ten_days, keep_weeks=0)]
+
+        assert len(kept) == 7
+
+    def test_the_weekly_rule_keeps_exactly_four_weeks(self):
+        six_weeks = [_auto(SUNDAY - timedelta(days=offset)) for offset in range(42)]
+
+        kept = [name for name in six_weeks if name not in prune_plan(six_weeks, keep_days=0)]
+
+        assert len(kept) == 4
+
+    def test_the_oldest_weeks_still_go(self):
+        """Retention has to actually delete, or the disk fills anyway."""
+        six_weeks = [_auto(SUNDAY - timedelta(days=offset)) for offset in range(42)]
+
+        doomed = prune_plan(six_weeks)
+
+        assert _auto(SUNDAY - timedelta(days=41)) in doomed
+        assert len(doomed) > 30
 
 
 class TestWhatIsNeverTouched:

@@ -16,19 +16,27 @@ PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 PYTHON="$REPO_ROOT/backend/.venv/bin/python"
 MIRROR="${BACKUP_MIRROR_DIR:-}"
 
-if [[ "${1:-}" == "--uninstall" ]]; then
+UNINSTALL=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --uninstall) UNINSTALL=1; shift ;;
+    # Checked rather than read blind: under `set -u` a bare --mirror would
+    # abort on an unbound $2 with bash's own error instead of ours.
+    --mirror)
+      [[ $# -ge 2 ]] || { echo "--mirror needs a directory" >&2; exit 2; }
+      MIRROR="$2"; shift 2 ;;
+    -h|--help)
+      sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [[ "$UNINSTALL" == 1 ]]; then
   launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
   rm -f "$PLIST"
   echo "Removed $LABEL. Nothing takes a backup now; scripts/backup.py still works by hand."
   exit 0
 fi
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --mirror) MIRROR="$2"; shift 2 ;;
-    *) echo "unknown argument: $1" >&2; exit 2 ;;
-  esac
-done
 
 [[ -x "$PYTHON" ]] || { echo "No interpreter at $PYTHON — create the venv first." >&2; exit 1; }
 
@@ -41,6 +49,12 @@ else
 fi
 
 mkdir -p "$HOME/Library/LaunchAgents" "$REPO_ROOT/backups"
+
+# A path may legitimately contain & or < — both of which would produce a plist
+# that launchd rejects, after this script had already reported success.
+xml_escape() {
+  printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
 
 # PATH is spelled out because launchd gives an agent almost none, and the first
 # thing this script does is call docker. That omission is the classic way one of
@@ -60,12 +74,14 @@ cat > "$PLIST" <<PLIST_END
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-$( [[ -n "$MIRROR" ]] && printf '    <key>BACKUP_MIRROR_DIR</key><string>%s</string>\n' "$MIRROR" )
+$( [[ -n "$MIRROR" ]] && printf '    <key>BACKUP_MIRROR_DIR</key><string>%s</string>\n' "$(xml_escape "$MIRROR")" )
   </dict>
   <key>StartCalendarInterval</key>
   <dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>0</integer></dict>
-  <!-- A laptop is asleep at 03:00 more often than not, and a job that simply
-       missed its window is how a backup silently never happens. -->
+  <!-- A laptop is often asleep at 03:00. launchd runs a StartCalendarInterval
+       job it missed once the machine is awake again, which is the behaviour
+       being relied on here. RunAtLoad is false only so that installing this
+       does not immediately start a 123 MB dump. -->
   <key>RunAtLoad</key><false/>
   <key>StandardOutPath</key><string>$REPO_ROOT/backups/launchd.log</string>
   <key>StandardErrorPath</key><string>$REPO_ROOT/backups/launchd.log</string>

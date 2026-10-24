@@ -11,36 +11,56 @@ of the Telegram history behind it may no longer be fetchable at all.
 
 ## The schedule
 
-A launchd agent runs `backend/scripts/backup.py` daily at 03:00. It dumps,
-restores the dump into a throwaway database to prove it is real, copies it to
-`BACKUP_MIRROR_DIR` if one is set, and prunes under the rule below. It starts
-the database container if it is not running, because at 03:00 it usually is not.
+`backend/scripts/backup.py` dumps the database, restores the dump into a
+throwaway database to prove it is real, copies it to `BACKUP_MIRROR_DIR` if one
+is set, and prunes under the rule below.
+
+**Nothing runs it until you install the agent.** Until then this is a script you
+can run by hand, which is not a backup arrangement:
 
 ```bash
 backend/scripts/install-backup-schedule.sh --mirror ~/path/to/a/synced/folder
 backend/scripts/install-backup-schedule.sh --uninstall
 ```
 
-**Retention: the last 7, plus the last 4 Sundays.** About 1.3 GB at today's
-sizes. The weekly half is the half that matters — seven days only covers damage
-somebody noticed inside a week, and nobody is watching.
+Installed, it runs daily at 03:00. launchd runs a calendar job it missed once
+the machine wakes, so a laptop asleep at 03:00 still gets its dump. The script
+starts the database container if it is not running — and leaves it running,
+because stopping something somebody else started is not its business.
 
-**It will never delete a dump taken by hand.** Pruning only considers the names
-the script writes, which end in `-auto.dump`. The three dumps below are safe
-from it permanently.
+**Retention: the newest dump of each of the last 7 days, plus the newest of
+each of the last 4 ISO weeks.** About 1.3 GB at today's sizes. Days and weeks,
+not files: this script is runnable by hand, and counting files would let an
+afternoon of manual runs pass as a week of history and delete the real one. Two
+dumps on one day is one day of history, and the later one is it.
+
+The weekly half is the half that matters — seven days only covers damage
+somebody noticed inside a week, and nobody is watching. It buckets by ISO week
+rather than looking for Sundays, so a month of missed Sundays still leaves
+weekly history.
+
+**It will never delete a dump whose name does not end in `-auto.dump`.** That is
+the three below, and anything you take with `pg_dump` yourself. Note what this
+does *not* mean: a dump from running `backup.py` by hand is an `-auto` dump and
+is pruned like any other. If you want one kept for ever, take it by hand.
 
 **Set `BACKUP_MIRROR_DIR`.** Without it every copy is on this machine, and the
 machine is the thing most likely to be lost. The script says so, loudly, on
-every run.
+every run. If it is set and the directory is missing — an unplugged disk — the
+run fails rather than quietly keeping the dump local.
 
 ### Is it working?
 
 ```bash
 tail -5 backups/backup.log              # what the last runs did
-ls backups/LAST-RUN-FAILED              # exists ⇒ the last attempt did not finish
+ls backups/LAST-RUN-FAILED              # exists ⇒ the last real attempt did not finish
 launchctl print gui/$UID/com.trademind.backup | head -20
 launchctl kickstart -p gui/$UID/com.trademind.backup    # run it now
 ```
+
+A `--dry-run` or a `--prune-only` deliberately leaves that marker alone: neither
+proves backups work, and clearing it would erase the evidence that last night's
+real run failed — which is exactly when somebody is in here poking by hand.
 
 A failed run keeps its dump as `*.FAILED-VERIFICATION`, writes the marker file,
 logs why, and raises a desktop notification. It does not delete anything.
@@ -104,12 +124,18 @@ A dump you have not restored is not a backup. Restore it into a throwaway
 database — never over the live one — and compare:
 
 ```bash
-docker compose exec -T db createdb -U trademind trademind_verify
-cat backups/<file>.dump | docker compose exec -T db pg_restore -U trademind -d trademind_verify --no-owner
-docker compose exec -T db psql -U trademind -d trademind_verify -tAc \
+docker compose exec -T db createdb -U trademind trademind_hand_check
+cat backups/<file>.dump | docker compose exec -T db \
+  pg_restore -U trademind -d trademind_hand_check --no-owner --exit-on-error
+docker compose exec -T db psql -U trademind -d trademind_hand_check -tAc \
   "SELECT 'evidence='||(SELECT count(*) FROM evidence_items)||' usage='||(SELECT count(*) FROM usage_events)"
-docker compose exec -T db dropdb -U trademind trademind_verify
+docker compose exec -T db dropdb -U trademind trademind_hand_check
 ```
+
+`--exit-on-error` is not optional: without it `pg_restore` reports problems and
+carries on, exits 0, and the counts you then read come from a partial restore.
+The name avoids `trademind_verify_*`, which the script uses for its own
+throwaways and is the only name it will agree to drop.
 
 ## What is here
 
