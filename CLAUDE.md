@@ -28,6 +28,11 @@ it stops being true.
 the bootstrap superuser — the way out if the roles are ever what is in the way.
 `backups/README.md` has both, next to the restore procedure.
 
+**Anything destructive runs against a disposable copy, never the live database.**
+`backend/scripts/scratch_db.py` makes one from the newest verified dump and
+prints how to connect to it and how to delete it. Dropping a table to check a
+permission, exercising a guard, trying a downgrade: there, not here.
+
 ## Agent skills
 
 ### Issue tracker
