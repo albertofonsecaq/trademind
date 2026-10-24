@@ -446,19 +446,26 @@ def run(*, dry_run: bool = False, prune_only: bool = False) -> int:
     if dumped.returncode != 0:
         partial.unlink(missing_ok=True)
         raise RuntimeError(f"pg_dump failed: {dumped.stderr.decode()[:400]}")
-    partial.replace(final)
-    log.info("wrote %s (%.1f MB)", final.name, final.stat().st_size / 1e6)
+    log.info("dumped %.1f MB, verifying by restore", partial.stat().st_size / 1e6)
 
+    # Verified under the partial name, and moved into place only once it passes.
+    # The other way round left a window — a run killed between the move and the
+    # verification left an unverified dump wearing the name that means verified,
+    # permanently. Everything downstream reads that name as evidence the dump
+    # restores (ADR 0003, and scratch_db picks a dump by it), so the name has to
+    # be unreachable until it is earned.
     try:
-        counts = _verify(final, live)
+        counts = _verify(partial, live)
     except Exception:
         # Kept, not deleted: a dump that failed verification is evidence about
         # why, and the name makes it unmistakable meanwhile.
-        failed = final.with_suffix(".dump.FAILED-VERIFICATION")
-        final.replace(failed)
+        failed = BACKUP_DIR / f"{final.name}.FAILED-VERIFICATION"
+        partial.replace(failed)
         log.error("verification failed — kept as %s", failed.name)
         raise
-    log.info("verified by restore: %s", counts)
+
+    partial.replace(final)
+    log.info("wrote %s, verified by restore: %s", final.name, counts)
 
     _mirror(final, dry_run=False)
     _prune(BACKUP_DIR, dry_run=False)

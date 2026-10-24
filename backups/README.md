@@ -174,8 +174,11 @@ on the live one or on the backup's template.
 
 ## Checking one is real
 
-A dump you have not restored is not a backup. Restore it into a throwaway
-database — never over the live one — and compare:
+A dump you have not restored is not a backup. The scheduled run does this for
+every dump it keeps, and `scratch_db.py` above does it for you on demand — what
+follows is the same thing by hand, for a dump you want to check specifically.
+
+Restore it into a throwaway database — never over the live one — and compare:
 
 ```bash
 docker compose exec -T db createdb -U trademind trademind_hand_check

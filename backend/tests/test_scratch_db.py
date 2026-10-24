@@ -16,11 +16,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from scripts.backup import VERIFY_DB_PREFIX
 from scripts.scratch_db import (
     SCRATCH_PREFIX,
     assert_scratch,
     newest_verified_dump,
     scratch_name,
+    superuser_url_for,
 )
 
 NOW = datetime(2026, 10, 24, 20, 0, tzinfo=timezone.utc)
@@ -90,13 +92,55 @@ class TestWhatItWillAgreeToDrop:
     def test_its_names_are_unmistakable(self):
         """
         A disposable copy that reads like the live database is its own trap —
-        the name is what tells you which one you are connected to.
+        the name is what tells you which one you are connected to. And it must
+        not look like the backup's throwaways either: each script refuses to
+        drop the other's, so an overlap would strand one of them.
         """
         name = scratch_name(NOW)
 
         assert name.startswith(SCRATCH_PREFIX)
-        assert "scratch" in name
         assert name != "trademind"
+        assert not name.startswith(VERIFY_DB_PREFIX)
+        assert not VERIFY_DB_PREFIX.startswith(SCRATCH_PREFIX)
+
+
+class TestThePathItConnectsTo:
+    """
+    The seam that was wrong: a URL rebuilt by cutting at the last slash loses
+    everything after the database name. setup_db_roles.py had the same bug, and
+    the fix only sticks if it is tested in both places.
+    """
+
+    def test_it_repoints_a_plain_url(self, monkeypatch):
+        monkeypatch.setenv(
+            "SUPERUSER_DATABASE_URL", "postgresql://u:p@localhost:5432/trademind"
+        )
+
+        assert superuser_url_for("trademind_scratch_x").endswith("/trademind_scratch_x")
+
+    def test_it_keeps_a_query_string(self, monkeypatch):
+        """
+        `?sslmode=require` cut off the end is a connection that quietly goes
+        somewhere else, or nowhere.
+        """
+        monkeypatch.setenv(
+            "SUPERUSER_DATABASE_URL",
+            "postgresql://u:p@db.example:5432/trademind?sslmode=require",
+        )
+
+        url = superuser_url_for("trademind_scratch_x")
+
+        assert "sslmode=require" in url
+        assert "/trademind_scratch_x?" in url
+
+    def test_it_keeps_the_host_and_credentials(self, monkeypatch):
+        monkeypatch.setenv(
+            "SUPERUSER_DATABASE_URL", "postgresql://user:secret@db.example:6543/trademind"
+        )
+
+        url = superuser_url_for("trademind_scratch_x")
+
+        assert "user:secret@db.example:6543" in url
 
     def test_two_copies_do_not_collide(self):
         assert scratch_name(NOW) != scratch_name(NOW + timedelta(seconds=1))
