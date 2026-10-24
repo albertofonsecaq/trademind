@@ -12,8 +12,8 @@ of the Telegram history behind it may no longer be fetchable at all.
 ## The schedule
 
 `backend/scripts/backup.py` dumps the database, restores the dump into a
-throwaway database to prove it is real, copies it to `BACKUP_MIRROR_DIR` if one
-is set, and prunes under the rule below.
+throwaway database to prove it is real, copies it to a second place, and prunes
+under the rule below.
 
 **Nothing runs it until you install the agent.** Until then this is a script you
 can run by hand, which is not a backup arrangement:
@@ -44,17 +44,16 @@ the three below, and anything you take with `pg_dump` yourself. Note what this
 does *not* mean: a dump from running `backup.py` by hand is an `-auto` dump and
 is pruned like any other. If you want one kept for ever, take it by hand.
 
-**A second copy goes to `backup-mirror/`** if that folder exists, or wherever
-`BACKUP_MIRROR_DIR` points if it is set. The folder existing is the
-configuration, so there is no variable to remember.
+**A second copy goes to `backup-mirror/`**, because that folder exists — the
+folder is the configuration, so there is no variable to remember.
+`BACKUP_MIRROR_DIR` sends it somewhere else instead, which is how you move it
+off this machine. If it is set and the directory is missing — an unplugged disk
+— the run fails rather than quietly keeping the dump local.
 
-`backup-mirror/` is on this disk, which protects against `backups/` being lost
-on its own and against nothing else — the run says so on every copy. A copy
-whose survival does not depend on this machine means pointing
-`BACKUP_MIRROR_DIR` at an external volume or a folder a sync client watches, and
-that is still #51's one unmet criterion. If it is set and the directory is
-missing — an unplugged disk — the run fails rather than quietly keeping the dump
-local.
+Every run says where the copy went, and claims nothing about whether that place
+survives this machine: a path cannot be asked that question. `backup-mirror/` is
+on this disk and is not the off-machine copy #51 asks for;
+`backup-mirror/README.md` says what it does and does not protect against.
 
 ### Is it working?
 

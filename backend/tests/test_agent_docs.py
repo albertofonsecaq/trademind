@@ -19,28 +19,61 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
 LIVE_DATA = REPO_ROOT / "docs/agents/live-data.md"
 
-# A backticked token with a slash in it. Narrowed below to the ones that are
-# really repo paths: `albertofonsecaq/trademind` is a repository, and
-# `src/<context>/docs/adr/` is a shape rather than a place.
-_BACKTICKED = re.compile(r"`([^`\s]+/[^`\s]+)`")
+# Any token with a slash in it, anywhere in the document — prose, backticks or a
+# fenced command. Backticks alone were not enough: the first version of this
+# matched only `like/this`, and the paths most likely to be *run* are the ones
+# inside ```bash blocks, which is where a renamed script hides. Proved by
+# renaming one and watching this test keep passing.
+#
+# Narrowed by the filter below to the tokens that are really repo paths:
+# `albertofonsecaq/trademind` is a repository, `src/<context>/docs/adr/` is a
+# shape, and `/Volumes/Backup/trademind` is somebody else's disk.
+_PATH_LIKE = re.compile(r"[A-Za-z0-9_.\-/]*/[A-Za-z0-9_.\-/]*")
 
 
 def _documents() -> list[Path]:
+    """
+    Every document whose paths and commands have to still work.
+
+    The backup READMEs are in here deliberately: they are the ones somebody
+    reads after losing a disk, which is the worst moment to find out a script
+    was renamed, and they were outside this guard until a review pointed it out.
+    """
     return [
         CLAUDE_MD,
         *sorted((REPO_ROOT / "docs/agents").glob("*.md")),
         *sorted((REPO_ROOT / "docs/adr").glob("*.md")),
+        REPO_ROOT / "backups/README.md",
+        REPO_ROOT / "backup-mirror/README.md",
     ]
+
+
+# References that are deliberately not files in the tree. Each one is here
+# because the first broad scan found it, and each is a case where absence is
+# the normal state rather than rot:
+_NOT_FILES = {
+    # Written only by a run that did not finish. Its absence is the good news,
+    # and the README tells you to look for it precisely because it is usually
+    # not there.
+    "backups/LAST-RUN-FAILED",
+}
 
 
 def _referenced_paths(document: Path) -> set[str]:
     top_level = {entry.name for entry in REPO_ROOT.iterdir() if entry.is_dir()}
     found = set()
-    for reference in _BACKTICKED.findall(document.read_text()):
+    for match in _PATH_LIKE.findall(document.read_text()):
+        reference = match.strip("`\"'").rstrip(".,;:)")
+        if reference in _NOT_FILES:
+            continue
+        if "$" in reference or reference.endswith(("-", "_")):
+            # A filename being built by the shell — `backups/trademind-$(date …)`
+            # arrives here as the fragment before the substitution.
+            continue
         if any(character in reference for character in "<>*") or reference.endswith("/"):
             continue                        # a shape, not a path
         if reference.split("/")[0] not in top_level:
-            continue                        # not rooted here at all
+            continue                        # absolute, a URL, or somebody else's
         found.add(reference)
     return found
 

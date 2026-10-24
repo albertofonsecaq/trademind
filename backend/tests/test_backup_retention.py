@@ -1,8 +1,8 @@
 """
-Tests for #51 — the scheduled backup's two judgements.
+Tests for #51 — the judgements inside the scheduled backup.
 
 The script is mostly subprocess calls to pg_dump and pg_restore, which these
-tests do not touch. Three decisions inside it are worth pinning, because they
+tests do not touch. Four decisions inside it are worth pinning, because they
 fail quietly and two of them are unrecoverable when they do:
 
 - Which dumps get deleted. A retention rule that deletes the wrong file is worse
@@ -18,10 +18,9 @@ goes, which fails quietly in the other direction: believing a copy is somewhere
 else when it is on the same disk.
 """
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
-
-from pathlib import Path
 
 from scripts.backup import (
     MUST_NOT_BE_EMPTY,
@@ -342,27 +341,34 @@ class TestWhereASecondCopyGoes:
 
     def test_nowhere_when_the_default_is_not_there(self, tmp_path):
         """
-        Then the caller says the dump is on one disk, rather than copying it
-        into a directory it just invented.
+        Then the caller warns that there is one copy, rather than inventing a
+        directory to put a second one in.
+
+        Reachable because somebody deleted the folder, not because a clone
+        lacks it: `backup-mirror/README.md` is tracked, so a fresh checkout
+        always has the directory and always mirrors.
         """
         assert mirror_destination("", tmp_path / "absent") is None
 
-    def test_an_empty_setting_is_not_a_destination(self, tmp_path):
+    @pytest.mark.parametrize("configured", ["", "   ", "\n", "\t "])
+    def test_an_empty_setting_is_not_a_destination(self, tmp_path, configured):
         """
-        `BACKUP_MIRROR_DIR=""` in a plist or a shell is unset, not the current
-        directory — which is what a bare Path("") would mean.
+        `BACKUP_MIRROR_DIR=` in a plist or a shell arrives as the empty string,
+        and `Path("")` means the current directory — so a dump would land
+        wherever the job happened to be run from. Whitespace-only is the same
+        mistake with a space in it.
         """
         default = tmp_path / "default"
         default.mkdir()
 
-        assert mirror_destination("   ", default) == default
+        assert mirror_destination(configured, default) == default
 
-    def test_a_home_relative_path_is_expanded(self):
+    def test_a_home_relative_path_is_expanded(self, tmp_path, monkeypatch):
         """
-        The obvious place to put one is under ~, and a literal "~" directory is
-        not what anybody means.
+        The obvious place to put one is under ~, and a literal "~" directory
+        next to wherever the job ran is not what anybody means. Asserted against
+        a home this test controls, rather than against the ambient one.
         """
-        destination = mirror_destination("~/dumps", Path("/nonexistent"))
+        monkeypatch.setenv("HOME", str(tmp_path))
 
-        assert destination is not None
-        assert "~" not in str(destination)
+        assert mirror_destination("~/dumps", Path("/nonexistent")) == tmp_path / "dumps"
