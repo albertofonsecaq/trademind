@@ -380,4 +380,5 @@ class TestTheHeldCheckAgainstARealDatabase:
 
         await ingestion_pipeline.process_message(db_session, self._link_for(source), "forex")
 
-        assert videos["asked"] == [("captions", self._ID)]
+        # Not skipped: the video was looked for (no captions, so Whisper too).
+        assert videos["asked"][0] == ("captions", self._ID)
