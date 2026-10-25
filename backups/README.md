@@ -15,6 +15,12 @@ of the Telegram history behind it may no longer be fetchable at all.
 throwaway database to prove it is real, copies it to a second place, and prunes
 under the rule below.
 
+**The agent is installed and runs daily at 03:00, with no off-machine copy yet**
+— so the second copy still lands in `backup-mirror/`, on this disk. #51's last
+criterion is unmet until `--mirror` points somewhere that surviving the loss of
+this machine does not depend on. See *A destination that is actually off this
+machine* below before choosing one.
+
 **Nothing runs it until you install the agent.** Until then this is a script you
 can run by hand, which is not a backup arrangement:
 
@@ -54,6 +60,39 @@ Every run says where the copy went, and claims nothing about whether that place
 survives this machine: a path cannot be asked that question. `backup-mirror/` is
 on this disk and is not the off-machine copy #51 asks for;
 `backup-mirror/README.md` says what it does and does not protect against.
+
+### A destination that is actually off this machine
+
+A path is not a destination until something has been seen to leave on it. On
+2026-10-25 iCloud Drive was chosen, prepared, and then rejected on the
+evidence: the account has iCloud Drive enabled (`MOBILE_DOCUMENTS`,
+`Enabled = 1`), and every one of its twenty containers reported
+`last-sync:never`, with two items stuck in `needs-upload` — one of them since
+May — failing with `CKErrorDomain:9`, not authenticated. A 32-byte probe file
+made twelve upload attempts and never left.
+
+So the folder existed, the copy would have been made, every run would have
+logged `copying to …/CloudDocs/TradeMind-backups`, and nothing would ever have
+been uploaded. That is worse than no mirror at all, because the log would have
+read like success. Check before trusting any synced folder:
+
+```bash
+brctl status | grep -c last-sync:never      # 0 is what you want
+echo probe > ~/Library/Mobile\ Documents/com~apple~CloudDocs/probe.txt
+sleep 10 && brctl status | grep -A3 probe.txt   # needs-upload ⇒ it is not syncing
+```
+
+The same question, in the form it takes for each kind of destination:
+
+- **a synced folder** (iCloud, Dropbox): has anything ever actually synced?
+  Run the check above. Retention understands a dump the service has uploaded
+  and evicted — `.<name>.dump.icloud` — and prunes it like any other.
+- **an external volume**: a configured mirror that is missing fails the run, by
+  design, so a disk that is usually unplugged means a backup that usually
+  fails. That is the honest trade and it is loud, not silent.
+- **object storage** (B2, R2, S3): the most durable answer, and the only one
+  here that needs a wrapper — `_mirror` copies to a directory, so it wants an
+  `rclone mount` or a copy step after the run.
 
 ### Is it working?
 

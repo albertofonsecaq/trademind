@@ -337,6 +337,35 @@ def _verify(dump: Path, live: dict[str, int]) -> dict[str, int]:
 
 # ── the run ──────────────────────────────────────────────────────────────────
 
+# What macOS leaves in place of a file it has uploaded and then freed from the
+# local disk. The mirror is an iCloud Drive folder (#51), so this is the normal
+# resting state of any dump old enough to have been uploaded a while ago.
+EVICTED_SUFFIX = ".icloud"
+
+
+def dumps_in(directory: Path) -> dict[str, Path]:
+    """
+    Every dump in this directory, by the name it goes under, and where it is.
+
+    A dump in an iCloud folder is not always a file. Once macOS has uploaded one
+    it may free the local copy and leave `.<name>.icloud` behind: a few hundred
+    bytes standing for a dump that is safe in iCloud and absent from this disk.
+
+    A `*.dump` glob cannot see one, which matters because that glob is what
+    retention runs on. Retention that cannot see them stops the first time the
+    disk gets tight, the destination grows for ever, and every run still
+    reports success — the quiet failure this script exists to not have.
+
+    A real file wins over a placeholder for the same name: both exist for a
+    moment while iCloud makes up its mind, and the real one is the one to read
+    and the one to delete.
+    """
+    found = {path.name: path for path in directory.glob("*.dump")}
+    for placeholder in directory.glob(f".*.dump{EVICTED_SUFFIX}"):
+        found.setdefault(placeholder.name[1:-len(EVICTED_SUFFIX)], placeholder)
+    return found
+
+
 def _prune(directory: Path, *, dry_run: bool) -> list[str]:
     if not directory.is_dir():
         return []
@@ -350,11 +379,14 @@ def _prune(directory: Path, *, dry_run: bool) -> list[str]:
             if not dry_run:
                 stale.unlink(missing_ok=True)
 
-    doomed = prune_plan([path.name for path in directory.glob("*.dump")])
+    dumps = dumps_in(directory)
+    doomed = prune_plan(list(dumps))
     for name in doomed:
         log.info("pruning %s/%s", directory.name, name)
         if not dry_run:
-            (directory / name).unlink()
+            # Whichever form it is actually in: deleting `directory / name`
+            # would miss an evicted one and raise on a file that is not there.
+            dumps[name].unlink(missing_ok=True)
     return doomed
 
 
@@ -426,8 +458,9 @@ def _mirror(dump: Path, *, dry_run: bool) -> None:
             partial.replace(mirror / dump.name)
         except BaseException:
             # Including a Ctrl-C or a full disk: half a dump must not be left
-            # sitting in the mirror for ever, where _prune's *.dump glob would
-            # never see it.
+            # sitting in the mirror for ever, where nothing would ever remove
+            # it — a partial is not a dump to dumps_in, and retention only
+            # deletes dumps.
             partial.unlink(missing_ok=True)
             raise
     _prune(mirror, dry_run=dry_run)

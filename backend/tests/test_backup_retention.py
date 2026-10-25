@@ -16,6 +16,12 @@ The third is the refusal to drop anything that is not a throwaway, because that
 one is a `dropdb` away from the live database. The fourth is where a second copy
 goes, which fails quietly in the other direction: believing a copy is somewhere
 else when it is on the same disk.
+
+The fifth arrived with the destination: the off-machine copy is an iCloud Drive
+folder, and macOS evicts a file it has uploaded, leaving `.<name>.icloud` in
+its place. A `*.dump` glob cannot see one, so retention would stop the first
+time the disk got tight and the destination would grow for ever — while every
+run reported success, which is the failure mode this whole file is about.
 """
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -26,6 +32,8 @@ from scripts.backup import (
     MUST_NOT_BE_EMPTY,
     VERIFY_DB_PREFIX,
     _drop_throwaway,
+    _prune,
+    dumps_in,
     dump_name,
     prune_plan,
     mirror_destination,
@@ -372,3 +380,95 @@ class TestWhereASecondCopyGoes:
         monkeypatch.setenv("HOME", str(tmp_path))
 
         assert mirror_destination("~/dumps", Path("/nonexistent")) == tmp_path / "dumps"
+
+
+# ── a destination that evicts what it has uploaded ───────────────────────────
+
+
+def _evict(directory: Path, name: str) -> Path:
+    """
+    What macOS leaves behind when it frees the local copy of an uploaded file.
+
+    A few hundred bytes under a dot-prefixed name, standing for a dump that is
+    safe in iCloud and absent from this disk.
+    """
+    placeholder = directory / f".{name}.icloud"
+    placeholder.write_bytes(b"placeholder")
+    return placeholder
+
+
+class TestAnEvictedDumpIsStillADump:
+    def test_it_is_found_under_the_name_it_stands_for(self, tmp_path):
+        name = _auto(SUNDAY)
+
+        _evict(tmp_path, name)
+
+        assert name in dumps_in(tmp_path)
+
+    def test_a_real_file_is_preferred_over_a_placeholder_for_it(self, tmp_path):
+        """
+        Both can exist for a moment while iCloud makes up its mind. The real
+        file is the one to read and the one to delete.
+        """
+        name = _auto(SUNDAY)
+        real = tmp_path / name
+        real.write_bytes(b"a dump")
+        _evict(tmp_path, name)
+
+        assert dumps_in(tmp_path)[name] == real
+
+    def test_a_partial_is_not_mistaken_for_one(self, tmp_path):
+        """An interrupted copy has its own handling in _prune; not this."""
+        (tmp_path / f".{_auto(SUNDAY)}.partial").write_bytes(b"half")
+
+        assert dumps_in(tmp_path) == {}
+
+
+class TestRetentionStillAppliesToThem:
+    def test_a_redundant_evicted_dump_is_deleted(self, tmp_path):
+        """
+        Two dumps from one day: the earlier is redundant whatever the retention
+        window, and here it is the evicted one.
+
+        Verified to bite: glob only `*.dump` in `_prune` and this fails with the
+        placeholder still sitting there. The destination would then grow for
+        ever, and nothing in a run's output would say so.
+        """
+        doomed = _auto(SUNDAY - timedelta(hours=3))
+        kept = _auto(SUNDAY)
+        placeholder = _evict(tmp_path, doomed)
+        (tmp_path / kept).write_bytes(b"a dump")
+
+        pruned = _prune(tmp_path, dry_run=False)
+
+        assert pruned == [doomed]
+        assert not placeholder.exists()
+        assert (tmp_path / kept).exists()
+
+    def test_an_evicted_dump_holds_its_day_against_an_older_real_one(self, tmp_path):
+        """
+        The placeholder is the newest dump of its day, so the real file from
+        earlier that day is the redundant one.
+
+        This is the half that a `*.dump` glob gets backwards rather than
+        merely misses: unable to see the placeholder, it would find the older
+        file alone in its day and keep it — holding the wrong one of the two.
+        """
+        newest, earlier = _auto(SUNDAY), _auto(SUNDAY - timedelta(hours=3))
+        _evict(tmp_path, newest)
+        older_real = tmp_path / earlier
+        older_real.write_bytes(b"a dump")
+
+        pruned = _prune(tmp_path, dry_run=False)
+
+        assert pruned == [earlier]
+        assert not older_real.exists()
+        assert newest in dumps_in(tmp_path)
+
+    def test_a_dry_run_deletes_no_placeholder(self, tmp_path):
+        placeholder = _evict(tmp_path, _auto(SUNDAY - timedelta(hours=3)))
+        (tmp_path / _auto(SUNDAY)).write_bytes(b"a dump")
+
+        _prune(tmp_path, dry_run=True)
+
+        assert placeholder.exists()
