@@ -23,7 +23,7 @@
       "ask": {
         "title": "Ask — Query your knowledge base",
         "summary": "Ask questions about tickers, setups, and strategies in plain language and get cited answers from your sources.",
-        "body": "Type any question — for example 'What are the channels saying about AAPL breakouts?' or 'What is the best-performing setup for tech stocks?'. The system retrieves relevant content from all ingested sources, synthesizes a bilingual answer, and shows the exact source evidence it used.\n\nAnswers respect your current display language. The more sources you have ingested, the richer and more specific the answers.\n\nIf the Ask view returns an error about the overage ceiling, your workspace's compute budget has been exhausted for this billing period — see Billing for details."
+        "body": "Type any question — for example 'What are the channels saying about AAPL breakouts?' or 'What is the best-performing setup for tech stocks?'. The system retrieves relevant content from all ingested sources, synthesizes a bilingual answer, and shows the exact source evidence it used.\n\nAnswers respect your current display language. The more sources you have ingested, the richer and more specific the answers.\n\nYour questions are kept. Every answer appears in the list beside the ask box, newest first; selecting one shows that answer and the sources it cited exactly as they were. Reopening an answer is free — it is read from storage, never asked again — so going back to something from last week costs nothing.\n\nIf the Ask view returns an error about the overage ceiling, your workspace's compute budget has been exhausted for this billing period — see Billing for details."
       },
       "sources": {
         "title": "Sources — Ingestion & content filters",
@@ -232,7 +232,13 @@
     "emptyQuery": "Please enter a question",
     "loadingHistory": "Loading your earlier questions...",
     "historyError": "Your earlier questions could not be loaded.",
-    "historyCapped": "Showing your {{count}} most recent questions."
+    "historyTitle": "Your questions",
+    "historyEmpty": "Nothing asked yet. Questions you ask appear here, so you can read an answer again without paying for it twice.",
+    "newQuestion": "New question",
+    "opening": "Opening that answer...",
+    "openError": "That answer could not be opened.",
+    "loadOlder": "Load older questions",
+    "openRetry": "Try again"
   },
   "sources": {
     "title": "Sources",
