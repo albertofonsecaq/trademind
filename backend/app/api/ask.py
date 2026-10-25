@@ -372,12 +372,11 @@ async def delete_ask_record(
     already true in both cases, so there is nothing to report. A double click
     is the first case, and is not a problem the user has to understand.
 
-    Note that this differs from `plan_items.remove_plan_item`, which 404s on
-    both. Either is defensible and neither leaks anything: a 404 here would be
-    just as silent, because it would be the same 404 for a record that never
-    existed as for one that is not yours — which is exactly what reading one
-    does. The choice here is idempotency, nothing subtler, and it is the one
-    place in this API that makes it.
+    `plan_items.remove_plan_item` reads the same way, deliberately: these are
+    the two personal-layer deletes in this API and they used to disagree. A 404
+    would have been just as silent — it would be the same 404 for a record that
+    never existed as for one that is not yours, which is what reading one does
+    — so the choice between them was idempotency, and both now make it.
 
     The record goes and nothing else does. The usage event for the call that
     produced the answer stays, because the money was spent and is still owed;
