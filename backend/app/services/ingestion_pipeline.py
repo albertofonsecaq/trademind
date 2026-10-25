@@ -37,6 +37,7 @@ from app.services import (
     vision_service,
     url_service,
     keyframe_service,
+    youtube_transcript,
 )
 from app.services.usage_service import log_usage_event
 from app.core.config import settings
@@ -61,6 +62,19 @@ async def _is_duplicate(db: AsyncSession, workspace_id: uuid.UUID, stable_id: st
             EvidenceItem.workspace_id == workspace_id,
             EvidenceItem.stable_id == stable_id,
         )
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def _holds_video(db: AsyncSession, workspace_id: uuid.UUID, video_id: str) -> bool:
+    """Whether any chunk of this video's transcript is already evidence here."""
+    result = await db.execute(
+        select(EvidenceItem.id).where(
+            EvidenceItem.workspace_id == workspace_id,
+            EvidenceItem.stable_id.startswith(
+                youtube_transcript.stable_id_prefix(video_id), autoescape=True
+            ),
+        ).limit(1)
     )
     return result.scalar_one_or_none() is not None
 
@@ -259,6 +273,12 @@ async def _process_url(db: AsyncSession, msg: RawMessage, topic_scope: str) -> E
     url = meta.get("url")
     if not url:
         return None
+    if url_service.is_youtube(url):
+        video_id = url_service.youtube_video_id(url)
+        # A channel, playlist or home page: nothing to transcribe, nothing to scrape.
+        if not video_id:
+            return None
+        return await _process_youtube_link(db, msg, video_id, topic_scope)
 
     fetched = await url_service.extract(url)
     if not fetched:
@@ -301,6 +321,50 @@ async def _process_url(db: AsyncSession, msg: RawMessage, topic_scope: str) -> E
 
     await _distill_and_embed(db, item, msg, text, lang)
     return item
+
+
+async def _process_youtube_link(
+    db: AsyncSession, msg: RawMessage, video_id: str, topic_scope: str
+) -> EvidenceItem | None:
+    """
+    A link to a YouTube video: its transcript, stored as a YouTube source would
+    store it but credited to the source the link was found in (#70).
+
+    A video the workspace already holds — through a YouTube source or an
+    earlier link — is skipped here, before captions or Whisper are asked for:
+    Whisper is paid upstream of process_message's own duplicate check, which
+    would only notice once the money was spent.
+    """
+    if await _holds_video(db, msg.workspace_id, video_id):
+        log.debug("Skipping %s: video %s already held", msg.stable_id, video_id)
+        return None
+
+    chunks = await youtube_transcript.video_transcript_messages(
+        video_id,
+        source_config_id=msg.source_config_id,
+        workspace_id=msg.workspace_id,
+        author=msg.author,
+        channel=msg.channel,
+        timestamp=msg.timestamp,
+        source_type=msg.source_type,
+        metadata=msg.metadata,
+    )
+    first = None
+    for chunk in chunks:
+        # Each chunk is an ordinary video_transcript message from here: its
+        # Whisper cost is logged, and its relevance checked, like any other.
+        # And its own savepoint, as for a YouTube source: one failed chunk must
+        # not undo the others, or the next attempt pays Whisper for them again.
+        try:
+            async with db.begin_nested():
+                item = await process_message(db, chunk, topic_scope)
+        except Exception as e:
+            if is_fatal_for_run(e):
+                raise
+            log.error("Pipeline error for %s: %s", chunk.stable_id, e, exc_info=True)
+            continue
+        first = first or item
+    return first
 
 
 async def _process_video(db: AsyncSession, msg: RawMessage, topic_scope: str) -> EvidenceItem | None:
@@ -417,7 +481,9 @@ async def process_message(
         log.debug("Skipping duplicate: %s", msg.stable_id)
         return None
 
-    if not msg.text and msg.content_type in ("text", "video_transcript", "url"):
+    # Not `url`: a link arrives with no text of its own — its text is the page,
+    # which only _process_url fetches — so it was dropped here unread (#68).
+    if not msg.text and msg.content_type in ("text", "video_transcript"):
         return None
 
     ct = msg.content_type
