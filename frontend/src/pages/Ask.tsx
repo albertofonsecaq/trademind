@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { NavBar } from "../components/NavBar";
 import { HelpLink } from "../components/HelpLink";
 import { useAuth } from "../context/AuthContext";
+import axios from "axios";
 import api from "../api/client";
 
 type Source = {
@@ -44,6 +45,29 @@ type Opened =
 
 /** How many rows of the ask history a page asks for. */
 const HISTORY_LIMIT = 100;
+
+/**
+ * What to tell the user about an ask that failed.
+ *
+ * The server already decided what the failure means and gave it a status: a
+ * revoked key is not a rate limit, and neither is a workspace that has spent
+ * its budget. #1 made those statuses distinguishable after a revoked key
+ * surfaced as a bare 500 — and then this view showed one sentence for all of
+ * them, so nothing downstream could tell them apart either. The help page even
+ * describes an overage-ceiling error the view never actually showed.
+ *
+ * The wording is this page's, not the server's, so it ships in both languages
+ * like every other string here.
+ */
+const askFailureKey = (status?: number): string => {
+  switch (status) {
+    case 402: return "ask.errorBudget";          // the workspace's own spend gate
+    case 429: return "ask.errorRateLimited";
+    case 502: return "ask.errorProvider";        // credentials, or the provider itself
+    case 504: return "ask.errorTimeout";
+    default: return "ask.errorTitle";
+  }
+};
 
 /** An ask record reads as the question asked and the answer given, in that order. */
 const asTurns = (record: AskRecord): Turn[] => [
@@ -271,8 +295,12 @@ export function Ask() {
       // on screen are now that record's.
       setRecords((r) => [{ id: data.id, question: asked, created_at: data.created_at }, ...r]);
       setAskedIds((ids) => [...ids, data.id]);
-    } catch {
-      setTurns((turn) => [...turn, { role: "assistant", text: t("ask.errorTitle"), sources: [] }]);
+    } catch (failure) {
+      const status = axios.isAxiosError(failure) ? failure.response?.status : undefined;
+      setTurns((turn) => [
+        ...turn,
+        { role: "assistant", text: t(askFailureKey(status)), sources: [] },
+      ]);
     } finally {
       setLoading(false);
     }

@@ -244,7 +244,11 @@
     "clearAll": "Eliminar todas mis preguntas",
     "deleteFailed": "No se pudo eliminar. No se quitó nada.",
     "clearAllConfirm_one": "¿Eliminar tu única pregunta guardada y su respuesta?\n\nTus fuentes y tarjetas de estrategia no se ven afectadas. Esto no se puede deshacer.",
-    "clearAllConfirm_other": "¿Eliminar tus {{count}} preguntas guardadas y sus respuestas?\n\nTus fuentes y tarjetas de estrategia no se ven afectadas. Esto no se puede deshacer."
+    "clearAllConfirm_other": "¿Eliminar tus {{count}} preguntas guardadas y sus respuestas?\n\nTus fuentes y tarjetas de estrategia no se ven afectadas. Esto no se puede deshacer.",
+    "errorBudget": "Tu espacio de trabajo ha agotado su presupuesto de cómputo para este período de facturación, así que las consultas están pausadas. Consulta Facturación para continuar.",
+    "errorRateLimited": "El servicio de IA está ocupado en este momento. Intenta la misma pregunta en un momento.",
+    "errorProvider": "El servicio de IA no está disponible, así que esta pregunta no se respondió. Intenta de nuevo en breve, o contacta a soporte si sigue ocurriendo.",
+    "errorTimeout": "El servicio de IA no respondió a tiempo. Intenta la misma pregunta de nuevo."
   },
   "sources": {
     "title": "Fuentes",

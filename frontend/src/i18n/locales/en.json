@@ -244,7 +244,11 @@
     "clearAll": "Delete all my questions",
     "deleteFailed": "That could not be deleted. Nothing was removed.",
     "clearAllConfirm_one": "Delete your 1 saved question and its answer?\n\nYour sources and strategy cards are not affected. This cannot be undone.",
-    "clearAllConfirm_other": "Delete all {{count}} of your saved questions and their answers?\n\nYour sources and strategy cards are not affected. This cannot be undone."
+    "clearAllConfirm_other": "Delete all {{count}} of your saved questions and their answers?\n\nYour sources and strategy cards are not affected. This cannot be undone.",
+    "errorBudget": "Your workspace has used its compute budget for this billing period, so asking is paused. See Billing to continue.",
+    "errorRateLimited": "The AI service is busy right now. Try the same question again in a moment.",
+    "errorProvider": "The AI service is unavailable, so this question was not answered. Try again shortly, or contact support if it keeps happening.",
+    "errorTimeout": "The AI service did not respond in time. Try the same question again."
   },
   "sources": {
     "title": "Sources",
