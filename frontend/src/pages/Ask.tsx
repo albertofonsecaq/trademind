@@ -110,7 +110,15 @@ export function Ask() {
   const [olderLoading, setOlderLoading] = useState(false);
   const [opened, setOpened] = useState<Opened>({ status: "none" });
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
   const [deleteFailed, setDeleteFailed] = useState(false);
+  // The records asked in this session, whose turns are the ones on screen when
+  // nothing is open. Deleting a record cannot leave its answer sitting there,
+  // and the turns carry no ids of their own: a session can hold several
+  // exchanges, so deleting any one of them clears the lot. Blunt, but a
+  // deleted answer must not stay on screen, and the ones that survive are a
+  // click away in the list.
+  const [askedIds, setAskedIds] = useState<string[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   // Which record the user asked for last. A slower reply for one they have
   // since clicked away from must not land on top of the one they want.
@@ -138,6 +146,13 @@ export function Ask() {
   const startNewQuestion = () => {
     wanted.current = null;                  // an open still in flight is no longer wanted
     setOpened({ status: "none" });
+  };
+
+  /** Nothing on screen, because what was on it is gone. */
+  const clearWhatIsShown = () => {
+    startNewQuestion();
+    setTurns([]);
+    setAskedIds([]);
   };
 
   // Which questions were already asked. The answers stay in the database until
@@ -185,16 +200,17 @@ export function Ask() {
     }
   };
 
-  /** Forget one question and its answer. The confirm is the point of no return. */
-  const forget = async (record: AskRecordSummary) => {
+  /** Delete one question and its answer. The confirm is the point of no return. */
+  const deleteRecord = async (record: AskRecordSummary) => {
     if (!workspaceId || !confirm(t("ask.deleteConfirm", { question: record.question }))) return;
     setDeleting(record.id);
     setDeleteFailed(false);
     try {
       await api.delete(`/workspaces/${workspaceId}/ask-records/${record.id}`);
       setRecords((r) => r.filter((row) => row.id !== record.id));
-      // The answer on screen cannot outlive the record it came from.
-      if (openId === record.id) startNewQuestion();
+      // The answer on screen cannot outlive the record it came from, whether it
+      // got there by being opened or by being asked a moment ago.
+      if (openId === record.id || askedIds.includes(record.id)) clearWhatIsShown();
     } catch {
       setDeleteFailed(true);
     } finally {
@@ -209,19 +225,28 @@ export function Ask() {
    * loaded: a confirm that undercounts what it is about to take is worse than
    * no confirm at all.
    */
-  const forgetEverything = async () => {
-    if (!workspaceId) return;
+  const clearHistory = async () => {
+    if (!workspaceId || clearing) return;
     setDeleteFailed(false);
+    setClearing(true);
     try {
       const { data } = await api.get<{ count: number }>(`/workspaces/${workspaceId}/ask-records/count`);
-      if (data.count === 0) return;
+      if (data.count === 0) {
+        // The list on screen is out of date — there is nothing left to confirm
+        // deleting, so say so by showing the empty state.
+        setRecords([]);
+        setHasOlder(false);
+        return;
+      }
       if (!confirm(t("ask.clearAllConfirm", { count: data.count }))) return;
       await api.delete(`/workspaces/${workspaceId}/ask-records`);
       setRecords([]);
       setHasOlder(false);
-      startNewQuestion();
+      clearWhatIsShown();
     } catch {
       setDeleteFailed(true);
+    } finally {
+      setClearing(false);
     }
   };
 
@@ -242,8 +267,10 @@ export function Ask() {
         language: i18n.language,
       });
       setTurns((turn) => [...turn, { role: "assistant", text: data.answer, sources: data.sources }]);
-      // It belongs to the ask history the moment it is answered.
+      // It belongs to the ask history the moment it is answered, and the turns
+      // on screen are now that record's.
       setRecords((r) => [{ id: data.id, question: asked, created_at: data.created_at }, ...r]);
+      setAskedIds((ids) => [...ids, data.id]);
     } catch {
       setTurns((turn) => [...turn, { role: "assistant", text: t("ask.errorTitle"), sources: [] }]);
     } finally {
@@ -322,6 +349,7 @@ export function Ask() {
                   style={{
                     background: "none", border: "none", padding: 0, margin: 0, cursor: "pointer",
                     textAlign: "left", font: "inherit", color: "inherit", flex: 1, minWidth: 0,
+                    alignSelf: "stretch",
                   }}
                 >
                   <span style={{
@@ -335,7 +363,7 @@ export function Ask() {
                   </span>
                 </button>
                 <button
-                  onClick={() => forget(r)}
+                  onClick={() => deleteRecord(r)}
                   disabled={deleting === r.id}
                   title={t("ask.deleteOne")}
                   aria-label={t("ask.deleteOne")}
@@ -366,14 +394,15 @@ export function Ask() {
 
             {records.length > 0 && (
               <button
-                onClick={forgetEverything}
+                onClick={clearHistory}
+                disabled={clearing}
                 style={{
                   display: "block", background: "none", border: "none", padding: "0.5rem 0 0",
                   marginTop: "0.3rem", fontSize: "0.75rem", color: "#c0392b", cursor: "pointer",
                   fontFamily: "inherit",
                 }}
               >
-                {t("ask.clearAll")}
+                {clearing ? "..." : t("ask.clearAll")}
               </button>
             )}
           </aside>

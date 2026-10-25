@@ -556,22 +556,34 @@ class TestOlderPagesAreReachable:
 # ── taking one back out ───────────────────────────────────────────────────────
 
 
+async def _through(handler, *, user, workspace, membership: bool = True, answer=None, **kwargs):
+    """
+    Run one ask-record route against a fake session, keeping its statement.
+
+    Three routes want exactly this — the statement they ran, the session they
+    ran it through, and what they returned — and `answer` is what the statement
+    resolves to: a row count for a delete, a total for a count.
+    """
+    seen: dict = {}
+
+    def capture(statement):
+        seen["statement"] = statement
+        return answer
+
+    db = FakeSession(rows={Workspace: workspace, AskRecord: capture}, membership=membership)
+    returned = await handler(
+        workspace_id=workspace.id, current_user=user, db=db, **kwargs
+    )
+    return seen, db, returned
+
+
 class TestDeletingOne:
     @staticmethod
     async def _delete(*, user, workspace, record_id, membership: bool = True, matched: int = 1):
-        seen: dict = {}
-
-        def capture(statement):
-            seen["statement"] = statement
-            return matched                          # what the DELETE claimed
-
-        db = FakeSession(
-            rows={Workspace: workspace, AskRecord: capture}, membership=membership
+        return await _through(
+            ask_api.delete_ask_record, user=user, workspace=workspace,
+            membership=membership, answer=matched, record_id=record_id,
         )
-        result = await ask_api.delete_ask_record(
-            workspace_id=workspace.id, record_id=record_id, current_user=user, db=db
-        )
-        return seen, db, result
 
     async def test_the_delete_is_scoped_to_the_caller_and_the_workspace(self):
         """
@@ -589,24 +601,32 @@ class TestDeletingOne:
         assert {user.id, workspace.id, record_id} <= set(seen["statement"].compile().params.values())
         assert db.commits == 1
 
-    async def test_another_users_record_is_neither_deleted_nor_reported(self):
+    async def test_another_users_record_is_not_a_target_and_is_not_reported(self):
         """
-        The delete matches nothing, and the caller is told nothing. 404 here
-        would answer the question 404 exists to avoid answering on the read:
-        whether that id is somebody's record.
+        Two halves, and this asserts both: the delete is filtered to the caller
+        so another member's record is not among the rows it could match, and
+        the caller is told nothing that distinguishes that from a record which
+        never existed.
+
+        Verified to bite: drop the `user_id` filter and the first assertion
+        fails — the delete would be matching on the id alone, and the 204 would
+        mean the record really went.
         """
         user, workspace = _user(), _workspace()
+        not_mine = uuid.uuid4()
 
-        _, _, result = await self._delete(
-            user=user, workspace=workspace, record_id=uuid.uuid4(), matched=0
+        seen, _, result = await self._delete(
+            user=user, workspace=workspace, record_id=not_mine, matched=0
         )
 
+        assert user.id in set(seen["statement"].compile().params.values())
         assert result is None                       # 204, same as a real one
 
     async def test_a_record_that_is_already_gone_is_not_an_error(self):
         """
         Deleting twice is what a double click is, and the second one is not a
-        problem the user has to understand.
+        problem the user has to understand: a delete states the end state it
+        wants, and that state is already true.
         """
         user, workspace = _user(), _workspace()
 
@@ -644,19 +664,10 @@ class TestDeletingOne:
 class TestClearingTheWholeHistory:
     @staticmethod
     async def _clear(*, user, workspace, membership: bool = True, matched: int = 7):
-        seen: dict = {}
-
-        def capture(statement):
-            seen["statement"] = statement
-            return matched
-
-        db = FakeSession(
-            rows={Workspace: workspace, AskRecord: capture}, membership=membership
+        return await _through(
+            ask_api.clear_ask_records, user=user, workspace=workspace,
+            membership=membership, answer=matched,
         )
-        cleared = await ask_api.clear_ask_records(
-            workspace_id=workspace.id, current_user=user, db=db
-        )
-        return seen, db, cleared
 
     async def test_it_clears_only_the_callers_records_in_this_workspace(self):
         """
@@ -705,17 +716,9 @@ class TestCountingWhatWouldGo:
 
     @staticmethod
     async def _count(*, user, workspace, membership: bool = True, total: int = 12):
-        seen: dict = {}
-
-        def capture(statement):
-            seen["statement"] = statement
-            return total
-
-        db = FakeSession(
-            rows={Workspace: workspace, AskRecord: capture}, membership=membership
-        )
-        counted = await ask_api.count_ask_records(
-            workspace_id=workspace.id, current_user=user, db=db
+        seen, _, counted = await _through(
+            ask_api.count_ask_records, user=user, workspace=workspace,
+            membership=membership, answer=total,
         )
         return seen, counted
 

@@ -242,8 +242,9 @@
     "deleteOne": "Delete this question",
     "deleteConfirm": "Delete this question and its answer?\n\n{{question}}\n\nThe sources it cited stay in your knowledge base. This cannot be undone.",
     "clearAll": "Delete all my questions",
-    "clearAllConfirm": "Delete all {{count}} of your saved questions and their answers?\n\nYour sources and strategy cards are not affected. This cannot be undone.",
-    "deleteFailed": "That could not be deleted. Nothing was removed."
+    "deleteFailed": "That could not be deleted. Nothing was removed.",
+    "clearAllConfirm_one": "Delete your 1 saved question and its answer?\n\nYour sources and strategy cards are not affected. This cannot be undone.",
+    "clearAllConfirm_other": "Delete all {{count}} of your saved questions and their answers?\n\nYour sources and strategy cards are not affected. This cannot be undone."
   },
   "sources": {
     "title": "Sources",

@@ -15,6 +15,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, or_, delete
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.database import get_db
 from app.core.dependencies import get_current_user
@@ -92,14 +93,15 @@ async def _get_workspace_and_assert_member(
     return workspace
 
 
-def _mine(user: User, workspace_id: uuid.UUID) -> tuple:
+def _mine(user: User, workspace_id: uuid.UUID) -> tuple[ColumnElement[bool], ...]:
     """
     The clause that makes an ask record the caller's own.
 
-    Every route below filters on it, including the one that only looks up a
-    paging anchor, so it is written once: an ask record is a personal layer,
-    and a route that forgot half of this would read, page through or delete
-    somebody else's question.
+    Every route that reads, pages through or deletes one filters on it —
+    including the lookup of a paging anchor, which decides nothing on its own
+    and would still leak that somebody else's record exists. Written once
+    because an ask record is a personal layer, and a route that forgot half of
+    this would hand one user another's questions.
     """
     return (AskRecord.user_id == user.id, AskRecord.workspace_id == workspace_id)
 
@@ -319,6 +321,11 @@ async def count_ask_records(
     It exists so the confirm before clearing can say how many records it is
     about to take. The page knows how much of the history it has loaded, which
     is not the same number.
+
+    This and the delete that follows it are two requests, so a question asked
+    in between makes the confirmed number low by one. The delete takes what is
+    actually there and reports it, so nothing is missed — only the sentence the
+    user read was out of date, and by less than they took to read it.
     """
     await _get_workspace_and_assert_member(db, workspace_id, current_user.id)
 
@@ -359,12 +366,18 @@ async def delete_ask_record(
     """
     One of the caller's own ask records, gone.
 
-    Deleting a record that is not there succeeds, and so does deleting one that
-    belongs to somebody else: both match nothing, and both say so the same way.
-    A 404 for the second would answer exactly the question the 404 on reading
-    one exists to avoid answering — whether that id is somebody's record. A
-    double click is the first case, and is not a problem the user has to
-    understand.
+    Idempotent: deleting a record that is not there succeeds, and so does
+    deleting one that belongs to somebody else. A delete states the end state
+    it wants — that record, not in this user's history — and that state is
+    already true in both cases, so there is nothing to report. A double click
+    is the first case, and is not a problem the user has to understand.
+
+    Note that this differs from `plan_items.remove_plan_item`, which 404s on
+    both. Either is defensible and neither leaks anything: a 404 here would be
+    just as silent, because it would be the same 404 for a record that never
+    existed as for one that is not yours — which is exactly what reading one
+    does. The choice here is idempotency, nothing subtler, and it is the one
+    place in this API that makes it.
 
     The record goes and nothing else does. The usage event for the call that
     produced the answer stays, because the money was spent and is still owed;
