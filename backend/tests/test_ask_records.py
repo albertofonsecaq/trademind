@@ -1,5 +1,5 @@
 """
-Tests for #72 — an answered question is kept.
+Tests for #72 and #73 — an answered question is kept, and can be read again.
 
 The Ask view held its transcript in the browser alone, so a reload threw away
 every answer the workspace had already paid to synthesize, and the only way
@@ -21,6 +21,12 @@ assume the language it was asked for.
 And it is personal, like a plan item: being a member of the workspace a
 question was asked in is not being allowed to read the question.
 
+Reading one back is then a read and nothing else. No retrieval, no synthesis,
+no usage event: the answer was paid for once, when it was asked, and charging
+for the same sentence twice is the thing keeping it was meant to avoid. The
+fixture below wires every paid call to fail the test, so anything that reaches
+a provider fails here rather than on someone's bill.
+
 Offline like the rest of the suite: no database, no provider, no model.
 """
 import uuid
@@ -30,6 +36,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.api import ask as ask_api
+from app.core.clock import now_utc
 from app.models.ask_record import AskRecord
 from app.models.workspace import Workspace
 from app.services import embedding_service, query_synthesis_service, retrieval_service
@@ -55,15 +62,25 @@ def _records(db: FakeSession) -> list[AskRecord]:
     return [obj for obj in db.added if isinstance(obj, AskRecord)]
 
 
+# Every seam in the ask path that costs money or records that it did. Both
+# fixtures below stub exactly these — one with answers, one with failures — so a
+# paid call added to the handler cannot be stubbed in one and forgotten in the
+# other.
+_PAID_SEAMS = (
+    (embedding_service, "embed_query"),
+    (retrieval_service, "hybrid_search"),
+    (query_synthesis_service, "synthesize"),
+    (ask_api, "log_usage_event"),
+)
+
+
 @pytest.fixture
 def forbid_spending(monkeypatch):
     """
-    Everything that costs money, wired to fail the test if it is reached.
+    Every paid seam wired to fail the test if it is reached.
 
     Reopening an ask record is the one read in this API that must not touch a
-    provider. The answer was paid for once, when it was asked; charging for the
-    same sentence twice is the thing keeping it was meant to avoid, and a
-    silently re-synthesized answer is not even the same answer.
+    provider, and a silently re-synthesized answer is not even the same answer.
     """
     def refuse_sync(*_args, **_kwargs):
         raise AssertionError("a paid call was made while reading a stored answer")
@@ -71,10 +88,9 @@ def forbid_spending(monkeypatch):
     async def refuse_async(*_args, **_kwargs):
         raise AssertionError("a paid call was made while reading a stored answer")
 
-    monkeypatch.setattr(embedding_service, "embed_query", refuse_sync)
-    monkeypatch.setattr(retrieval_service, "hybrid_search", refuse_async)
-    monkeypatch.setattr(query_synthesis_service, "synthesize", refuse_async)
-    monkeypatch.setattr(ask_api, "log_usage_event", refuse_async)
+    for module, attribute in _PAID_SEAMS:
+        refuse = refuse_async if attribute != "embed_query" else refuse_sync
+        monkeypatch.setattr(module, attribute, refuse)
 
 
 @pytest.fixture
@@ -332,17 +348,16 @@ class TestRecordsAreOnlyEverTheCallersOwn:
 # ── reading one back ──────────────────────────────────────────────────────────
 
 
-def _stored(user, workspace, **over) -> AskRecord:
-    fields = {
-        "id": uuid.uuid4(),
-        "workspace_id": workspace.id,
-        "user_id": user.id,
-        "question": "what happened to EURUSD?",
-        "answer": "EURUSD broke out twice at this level [1]",
-        "sources": _SOURCES,
-        "language": "en",
-    }
-    return AskRecord(**{**fields, **over})
+def _stored(user, workspace) -> AskRecord:
+    return AskRecord(
+        id=uuid.uuid4(),
+        workspace_id=workspace.id,
+        user_id=user.id,
+        question="what happened to EURUSD?",
+        answer="EURUSD broke out twice at this level [1]",
+        sources=_SOURCES,
+        language="en",
+    )
 
 
 class TestReopeningOneSpendsNothing:
@@ -380,6 +395,22 @@ class TestReopeningOneSpendsNothing:
             )
 
         assert refused.value.status_code == 404
+
+    async def test_a_non_member_is_refused_before_anything_is_read(self, forbid_spending):
+        """
+        The list refuses a non-member (#72) and so must this: the membership
+        check is the gate, and the ownership filter behind it is the fence.
+        """
+        user, workspace = _user(), _workspace()
+        db = FakeSession(rows={Workspace: workspace}, membership=False)
+
+        with pytest.raises(HTTPException) as refused:
+            await ask_api.read_ask_record(
+                workspace_id=workspace.id, record_id=uuid.uuid4(), current_user=user, db=db
+            )
+
+        assert refused.value.status_code == 403
+        assert not db.touched("ask_records")
 
     async def test_the_lookup_is_scoped_to_the_caller_and_the_workspace(self, forbid_spending):
         """
@@ -439,3 +470,84 @@ class TestTheListIsAListNotEveryAnswer:
         assert await ask_api.list_ask_records(
             workspace_id=workspace.id, limit=50, current_user=user, db=db
         ) == []
+
+
+# ── reading back further than one page ────────────────────────────────────────
+
+
+class TestOlderPagesAreReachable:
+    @staticmethod
+    async def _list(*, user, workspace, before_id=None, anchored_at=None):
+        """The list endpoint, with the statement it ran for the page of rows."""
+        seen: dict = {}
+
+        def capture(statement):
+            sql = str(statement).lower()
+            if "ask_records.question" in sql:
+                seen["page"] = statement
+                return []
+            seen["anchor"] = statement              # the lookup of before_id
+            return anchored_at
+
+        db = FakeSession(rows={Workspace: workspace, AskRecord: capture})
+        rows = await ask_api.list_ask_records(
+            workspace_id=workspace.id, limit=100, before_id=before_id,
+            current_user=user, db=db,
+        )
+        return seen, rows
+
+    async def test_without_an_anchor_the_newest_page_is_served(self):
+        user, workspace = _user(), _workspace()
+
+        seen, _ = await self._list(user=user, workspace=workspace)
+
+        assert "anchor" not in seen                 # nothing looked up
+        assert "ask_records.created_at <" not in str(seen["page"]).lower()
+
+    async def test_an_anchor_asks_for_what_is_older_than_that_record(self):
+        """
+        The page boundary is the record, not a row offset: a question asked
+        while someone reads back through their history must not shift the pages
+        underneath them and make a row appear twice, or not at all.
+        """
+        user, workspace = _user(), _workspace()
+        oldest_shown = uuid.uuid4()
+
+        seen, _ = await self._list(
+            user=user, workspace=workspace,
+            before_id=oldest_shown, anchored_at=now_utc(),
+        )
+
+        sql = str(seen["page"]).lower()
+        # Strictly older, and the tie on an equal timestamp broken by id, so
+        # the boundary cannot repeat or skip a row.
+        assert "ask_records.created_at < " in sql
+        assert "ask_records.id < " in sql
+        assert oldest_shown in set(seen["page"].compile().params.values())
+
+    async def test_the_anchor_has_to_be_the_callers_own_record(self):
+        """
+        Verified to bite: look the anchor up by id alone and this fails. An
+        anchor that is only required to exist would let a caller page through
+        the boundary of a record they do not own.
+        """
+        user, workspace = _user(), _workspace()
+
+        seen, _ = await self._list(
+            user=user, workspace=workspace,
+            before_id=uuid.uuid4(), anchored_at=now_utc(),
+        )
+
+        bound = set(seen["anchor"].compile().params.values())
+        assert user.id in bound and workspace.id in bound
+
+    async def test_an_anchor_that_is_not_the_callers_is_not_found(self):
+        user, workspace = _user(), _workspace()
+
+        with pytest.raises(HTTPException) as refused:
+            await self._list(
+                user=user, workspace=workspace,
+                before_id=uuid.uuid4(), anchored_at=None,
+            )
+
+        assert refused.value.status_code == 404

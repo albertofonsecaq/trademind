@@ -232,12 +232,13 @@
     "emptyQuery": "Por favor ingresa una pregunta",
     "loadingHistory": "Cargando tus preguntas anteriores...",
     "historyError": "No se pudieron cargar tus preguntas anteriores.",
-    "historyCapped": "Mostrando tus {{count}} preguntas más recientes.",
     "historyTitle": "Tus preguntas",
     "historyEmpty": "Aún no has preguntado nada. Tus preguntas aparecerán aquí, para que puedas volver a leer una respuesta sin pagarla dos veces.",
     "newQuestion": "Nueva pregunta",
     "opening": "Abriendo esa respuesta...",
-    "openError": "No se pudo abrir esa respuesta."
+    "openError": "No se pudo abrir esa respuesta.",
+    "loadOlder": "Cargar preguntas anteriores",
+    "openRetry": "Intentar de nuevo"
   },
   "sources": {
     "title": "Fuentes",

@@ -232,12 +232,13 @@
     "emptyQuery": "Please enter a question",
     "loadingHistory": "Loading your earlier questions...",
     "historyError": "Your earlier questions could not be loaded.",
-    "historyCapped": "Showing your {{count}} most recent questions.",
     "historyTitle": "Your questions",
     "historyEmpty": "Nothing asked yet. Questions you ask appear here, so you can read an answer again without paying for it twice.",
     "newQuestion": "New question",
     "opening": "Opening that answer...",
-    "openError": "That answer could not be opened."
+    "openError": "That answer could not be opened.",
+    "loadOlder": "Load older questions",
+    "openRetry": "Try again"
   },
   "sources": {
     "title": "Sources",

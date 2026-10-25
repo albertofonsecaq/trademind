@@ -3,16 +3,17 @@ Ask endpoint — the core query interface.
 Budget/overage check runs before synthesis to enforce spend controls.
 query_synthesis usage is tagged is_overage=True once included_budget is exhausted.
 
-An answered question is kept as an ask record, so the transcript survives a
-reload and a question already paid for can be read again instead of asked
-again (#72). Records are personal: a user sees only their own.
+An answered question is kept as an ask record, so the page survives a reload
+and a question already paid for can be read again instead of asked again
+(#72, #73). Reading one back is a read and nothing else — no retrieval, no
+synthesis, no usage event. Records are personal: a user sees only their own.
 """
 import uuid
 from datetime import datetime
 from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, and_, or_
 
 from app.core.database import get_db
 from app.core.dependencies import get_current_user
@@ -56,14 +57,12 @@ class AskRecordSummary(BaseModel):
     created_at: datetime
 
 
-class AskRecordOut(BaseModel):
+class AskRecordOut(AskRecordSummary):
+    """One ask record in full: what the list row leaves in the database."""
     model_config = {"from_attributes": True}
-    id: uuid.UUID
-    question: str
     answer: str
     sources: list[dict]
     language: str
-    created_at: datetime
 
 
 async def _get_workspace_and_assert_member(
@@ -229,7 +228,8 @@ async def ask(
 @router.get("/{workspace_id}/ask-records", response_model=list[AskRecordSummary])
 async def list_ask_records(
     workspace_id: uuid.UUID,
-    limit: int = Query(default=100, ge=1, le=500),
+    limit: int = Query(default=100, ge=1, le=200),
+    before_id: uuid.UUID | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -242,19 +242,42 @@ async def list_ask_records(
 
     Three columns, not the row: a user with hundreds of records should not wait
     for hundreds of answers to come back so a list of questions can be drawn.
+
+    `before_id` asks for the page older than that record — the caller passes the
+    oldest row it already has. The anchor is the record itself rather than a
+    row offset, so a question asked while someone reads back through their
+    history cannot shift the pages underneath them and make a row appear twice
+    or not at all.
     """
     await _get_workspace_and_assert_member(db, workspace_id, current_user.id)
 
-    result = await db.execute(
-        select(AskRecord.id, AskRecord.question, AskRecord.created_at)
-        .where(
-            AskRecord.user_id == current_user.id,
-            AskRecord.workspace_id == workspace_id,
+    mine = (
+        AskRecord.user_id == current_user.id,
+        AskRecord.workspace_id == workspace_id,
+    )
+    query = select(AskRecord.id, AskRecord.question, AskRecord.created_at).where(*mine)
+
+    if before_id is not None:
+        anchor = await db.execute(
+            select(AskRecord.created_at).where(AskRecord.id == before_id, *mine)
         )
+        anchored_at = anchor.scalar_one_or_none()
+        if anchored_at is None:
+            # Same reasoning as reading one: a caller who does not own this id
+            # does not get to learn whether it exists.
+            raise HTTPException(status_code=404, detail="Ask record not found")
+        query = query.where(
+            or_(
+                AskRecord.created_at < anchored_at,
+                and_(AskRecord.created_at == anchored_at, AskRecord.id < before_id),
+            )
+        )
+
+    result = await db.execute(
         # The id breaks a tie, so "newest first" is one order rather than
-        # whichever of two records written in the same microsecond came back.
-        .order_by(AskRecord.created_at.desc(), AskRecord.id.desc())
-        .limit(limit)
+        # whichever of two records written in the same microsecond came back —
+        # and it is what makes the page boundary above exact.
+        query.order_by(AskRecord.created_at.desc(), AskRecord.id.desc()).limit(limit)
     )
     return [
         AskRecordSummary(id=row.id, question=row.question, created_at=row.created_at)
