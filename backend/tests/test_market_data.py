@@ -29,7 +29,7 @@ from yfinance.exceptions import YFPricesMissingError, YFTzMissingError
 
 from app.connectors import market_data
 from app.core.clock import now_utc
-from app.connectors.market_data import _fetch_yfinance
+from app.connectors.market_data import _fetch_yfinance, provider_symbol
 
 START, END = date(2026, 9, 1), date(2026, 9, 30)
 
@@ -146,3 +146,66 @@ class TestWhyThereAreNoBars:
         assert "AA" in warning
         assert "provider failed" in warning
         assert "Expecting value" in warning
+
+
+class TestProviderSymbol:
+    """
+    A crypto pair the way sources write it, in the spelling each provider
+    fetches it under — #85.
+
+    Distillation keeps `BTCUSD`; Yahoo only knows `BTC-USD` and Polygon
+    `X:BTCUSD`, so until this every crypto idea — most of the library — stayed
+    open. The idea's own symbol never changes: this is the fetch only.
+    """
+
+    @pytest.mark.parametrize("symbol, yahoo", [
+        ("BTCUSD", "BTC-USD"),
+        ("ETHUSD", "ETH-USD"),
+        ("XRPUSD", "XRP-USD"),
+        ("ADAUSD", "ADA-USD"),
+        ("ETHBTC", "ETH-BTC"),
+        ("BTCEUR", "BTC-EUR"),
+        ("DOGEUSD", "DOGE-USD"),
+    ])
+    def test_a_pair_is_dashed_for_yahoo(self, symbol, yahoo):
+        assert provider_symbol(symbol, "yfinance") == yahoo
+
+    @pytest.mark.parametrize("symbol, yahoo", [
+        ("BTCUSDT", "BTC-USD"),
+        ("DOGEUSDT", "DOGE-USD"),
+        ("BTCUSDC", "BTC-USD"),
+    ])
+    def test_a_stablecoin_pair_is_priced_against_the_dollar_on_yahoo(self, symbol, yahoo):
+        """Yahoo has no USDT or USDC pairs (404); a stablecoin tracks the dollar."""
+        assert provider_symbol(symbol, "yfinance") == yahoo
+
+    @pytest.mark.parametrize("symbol, polygon", [
+        ("BTCUSD", "X:BTCUSD"),
+        ("ETHBTC", "X:ETHBTC"),
+        ("BTCUSDT", "X:BTCUSDT"),
+    ])
+    def test_a_pair_is_prefixed_for_polygon(self, symbol, polygon):
+        assert provider_symbol(symbol, "polygon") == polygon
+
+    @pytest.mark.parametrize("symbol", [
+        "AA", "NVDA", "MSFT",
+        "BTC",      # Yahoo's BTC is an ETF, not bitcoin: a bare base is not a pair
+        "BTC-USD",  # already in Yahoo's spelling
+        "YM=F", "US2Y", "SPX",
+        "SEUSD",    # five letters ending in a quote currency could be a stock
+        "EURUSD", "GBPUSD", "USDEUR",  # forex: Yahoo spells it EURUSD=X, Polygon C:EURUSD
+        "XAUUSD",   # a metal, not a coin
+    ])
+    def test_anything_that_is_not_a_pair_is_fetched_as_written(self, symbol):
+        assert provider_symbol(symbol, "yfinance") == symbol
+        assert provider_symbol(symbol, "polygon") == symbol
+
+    async def test_the_connector_fetches_under_the_provider_symbol(self, monkeypatch):
+        asked = []
+        monkeypatch.setattr(market_data.settings, "POLYGON_API_KEY", "")
+        monkeypatch.setattr(market_data, "_fetch_yfinance",
+                            lambda symbol, start, end: asked.append(symbol) or [])
+
+        await market_data.MarketDataConnector().get_bars("BTCUSD", START)
+
+        assert asked == ["BTC-USD"]
