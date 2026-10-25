@@ -34,8 +34,8 @@ def upgrade() -> None:
         sa.Column("language", sa.String(10), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     )
-    # A user's own records in one workspace, newest first — the only query this
-    # table exists to serve.
+    # The index for the one query this table serves; app/models/ask_record.py
+    # says which query and why.
     op.create_index(
         "ix_ask_records_user_workspace_created",
         "ask_records",

@@ -28,14 +28,15 @@ type Message = {
   role: "user" | "assistant";
   text: string;
   sources?: Source[];
-  /** The ask record this came from, absent only while an answer is in flight. */
-  recordId?: string;
 };
 
-/** A record reads as the two messages that produced it, in the order they happened. */
+/** How much of the ask history this page asks for, and so how much it can show. */
+const HISTORY_LIMIT = 50;
+
+/** An ask record reads as the question asked and the answer given, in that order. */
 const asMessages = (record: AskRecord): Message[] => [
-  { role: "user", text: record.question, recordId: record.id },
-  { role: "assistant", text: record.answer, sources: record.sources, recordId: record.id },
+  { role: "user", text: record.question },
+  { role: "assistant", text: record.answer, sources: record.sources },
 ];
 
 export function Ask() {
@@ -47,6 +48,7 @@ export function Ask() {
   const [error, setError] = useState("");
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState(false);
+  const [historyCapped, setHistoryCapped] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const workspaceId = user?.default_workspace_id;
 
@@ -62,15 +64,21 @@ export function Ask() {
 
     let cancelled = false;
     setHistoryLoading(true);
-    api.get<AskRecord[]>(`/workspaces/${workspaceId}/ask-records`)
+    api.get<AskRecord[]>(`/workspaces/${workspaceId}/ask-records`, {
+      params: { limit: HISTORY_LIMIT },
+    })
       .then(({ data }) => {
         if (cancelled) return;
         // Newest first from the server; a transcript reads oldest first. Put
         // them ahead of whatever is already on screen rather than replacing it,
         // so a question asked while this was in flight is not thrown away.
-        const history = data.slice().reverse().flatMap(asMessages);
-        setMessages((current) => [...history, ...current]);
+        const earlier = data.slice().reverse().flatMap(asMessages);
+        setMessages((current) => [...earlier, ...current]);
         setHistoryError(false);
+        // A full page means there are older records this is not showing. Say
+        // so: a page that silently stops at fifty is the reload that loses
+        // answers, only quieter.
+        setHistoryCapped(data.length >= HISTORY_LIMIT);
       })
       .catch(() => { if (!cancelled) setHistoryError(true); })
       .finally(() => { if (!cancelled) setHistoryLoading(false); });
@@ -97,7 +105,6 @@ export function Ask() {
         role: "assistant",
         text: data.answer,
         sources: data.sources,
-        recordId: data.id,
       }]);
     } catch {
       setMessages((m) => [...m, { role: "assistant", text: t("ask.errorTitle"), sources: [] }]);
@@ -126,6 +133,11 @@ export function Ask() {
           {historyError && (
             <p style={{ color: "#b9770e", fontSize: "0.85rem", margin: 0 }}>
               {t("ask.historyError")}
+            </p>
+          )}
+          {historyCapped && (
+            <p style={{ color: "#888", fontSize: "0.8rem", margin: 0 }}>
+              {t("ask.historyCapped", { count: HISTORY_LIMIT })}
             </p>
           )}
           {messages.map((msg, i) => (

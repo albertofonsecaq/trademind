@@ -73,6 +73,7 @@ def ask(monkeypatch):
         fails=None,
         usage_events=usage_events,
         db=None,
+        answered=None,
     )
 
     monkeypatch.setattr(embedding_service, "embed_query", lambda text: [0.0, 1.0])
@@ -83,6 +84,7 @@ def ask(monkeypatch):
     monkeypatch.setattr(retrieval_service, "hybrid_search", _no_retrieval)
 
     async def _synthesize(query, results, language="en"):
+        state.answered = query                  # the string the model was given
         if state.fails:
             raise state.fails
         return state.answer, state.sources, state.usage
@@ -128,11 +130,16 @@ class TestAnAnsweredQuestionIsKept:
         assert record.workspace_id == result.workspace.id
 
     async def test_the_question_is_kept_as_asked_not_as_padded(self, ask):
-        """The whitespace is the client's; the history shows the question."""
+        """
+        The whitespace is the client's, not the question. Read once at the top
+        of the handler, so what was embedded, retrieved against, answered and
+        kept are all the same string.
+        """
         result = await ask.run("   EURUSD breakouts?  ")
 
         record, = _records(result.db)
         assert record.question == "EURUSD breakouts?"
+        assert ask.answered == "EURUSD breakouts?"
 
     async def test_an_answer_with_no_sources_is_still_an_answer(self, ask):
         """
@@ -218,6 +225,32 @@ class TestTheRecordBelongsToTheRequestsTransaction:
         assert event["task_type"] == "query_synthesis"
         assert (event["input_units"], event["output_units"]) == (900, 120)
         assert event["commits_before"] == 1
+
+
+    async def test_the_call_is_recorded_even_when_the_answer_cannot_be_stored(self, ask):
+        """
+        Keeping the answer in this transaction gives the transaction one more
+        way to fail, and the tokens were spent before the record was written.
+        So the spend is recorded whatever the commit does — under-metered in
+        that case, because the subscription's running overage went back with
+        everything else, but not lost, which is #27's whole point.
+
+        Verified to bite: drop the `finally` around the commit and this fails
+        with nothing recorded at all.
+        """
+        workspace = _workspace()
+        db = FakeSession(rows={Workspace: workspace})
+
+        async def commit_that_fails():
+            raise RuntimeError("ask_records violates a constraint")
+
+        db.commit = commit_that_fails
+        with pytest.raises(RuntimeError):
+            await ask.run(db=db, workspace=workspace)
+
+        event, = ask.usage_events
+        assert event["task_type"] == "query_synthesis"
+        assert (event["input_units"], event["output_units"]) == (900, 120)
 
 
 # ── whose records they are ────────────────────────────────────────────────────

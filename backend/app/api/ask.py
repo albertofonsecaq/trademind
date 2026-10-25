@@ -122,7 +122,8 @@ async def ask(
 ):
     workspace = await _get_workspace_and_assert_member(db, workspace_id, current_user.id)
 
-    if not payload.query.strip():
+    question = payload.query.strip()
+    if not question:
         raise HTTPException(status_code=422, detail="Query cannot be empty")
 
     # Hard overage ceiling check
@@ -137,7 +138,7 @@ async def ask(
     # Embed query (local model, no cost)
     import asyncio
     query_vec = await asyncio.get_event_loop().run_in_executor(
-        None, embedding_service.embed_query, payload.query
+        None, embedding_service.embed_query, question
     )
 
     # Hybrid retrieval
@@ -145,13 +146,13 @@ async def ask(
         db,
         workspace_id=workspace_id,
         query_embedding=query_vec,
-        query_text=payload.query,
+        query_text=question,
     )
 
     # Query synthesis
     lang = payload.language if payload.language in ("en", "es") else current_user.preferred_language
     answer, sources, usage = await query_synthesis_service.synthesize(
-        payload.query, results, language=lang
+        question, results, language=lang
     )
 
     cost = Decimal(str(
@@ -169,7 +170,7 @@ async def ask(
     record = AskRecord(
         workspace_id=workspace_id,
         user_id=current_user.id,
-        question=payload.query.strip(),
+        question=question,
         answer=answer,
         sources=sources,
         language=lang,
@@ -186,22 +187,27 @@ async def ask(
         if sub:
             sub.current_period_overage_usd += cost * Decimal(str(sub.overage_rate_multiplier))
 
-    await db.commit()
-
-    # Last, and in its own transaction. It used to share this request's, and now
-    # cannot roll back with it, so it is written after the subscription's running
-    # overage is safely committed rather than before — an overage row that
-    # outlived a failed request would be counted by neither the cap nor the
-    # meter (#27).
-    await log_usage_event(
-        workspace_id=workspace_id,
-        task_type="query_synthesis",
-        provider_model=settings.SYNTHESIS_MODEL,
-        input_units=usage["input_tokens"],
-        output_units=usage["output_tokens"],
-        cost_usd=cost,
-        is_overage=is_overage,
-    )
+    try:
+        await db.commit()
+    finally:
+        # In its own transaction, after this one, and in a `finally` because the
+        # call happened either way. It used to share this request's transaction
+        # and could roll back with it: tokens spent, the provider billing for
+        # them, nothing recorded (#27). After the commit, so an overage row
+        # cannot outlive a request that failed — and still written when the
+        # commit itself fails, which keeping the answer here made possible (the
+        # record is one more way this transaction can go wrong). A failed commit
+        # leaves the subscription's running overage unincremented, so that case
+        # under-meters by this call rather than losing it entirely.
+        await log_usage_event(
+            workspace_id=workspace_id,
+            task_type="query_synthesis",
+            provider_model=settings.SYNTHESIS_MODEL,
+            input_units=usage["input_tokens"],
+            output_units=usage["output_tokens"],
+            cost_usd=cost,
+            is_overage=is_overage,
+        )
 
     return AskResponse(
         answer=answer, sources=sources, id=record.id, created_at=record.created_at
@@ -230,7 +236,9 @@ async def list_ask_records(
             AskRecord.user_id == current_user.id,
             AskRecord.workspace_id == workspace_id,
         )
-        .order_by(AskRecord.created_at.desc())
+        # The id breaks a tie, so "newest first" is one order rather than
+        # whichever of two records written in the same microsecond came back.
+        .order_by(AskRecord.created_at.desc(), AskRecord.id.desc())
         .limit(limit)
     )
     return result.scalars().all()

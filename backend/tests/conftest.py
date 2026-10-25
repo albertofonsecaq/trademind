@@ -218,7 +218,12 @@ def _apply_column_defaults(obj) -> None:
         attribute = mapper.get_property_by_column(column).key
         if getattr(obj, attribute, None) is not None:
             continue                            # the caller said what it wanted
-        setattr(obj, attribute, default.arg(None) if default.is_callable else default.arg)
+        try:
+            value = default.arg(None) if default.is_callable else default.arg
+        except TypeError:
+            continue    # a default that wants the real execution context, which
+                        # there is none of here — leave it to the caller to set
+        setattr(obj, attribute, value)
 
 
 class FakeSavepoint:
@@ -389,8 +394,9 @@ class FakeSession:
         """
         Every write of this model and every commit, in the order they happened.
 
-        `["add", "commit"]` is a row written in the caller's transaction;
-        `["commit", "add"]` is one that outlives a rollback of it.
+        `["add", "commit"]` is a row written inside the transaction that then
+        commits. `["commit", "add"]` is one added after the only commit the
+        caller makes, which is to say never committed at all.
         """
         return [
             operation

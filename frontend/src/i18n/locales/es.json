@@ -231,7 +231,8 @@
     "errorTitle": "No se pudo obtener una respuesta",
     "emptyQuery": "Por favor ingresa una pregunta",
     "loadingHistory": "Cargando tus preguntas anteriores...",
-    "historyError": "No se pudieron cargar tus preguntas anteriores."
+    "historyError": "No se pudieron cargar tus preguntas anteriores.",
+    "historyCapped": "Mostrando tus {{count}} preguntas más recientes."
   },
   "sources": {
     "title": "Fuentes",
