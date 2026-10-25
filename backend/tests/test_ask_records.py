@@ -551,3 +551,204 @@ class TestOlderPagesAreReachable:
             )
 
         assert refused.value.status_code == 404
+
+
+# ── taking one back out ───────────────────────────────────────────────────────
+
+
+class TestDeletingOne:
+    @staticmethod
+    async def _delete(*, user, workspace, record_id, membership: bool = True, matched: int = 1):
+        seen: dict = {}
+
+        def capture(statement):
+            seen["statement"] = statement
+            return matched                          # what the DELETE claimed
+
+        db = FakeSession(
+            rows={Workspace: workspace, AskRecord: capture}, membership=membership
+        )
+        result = await ask_api.delete_ask_record(
+            workspace_id=workspace.id, record_id=record_id, current_user=user, db=db
+        )
+        return seen, db, result
+
+    async def test_the_delete_is_scoped_to_the_caller_and_the_workspace(self):
+        """
+        Verified to bite: drop the `user_id` filter and this fails. A delete
+        that only matches on the id would take another member's record out on
+        request.
+        """
+        user, workspace = _user(), _workspace()
+        record_id = uuid.uuid4()
+
+        seen, db, _ = await self._delete(user=user, workspace=workspace, record_id=record_id)
+
+        sql = str(seen["statement"]).lower()
+        assert sql.startswith("delete from ask_records")
+        assert {user.id, workspace.id, record_id} <= set(seen["statement"].compile().params.values())
+        assert db.commits == 1
+
+    async def test_another_users_record_is_neither_deleted_nor_reported(self):
+        """
+        The delete matches nothing, and the caller is told nothing. 404 here
+        would answer the question 404 exists to avoid answering on the read:
+        whether that id is somebody's record.
+        """
+        user, workspace = _user(), _workspace()
+
+        _, _, result = await self._delete(
+            user=user, workspace=workspace, record_id=uuid.uuid4(), matched=0
+        )
+
+        assert result is None                       # 204, same as a real one
+
+    async def test_a_record_that_is_already_gone_is_not_an_error(self):
+        """
+        Deleting twice is what a double click is, and the second one is not a
+        problem the user has to understand.
+        """
+        user, workspace = _user(), _workspace()
+
+        _, _, result = await self._delete(
+            user=user, workspace=workspace, record_id=uuid.uuid4(), matched=0
+        )
+
+        assert result is None
+
+    async def test_nothing_but_the_record_goes(self):
+        """
+        The money was spent and is still owed, and the knowledge base is not
+        the user's transcript: a usage event, the evidence the answer cited and
+        every strategy card outlive the record that cited them.
+        """
+        user, workspace = _user(), _workspace()
+
+        _, db, _ = await self._delete(user=user, workspace=workspace, record_id=uuid.uuid4())
+
+        assert db.touched("ask_records")
+        for untouched in ("usage_events", "evidence_items", "strategy_cards", "trade_ideas"):
+            assert not db.touched(untouched), untouched
+
+    async def test_a_non_member_is_refused_before_anything_is_deleted(self):
+        user, workspace = _user(), _workspace()
+
+        with pytest.raises(HTTPException) as refused:
+            await self._delete(
+                user=user, workspace=workspace, record_id=uuid.uuid4(), membership=False
+            )
+
+        assert refused.value.status_code == 403
+
+
+class TestClearingTheWholeHistory:
+    @staticmethod
+    async def _clear(*, user, workspace, membership: bool = True, matched: int = 7):
+        seen: dict = {}
+
+        def capture(statement):
+            seen["statement"] = statement
+            return matched
+
+        db = FakeSession(
+            rows={Workspace: workspace, AskRecord: capture}, membership=membership
+        )
+        cleared = await ask_api.clear_ask_records(
+            workspace_id=workspace.id, current_user=user, db=db
+        )
+        return seen, db, cleared
+
+    async def test_it_clears_only_the_callers_records_in_this_workspace(self):
+        """
+        Verified to bite: drop either filter and this fails. Clearing is the
+        one operation here that names no id, so the filters are all that stand
+        between a user's own history and somebody else's.
+        """
+        user, workspace = _user(), _workspace()
+
+        seen, db, _ = await self._clear(user=user, workspace=workspace)
+
+        sql = str(seen["statement"]).lower()
+        assert sql.startswith("delete from ask_records")
+        assert {user.id, workspace.id} <= set(seen["statement"].compile().params.values())
+        assert db.commits == 1
+
+    async def test_it_says_how_many_went(self):
+        user, workspace = _user(), _workspace()
+
+        _, _, cleared = await self._clear(user=user, workspace=workspace, matched=7)
+
+        assert cleared.deleted == 7
+
+    async def test_clearing_an_empty_history_is_not_an_error(self):
+        user, workspace = _user(), _workspace()
+
+        _, _, cleared = await self._clear(user=user, workspace=workspace, matched=0)
+
+        assert cleared.deleted == 0
+
+    async def test_a_non_member_is_refused(self):
+        user, workspace = _user(), _workspace()
+
+        with pytest.raises(HTTPException) as refused:
+            await self._clear(user=user, workspace=workspace, membership=False)
+
+        assert refused.value.status_code == 403
+
+
+class TestCountingWhatWouldGo:
+    """
+    The clear-all confirm says how many records it is about to take, so the
+    number has to come from the database rather than from however much of the
+    list the page happens to have loaded.
+    """
+
+    @staticmethod
+    async def _count(*, user, workspace, membership: bool = True, total: int = 12):
+        seen: dict = {}
+
+        def capture(statement):
+            seen["statement"] = statement
+            return total
+
+        db = FakeSession(
+            rows={Workspace: workspace, AskRecord: capture}, membership=membership
+        )
+        counted = await ask_api.count_ask_records(
+            workspace_id=workspace.id, current_user=user, db=db
+        )
+        return seen, counted
+
+    async def test_it_counts_only_the_callers_records_in_this_workspace(self):
+        user, workspace = _user(), _workspace()
+
+        seen, counted = await self._count(user=user, workspace=workspace)
+
+        assert counted.count == 12
+        assert {user.id, workspace.id} <= set(seen["statement"].compile().params.values())
+
+    async def test_a_non_member_is_refused(self):
+        user, workspace = _user(), _workspace()
+
+        with pytest.raises(HTTPException) as refused:
+            await self._count(user=user, workspace=workspace, membership=False)
+
+        assert refused.value.status_code == 403
+
+
+class TestCountIsNotReadAsARecordId:
+    def test_the_count_route_is_declared_above_the_record_route(self):
+        """
+        FastAPI matches in declaration order, so `/ask-records/count` has to
+        come before `/ask-records/{record_id}` or "count" is parsed as a record
+        id and rejected as malformed — a 422 on a route that exists, which
+        reads as a client bug.
+
+        Verified to bite: move the count route below the record one and this
+        fails. Nothing else in the suite would.
+        """
+        paths = [route.path for route in ask_api.router.routes]
+        count = paths.index("/workspaces/{workspace_id}/ask-records/count")
+        by_id = paths.index("/workspaces/{workspace_id}/ask-records/{record_id}")
+
+        assert count < by_id

@@ -192,6 +192,17 @@ class FakeResult:
     def scalar(self):
         return self.scalar_one_or_none()
 
+    @property
+    def rowcount(self):
+        """
+        How many rows a DELETE or UPDATE claimed to touch.
+
+        Registered as a plain int, because that is all a caller of one can read
+        off the result: `delete(...)` returns no rows, so the only question a
+        bulk delete can answer is how many there were (#74).
+        """
+        return self._value if isinstance(self._value, int) else 0
+
     def one(self):
         return self._value
 
@@ -326,7 +337,10 @@ class FakeSession:
         try:
             description = statement.column_descriptions[0]
         except (AttributeError, IndexError):
-            return None
+            # A DELETE or an UPDATE has no columns to describe; it names one
+            # entity instead, which is what a test registering rows for one
+            # means by it (#74).
+            description = getattr(statement, "entity_description", None) or {}
         return description.get("entity") or description.get("type")
 
     @staticmethod

@@ -109,11 +109,14 @@ export function Ask() {
   const [hasOlder, setHasOlder] = useState(false);
   const [olderLoading, setOlderLoading] = useState(false);
   const [opened, setOpened] = useState<Opened>({ status: "none" });
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [deleteFailed, setDeleteFailed] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   // Which record the user asked for last. A slower reply for one they have
   // since clicked away from must not land on top of the one they want.
   const wanted = useRef<string | null>(null);
   const workspaceId = user?.default_workspace_id;
+  const openId = opened.status === "none" ? null : opened.id;
 
   useEffect(() => {
     if (opened.status === "none") bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -182,6 +185,46 @@ export function Ask() {
     }
   };
 
+  /** Forget one question and its answer. The confirm is the point of no return. */
+  const forget = async (record: AskRecordSummary) => {
+    if (!workspaceId || !confirm(t("ask.deleteConfirm", { question: record.question }))) return;
+    setDeleting(record.id);
+    setDeleteFailed(false);
+    try {
+      await api.delete(`/workspaces/${workspaceId}/ask-records/${record.id}`);
+      setRecords((r) => r.filter((row) => row.id !== record.id));
+      // The answer on screen cannot outlive the record it came from.
+      if (openId === record.id) startNewQuestion();
+    } catch {
+      setDeleteFailed(true);
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  /**
+   * Forget all of them.
+   *
+   * The count comes from the server, not from however much of the history is
+   * loaded: a confirm that undercounts what it is about to take is worse than
+   * no confirm at all.
+   */
+  const forgetEverything = async () => {
+    if (!workspaceId) return;
+    setDeleteFailed(false);
+    try {
+      const { data } = await api.get<{ count: number }>(`/workspaces/${workspaceId}/ask-records/count`);
+      if (data.count === 0) return;
+      if (!confirm(t("ask.clearAllConfirm", { count: data.count }))) return;
+      await api.delete(`/workspaces/${workspaceId}/ask-records`);
+      setRecords([]);
+      setHasOlder(false);
+      startNewQuestion();
+    } catch {
+      setDeleteFailed(true);
+    }
+  };
+
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (!query.trim()) { setError(t("ask.emptyQuery")); return; }
@@ -219,7 +262,7 @@ export function Ask() {
     alignSelf: "flex-start",
   };
   const panelRow = (open: boolean): React.CSSProperties => ({
-    display: "block", width: "100%", textAlign: "left", cursor: "pointer",
+    display: "flex", alignItems: "flex-start", width: "100%", textAlign: "left",
     background: open ? "#1a1a2e" : "#fff",
     color: open ? "#fff" : "#333",
     border: "1px solid #e0e0e0", borderRadius: "6px",
@@ -229,7 +272,6 @@ export function Ask() {
   const quiet: React.CSSProperties = { color: "#999", fontSize: "0.8rem", margin: 0, lineHeight: 1.5 };
 
   const visibleTurns = opened.status === "ready" ? asTurns(opened.record) : turns;
-  const openId = opened.status === "none" ? null : opened.id;
 
   return (
     <div style={{ minHeight: "100vh", background: "#f5f5f5", fontFamily: "system-ui, sans-serif", display: "flex", flexDirection: "column" }}>
@@ -269,18 +311,43 @@ export function Ask() {
               <p style={quiet}>{t("ask.historyEmpty")}</p>
             )}
 
+            {deleteFailed && (
+              <p style={{ ...quiet, color: "#c0392b" }}>{t("ask.deleteFailed")}</p>
+            )}
+
             {records.map((r) => (
-              <button key={r.id} onClick={() => openRecord(r.id)} style={panelRow(openId === r.id)}>
-                <span style={{
-                  display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
-                  overflow: "hidden", overflowWrap: "anywhere",
-                }}>
-                  {r.question}
-                </span>
-                <span style={{ display: "block", marginTop: "0.25rem", fontSize: "0.7rem", color: openId === r.id ? "#bbb" : "#999" }}>
-                  {askedOn(r.created_at)}
-                </span>
-              </button>
+              <div key={r.id} style={panelRow(openId === r.id)}>
+                <button
+                  onClick={() => openRecord(r.id)}
+                  style={{
+                    background: "none", border: "none", padding: 0, margin: 0, cursor: "pointer",
+                    textAlign: "left", font: "inherit", color: "inherit", flex: 1, minWidth: 0,
+                  }}
+                >
+                  <span style={{
+                    display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
+                    overflow: "hidden", overflowWrap: "anywhere",
+                  }}>
+                    {r.question}
+                  </span>
+                  <span style={{ display: "block", marginTop: "0.25rem", fontSize: "0.7rem", color: openId === r.id ? "#bbb" : "#999" }}>
+                    {askedOn(r.created_at)}
+                  </span>
+                </button>
+                <button
+                  onClick={() => forget(r)}
+                  disabled={deleting === r.id}
+                  title={t("ask.deleteOne")}
+                  aria-label={t("ask.deleteOne")}
+                  style={{
+                    background: "none", border: "none", padding: "0 0 0 0.4rem", margin: 0,
+                    cursor: deleting === r.id ? "default" : "pointer", font: "inherit",
+                    color: openId === r.id ? "#bbb" : "#aaa", flexShrink: 0, lineHeight: 1,
+                  }}
+                >
+                  ×
+                </button>
+              </div>
             ))}
 
             {hasOlder && (
@@ -294,6 +361,19 @@ export function Ask() {
                 }}
               >
                 {olderLoading ? "..." : t("ask.loadOlder")}
+              </button>
+            )}
+
+            {records.length > 0 && (
+              <button
+                onClick={forgetEverything}
+                style={{
+                  display: "block", background: "none", border: "none", padding: "0.5rem 0 0",
+                  marginTop: "0.3rem", fontSize: "0.75rem", color: "#c0392b", cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                {t("ask.clearAll")}
               </button>
             )}
           </aside>
