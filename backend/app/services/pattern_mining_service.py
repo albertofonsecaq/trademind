@@ -31,6 +31,24 @@ log = logging.getLogger(__name__)
 
 MIN_CLUSTER_SIZE = 3
 
+# A bilingual description plus a four-step flowchart runs to about 600 tokens
+# for a small cluster, which is where the cap used to be (#83); 25 sample ideas
+# run longer. The cap is a ceiling, not a cost: only what is written is billed.
+_MAX_TOKENS = 2000
+_FLOWCHART_STEPS = ("entry", "confirmation", "risk_management", "exit")
+
+
+class CardGenerationFailed(RuntimeError):
+    """
+    Claude's reply for a cluster cannot be used as a strategy card (#83).
+
+    Carries the reply's token usage: it was billed whether or not it became a card.
+    """
+
+    def __init__(self, reason: str, usage: dict | None = None):
+        super().__init__(reason)
+        self.usage = usage
+
 _SYSTEM = """You are a quantitative trading strategy analyst.
 Given a set of trade ideas for a specific setup pattern, produce a concise strategy card.
 Return ONLY valid JSON — no markdown, no explanation outside the JSON.
@@ -84,27 +102,49 @@ async def _generate_card_content(
     client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
     response = await client.messages.create(
         model=settings.DISTILLATION_MODEL,
-        max_tokens=600,
+        max_tokens=_MAX_TOKENS,
         system=[{"type": "text", "text": _SYSTEM, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": user_content}],
     )
 
-    raw = response.content[0].text.strip()
+    usage = {"input_tokens": response.usage.input_tokens, "output_tokens": response.usage.output_tokens}
+    if response.stop_reason == "max_tokens":
+        raise CardGenerationFailed(f"reply was cut off at max_tokens={_MAX_TOKENS}", usage)
+
+    raw = next((b.text for b in response.content if getattr(b, "text", None)), "").strip()
+    if not raw:
+        raise CardGenerationFailed("reply has no text", usage)
     if raw.startswith("```"):
         raw = raw.split("```")[1].lstrip("json").strip()
 
     try:
         fields = json.loads(raw)
-    except json.JSONDecodeError:
-        log.warning("Pattern mining: Claude response not valid JSON for %s/%s", symbol_scope, setup_type)
-        fields = {
-            "description_en": f"A recurring {setup_type} pattern observed on {symbol_scope}.",
-            "description_es": f"Un patrón {setup_type} recurrente observado en {symbol_scope}.",
-            "flowchart_spec": {"entry": "", "confirmation": "", "risk_management": "", "exit": ""},
-        }
+    except json.JSONDecodeError as e:
+        raise CardGenerationFailed(f"reply is not valid JSON: {e}", usage) from e
+    missing = _what_the_card_is_missing(fields)
+    if missing:
+        raise CardGenerationFailed(f"reply has no {missing}", usage)
 
-    usage = {"input_tokens": response.usage.input_tokens, "output_tokens": response.usage.output_tokens}
     return fields, usage
+
+
+def _what_the_card_is_missing(fields) -> str | None:
+    """The first part of a card the reply leaves out or leaves empty, if any."""
+    def written(value) -> bool:
+        return isinstance(value, str) and bool(value.strip())
+
+    if not isinstance(fields, dict):
+        return "JSON object"
+    for key in ("description_en", "description_es"):
+        if not written(fields.get(key)):
+            return key
+    flowchart = fields.get("flowchart_spec")
+    if not isinstance(flowchart, dict):
+        return "flowchart_spec"
+    for step in _FLOWCHART_STEPS:
+        if not written(flowchart.get(step)):
+            return f"flowchart_spec {step}"
+    return None
 
 
 def _preliminary_confidence(
@@ -189,14 +229,22 @@ async def run_pattern_mining(
 
         confidence = _preliminary_confidence(sample_size, source_count, unique_authors, time_span_days)
 
+        fields = None
         try:
             fields, usage = await _generate_card_content(symbol_scope, setup_type, idea_samples)
+        except CardGenerationFailed as e:
+            log.error("Card generation failed for %s/%s: %s", symbol_scope, setup_type, e)
+            # A reply that was generated is billed even when it is not a card.
+            usage = e.usage
         except Exception as e:
             log.error("Card generation failed for %s/%s: %s", symbol_scope, setup_type, e)
             continue
 
-        total_input_tokens  += usage["input_tokens"]
-        total_output_tokens += usage["output_tokens"]
+        if usage:
+            total_input_tokens  += usage["input_tokens"]
+            total_output_tokens += usage["output_tokens"]
+        if fields is None:
+            continue
 
         # Upsert strategy_card
         existing_result = await db.execute(
@@ -215,9 +263,9 @@ async def run_pattern_mining(
                 workspace_id=workspace_id,
                 symbol_scope=symbol_scope,
                 setup_type=setup_type,
-                description_en=fields.get("description_en", ""),
-                description_es=fields.get("description_es", ""),
-                flowchart_spec=fields.get("flowchart_spec", {}),
+                description_en=fields["description_en"],
+                description_es=fields["description_es"],
+                flowchart_spec=fields["flowchart_spec"],
                 supporting_evidence=idea_ids,
                 sample_size=sample_size,
                 preliminary_confidence=confidence,
@@ -254,9 +302,9 @@ async def run_pattern_mining(
             }
             card.version_history = (card.version_history or []) + [snapshot]
             card.version += 1
-            card.description_en = fields.get("description_en", card.description_en)
-            card.description_es = fields.get("description_es", card.description_es)
-            card.flowchart_spec = fields.get("flowchart_spec", card.flowchart_spec)
+            card.description_en = fields["description_en"]
+            card.description_es = fields["description_es"]
+            card.flowchart_spec = fields["flowchart_spec"]
             card.supporting_evidence = idea_ids
             card.sample_size = sample_size
             card.preliminary_confidence = confidence
