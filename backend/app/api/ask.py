@@ -2,10 +2,15 @@
 Ask endpoint — the core query interface.
 Budget/overage check runs before synthesis to enforce spend controls.
 query_synthesis usage is tagged is_overage=True once included_budget is exhausted.
+
+An answered question is kept as an ask record, so the transcript survives a
+reload and a question already paid for can be read again instead of asked
+again (#72). Records are personal: a user sees only their own.
 """
 import uuid
+from datetime import datetime
 from decimal import Decimal
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
@@ -16,6 +21,7 @@ from app.models.workspace import Workspace
 from app.models.workspace_member import WorkspaceMember  # noqa: F401 (used in _get_workspace_and_assert_member)
 from app.models.subscription import Subscription
 from app.models.usage_event import UsageEvent
+from app.models.ask_record import AskRecord
 from app.services import embedding_service, retrieval_service, query_synthesis_service
 from app.services.usage_service import log_usage_event
 from app.core.config import settings
@@ -32,6 +38,20 @@ class AskRequest(BaseModel):
 class AskResponse(BaseModel):
     answer: str
     sources: list[dict]
+    # The record this answer was kept as, so a client can show a fresh answer
+    # and one read back from the history as the same thing.
+    id: uuid.UUID
+    created_at: datetime
+
+
+class AskRecordOut(BaseModel):
+    model_config = {"from_attributes": True}
+    id: uuid.UUID
+    question: str
+    answer: str
+    sources: list[dict]
+    language: str
+    created_at: datetime
 
 
 async def _get_workspace_and_assert_member(
@@ -142,6 +162,21 @@ async def ask(
     # Approximate cost using Sonnet pricing
     cost = Decimal(str(0.000003 * usage["input_tokens"] + 0.000015 * usage["output_tokens"]))
 
+    # Keep the answer. In this request's transaction, unlike the usage event
+    # below: an ask record is the answer itself, so if the request does not
+    # survive to commit there is no answer to have kept. Flushed here so the
+    # response can name the record it was stored as.
+    record = AskRecord(
+        workspace_id=workspace_id,
+        user_id=current_user.id,
+        question=payload.query.strip(),
+        answer=answer,
+        sources=sources,
+        language=lang,
+    )
+    db.add(record)
+    await db.flush()
+
     # If overage, update running overage total on subscription
     if is_overage:
         sub_result = await db.execute(
@@ -168,4 +203,34 @@ async def ask(
         is_overage=is_overage,
     )
 
-    return AskResponse(answer=answer, sources=sources)
+    return AskResponse(
+        answer=answer, sources=sources, id=record.id, created_at=record.created_at
+    )
+
+
+@router.get("/{workspace_id}/ask-records", response_model=list[AskRecordOut])
+async def list_ask_records(
+    workspace_id: uuid.UUID,
+    limit: int = Query(default=50, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    The calling user's own ask records in this workspace, newest first.
+
+    Scoped to the caller, not to the workspace's membership: an ask record is a
+    personal layer, so being a member of the workspace a question was asked in
+    is not being allowed to read the question.
+    """
+    await _get_workspace_and_assert_member(db, workspace_id, current_user.id)
+
+    result = await db.execute(
+        select(AskRecord)
+        .where(
+            AskRecord.user_id == current_user.id,
+            AskRecord.workspace_id == workspace_id,
+        )
+        .order_by(AskRecord.created_at.desc())
+        .limit(limit)
+    )
+    return result.scalars().all()
