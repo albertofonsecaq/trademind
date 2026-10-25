@@ -44,6 +44,18 @@ class AskResponse(BaseModel):
     created_at: datetime
 
 
+class AskRecordSummary(BaseModel):
+    """
+    One row of the list: enough to recognise a question, and not the answer.
+
+    The answers are what makes this table big, and only the one a user opens is
+    needed — so they are not read at all until then.
+    """
+    id: uuid.UUID
+    question: str
+    created_at: datetime
+
+
 class AskRecordOut(BaseModel):
     model_config = {"from_attributes": True}
     id: uuid.UUID
@@ -214,24 +226,27 @@ async def ask(
     )
 
 
-@router.get("/{workspace_id}/ask-records", response_model=list[AskRecordOut])
+@router.get("/{workspace_id}/ask-records", response_model=list[AskRecordSummary])
 async def list_ask_records(
     workspace_id: uuid.UUID,
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=100, ge=1, le=500),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    The calling user's own ask records in this workspace, newest first.
+    Which questions the calling user asked in this workspace, newest first.
 
     Scoped to the caller, not to the workspace's membership: an ask record is a
     personal layer, so being a member of the workspace a question was asked in
     is not being allowed to read the question.
+
+    Three columns, not the row: a user with hundreds of records should not wait
+    for hundreds of answers to come back so a list of questions can be drawn.
     """
     await _get_workspace_and_assert_member(db, workspace_id, current_user.id)
 
     result = await db.execute(
-        select(AskRecord)
+        select(AskRecord.id, AskRecord.question, AskRecord.created_at)
         .where(
             AskRecord.user_id == current_user.id,
             AskRecord.workspace_id == workspace_id,
@@ -241,4 +256,39 @@ async def list_ask_records(
         .order_by(AskRecord.created_at.desc(), AskRecord.id.desc())
         .limit(limit)
     )
-    return result.scalars().all()
+    return [
+        AskRecordSummary(id=row.id, question=row.question, created_at=row.created_at)
+        for row in result.all()
+    ]
+
+
+@router.get("/{workspace_id}/ask-records/{record_id}", response_model=AskRecordOut)
+async def read_ask_record(
+    workspace_id: uuid.UUID,
+    record_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    One of the caller's own ask records, as it was stored.
+
+    This is a read and nothing else. No retrieval, no synthesis, no usage
+    event, nothing against the included budget or the overage ceiling: the
+    answer was paid for once, when it was asked, and that is the whole reason
+    it was kept. Re-synthesizing would not even return the same answer.
+    """
+    await _get_workspace_and_assert_member(db, workspace_id, current_user.id)
+
+    result = await db.execute(
+        select(AskRecord).where(
+            AskRecord.id == record_id,
+            AskRecord.user_id == current_user.id,
+            AskRecord.workspace_id == workspace_id,
+        )
+    )
+    record = result.scalar_one_or_none()
+    if not record:
+        # Not a 403. Whether this id exists at all is not something a caller who
+        # does not own it gets to learn, and 403 would answer exactly that.
+        raise HTTPException(status_code=404, detail="Ask record not found")
+    return record

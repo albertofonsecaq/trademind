@@ -56,6 +56,28 @@ def _records(db: FakeSession) -> list[AskRecord]:
 
 
 @pytest.fixture
+def forbid_spending(monkeypatch):
+    """
+    Everything that costs money, wired to fail the test if it is reached.
+
+    Reopening an ask record is the one read in this API that must not touch a
+    provider. The answer was paid for once, when it was asked; charging for the
+    same sentence twice is the thing keeping it was meant to avoid, and a
+    silently re-synthesized answer is not even the same answer.
+    """
+    def refuse_sync(*_args, **_kwargs):
+        raise AssertionError("a paid call was made while reading a stored answer")
+
+    async def refuse_async(*_args, **_kwargs):
+        raise AssertionError("a paid call was made while reading a stored answer")
+
+    monkeypatch.setattr(embedding_service, "embed_query", refuse_sync)
+    monkeypatch.setattr(retrieval_service, "hybrid_search", refuse_async)
+    monkeypatch.setattr(query_synthesis_service, "synthesize", refuse_async)
+    monkeypatch.setattr(ask_api, "log_usage_event", refuse_async)
+
+
+@pytest.fixture
 def ask(monkeypatch):
     """
     The ask endpoint with every paid call stubbed out.
@@ -305,3 +327,115 @@ class TestRecordsAreOnlyEverTheCallersOwn:
             await self._list(user=user, workspace=workspace, membership=False)
 
         assert refused.value.status_code == 403
+
+
+# ── reading one back ──────────────────────────────────────────────────────────
+
+
+def _stored(user, workspace, **over) -> AskRecord:
+    fields = {
+        "id": uuid.uuid4(),
+        "workspace_id": workspace.id,
+        "user_id": user.id,
+        "question": "what happened to EURUSD?",
+        "answer": "EURUSD broke out twice at this level [1]",
+        "sources": _SOURCES,
+        "language": "en",
+    }
+    return AskRecord(**{**fields, **over})
+
+
+class TestReopeningOneSpendsNothing:
+    async def test_the_stored_answer_and_its_sources_come_back_as_they_were(self, forbid_spending):
+        """
+        Reopening is a read. Every paid call is wired to fail the test, so
+        anything that reached a provider — or recorded spend — fails here
+        rather than on someone's bill.
+        """
+        user, workspace = _user(), _workspace()
+        record = _stored(user, workspace)
+        db = FakeSession(rows={Workspace: workspace, AskRecord: record})
+
+        found = await ask_api.read_ask_record(
+            workspace_id=workspace.id, record_id=record.id, current_user=user, db=db
+        )
+
+        assert found.answer == "EURUSD broke out twice at this level [1]"
+        assert found.sources == _SOURCES
+        assert db.added == [] and db.commits == 0
+        assert not db.touched("usage_events")
+
+    async def test_another_users_record_is_not_found_rather_than_refused(self, forbid_spending):
+        """
+        An ask record is a personal layer, so whether this id exists at all is
+        not something a caller who does not own it gets to learn. 403 would
+        answer that question; 404 does not.
+        """
+        user, workspace = _user(), _workspace()
+        db = FakeSession(rows={Workspace: workspace, AskRecord: None})
+
+        with pytest.raises(HTTPException) as refused:
+            await ask_api.read_ask_record(
+                workspace_id=workspace.id, record_id=uuid.uuid4(), current_user=user, db=db
+            )
+
+        assert refused.value.status_code == 404
+
+    async def test_the_lookup_is_scoped_to_the_caller_and_the_workspace(self, forbid_spending):
+        """
+        Verified to bite: drop the `user_id` filter and this fails. The 404
+        above would still pass on a fake, because what makes it a 404 in
+        production is the query finding nothing.
+        """
+        user, workspace = _user(), _workspace()
+        record_id = uuid.uuid4()
+        seen: dict = {}
+
+        def capture(statement):
+            seen["statement"] = statement
+            return None
+
+        db = FakeSession(rows={Workspace: workspace, AskRecord: capture})
+
+        with pytest.raises(HTTPException):
+            await ask_api.read_ask_record(
+                workspace_id=workspace.id, record_id=record_id, current_user=user, db=db
+            )
+
+        bound = set(seen["statement"].compile().params.values())
+        assert {user.id, workspace.id, record_id} <= bound
+
+
+class TestTheListIsAListNotEveryAnswer:
+    async def test_it_does_not_read_the_answers_out_of_the_database(self):
+        """
+        The list says which questions were asked and when; the answers are what
+        makes the table big, and only the one that gets opened is needed.
+
+        Verified to bite: select the whole AskRecord and this fails naming the
+        answer column.
+        """
+        user, workspace = _user(), _workspace()
+        seen: dict = {}
+
+        def capture(statement):
+            seen["statement"] = statement
+            return []
+
+        db = FakeSession(rows={Workspace: workspace, AskRecord: capture})
+        await ask_api.list_ask_records(
+            workspace_id=workspace.id, limit=50, current_user=user, db=db
+        )
+
+        sql = str(seen["statement"]).lower()
+        assert "ask_records.question" in sql and "ask_records.created_at" in sql
+        assert "ask_records.answer" not in sql
+        assert "ask_records.sources" not in sql
+
+    async def test_a_user_with_no_records_gets_an_empty_list(self):
+        user, workspace = _user(), _workspace()
+        db = FakeSession(rows={Workspace: workspace, AskRecord: []})
+
+        assert await ask_api.list_ask_records(
+            workspace_id=workspace.id, limit=50, current_user=user, db=db
+        ) == []
