@@ -21,6 +21,40 @@ log = logging.getLogger(__name__)
 # Rate-limit guard: wait between consecutive API calls (yfinance can throttle)
 _CALL_INTERVAL_S = 0.5
 
+# What a crypto pair can be quoted in, longest first so USDT is not read as USD.
+_QUOTE_CURRENCIES = ("USDT", "USDC", "USD", "EUR", "BTC", "ETH")
+# Yahoo has no stablecoin pairs; a stablecoin tracks the dollar closely enough
+# to tell whether a target or a stop was hit first.
+_YAHOO_QUOTE = {"USDT": "USD", "USDC": "USD"}
+# Fiat currencies and metals quoted the same way are forex, not crypto: Yahoo
+# spells EURUSD as EURUSD=X and Polygon as C:EURUSD, so they are left alone.
+_NOT_CRYPTO_BASES = frozenset({"USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD", "XAU", "XAG"})
+# A US stock ticker is at most five letters, so six or more ending in a quote
+# currency is a pair. Five could be either (SEUSD), and is left alone.
+_MIN_PAIR_LENGTH = 6
+
+
+def provider_symbol(symbol: str, provider: str) -> str:
+    """
+    The spelling `provider` fetches `symbol` under (#85).
+
+    Sources write a crypto pair as BASE+QUOTE (BTCUSD), which is what
+    distillation keeps; Yahoo knows it as BTC-USD and Polygon as X:BTCUSD.
+    Anything that is not such a pair, including a bare BTC (an ETF on Yahoo)
+    and forex or metals (EURUSD, XAUUSD), is fetched as written.
+    """
+    if len(symbol) < _MIN_PAIR_LENGTH or not symbol.isalpha() or not symbol.isupper():
+        return symbol
+    quote = next((q for q in _QUOTE_CURRENCIES if symbol.endswith(q)), None)
+    if quote is None:
+        return symbol
+    base = symbol[: -len(quote)]
+    if base in _NOT_CRYPTO_BASES:
+        return symbol
+    if provider == "polygon":
+        return f"X:{symbol}"
+    return f"{base}-{_YAHOO_QUOTE.get(quote, quote)}"
+
 
 def _is_unknown_symbol(e: Exception) -> bool:
     """
@@ -150,11 +184,12 @@ class MarketDataConnector:
         """
         end = start + timedelta(days=(days or settings.VALIDATION_WINDOW_DAYS) + 5)
 
+        fetched_as = provider_symbol(symbol, self.data_source_name())
         loop = asyncio.get_event_loop()
         if self._use_polygon:
-            bars = await loop.run_in_executor(None, _fetch_polygon, symbol, start, end)
+            bars = await loop.run_in_executor(None, _fetch_polygon, fetched_as, start, end)
         else:
-            bars = await loop.run_in_executor(None, _fetch_yfinance, symbol, start, end)
+            bars = await loop.run_in_executor(None, _fetch_yfinance, fetched_as, start, end)
 
         # Cap to the requested window
         cutoff = start + timedelta(days=(days or settings.VALIDATION_WINDOW_DAYS))
