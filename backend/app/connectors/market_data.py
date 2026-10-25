@@ -13,6 +13,7 @@ import time
 from datetime import date, timedelta
 from functools import lru_cache
 
+from app.core.clock import now_utc
 from app.core.config import settings
 
 log = logging.getLogger(__name__)
@@ -21,10 +22,48 @@ log = logging.getLogger(__name__)
 _CALL_INTERVAL_S = 0.5
 
 
+def _is_unknown_symbol(e: Exception) -> bool:
+    """
+    Whether Yahoo has told yfinance it does not know the symbol at all.
+
+    yfinance says so with its own missing-ticker error, but for a symbol like
+    `BTCUSD` the 404 Yahoo answers its quote lookup with surfaces first.
+    """
+    from yfinance.exceptions import YFTickerMissingError
+
+    response = getattr(e, "response", None)
+    return isinstance(e, YFTickerMissingError) or getattr(response, "status_code", None) == 404
+
+
+def _log_no_bars(symbol: str, start: date, end: date) -> None:
+    """
+    A symbol Yahoo knows, with no bars in the range. Expected while the range
+    is still running — an idea from today. Once it is over the bars are never
+    coming (a delisted symbol, say), and the idea's outcome stays open for good.
+    """
+    if end < now_utc().date():
+        log.warning("yfinance has no bars for %s between %s and %s, a range that is already over",
+                    symbol, start, end)
+    else:
+        log.debug("yfinance has no bars yet for %s between %s and %s", symbol, start, end)
+
+
 def _fetch_yfinance(symbol: str, start: date, end: date) -> list[dict]:
-    """Synchronous yfinance fetch, run in executor."""
+    """
+    Synchronous yfinance fetch, run in executor.
+
+    Returns no bars for three different reasons, and logs which (#82): Yahoo
+    does not know the symbol, Yahoo has no bars in the range yet, or Yahoo or
+    the network failed. Until #82 all three logged the same "possibly delisted",
+    which is how a broken yfinance went unnoticed.
+    """
+    import yfinance as yf
+    from yfinance.exceptions import YFPricesMissingError
+
+    # yfinance swallows its own errors by default and logs them as
+    # "possibly delisted"; raising is what lets the cause be told apart.
+    yf.config.debug.hide_exceptions = False
     try:
-        import yfinance as yf
         time.sleep(_CALL_INTERVAL_S)
         ticker = yf.Ticker(symbol)
         hist = ticker.history(
@@ -32,6 +71,17 @@ def _fetch_yfinance(symbol: str, start: date, end: date) -> list[dict]:
             end=(end + timedelta(days=1)).isoformat(),  # end is exclusive in yfinance
             auto_adjust=True,
         )
+    except YFPricesMissingError:
+        _log_no_bars(symbol, start, end)
+        return []
+    except Exception as e:
+        if _is_unknown_symbol(e):
+            log.warning("yfinance does not know the symbol %s: %s", symbol, e)
+        else:
+            log.warning("yfinance provider failed for %s: %s", symbol, e)
+        return []
+
+    try:
         bars = []
         for ts, row in hist.iterrows():
             bars.append({
@@ -42,9 +92,11 @@ def _fetch_yfinance(symbol: str, start: date, end: date) -> list[dict]:
                 "close":  float(row["Close"]),
                 "volume": float(row.get("Volume", 0)),
             })
+        if not bars:
+            _log_no_bars(symbol, start, end)
         return bars
     except Exception as e:
-        log.warning("yfinance fetch failed for %s: %s", symbol, e)
+        log.warning("yfinance provider failed for %s, returning bars that could not be read: %s", symbol, e)
         return []
 
 
