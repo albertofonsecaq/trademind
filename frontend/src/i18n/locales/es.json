@@ -23,7 +23,7 @@
       "ask": {
         "title": "Preguntar — Consulta tu base de conocimiento",
         "summary": "Haz preguntas sobre tickers, setups y estrategias en lenguaje natural y obtén respuestas citadas desde tus fuentes.",
-        "body": "Escribe cualquier pregunta — por ejemplo '¿Qué dicen los canales sobre las rupturas de AAPL?' o '¿Cuál es el setup con mejor rendimiento para acciones tecnológicas?'. El sistema recupera contenido relevante de todas las fuentes ingeridas, sintetiza una respuesta bilingüe y muestra la evidencia exacta de la fuente usada.\n\nLas respuestas respetan tu idioma de visualización actual. Cuantas más fuentes tengas ingeridas, más ricas y específicas serán las respuestas.\n\nTus preguntas se guardan. Cada respuesta aparece en la lista junto al cuadro de preguntas, de la más reciente a la más antigua; al seleccionar una se muestra esa respuesta y las fuentes que citó, tal como estaban. Volver a abrir una respuesta es gratis — se lee de lo almacenado, nunca se vuelve a preguntar — así que regresar a algo de la semana pasada no cuesta nada.\n\nSi la vista de Preguntar devuelve un error sobre el límite de exceso, el presupuesto de cómputo de tu espacio de trabajo se ha agotado para este período de facturación — consulta Facturación para más detalles."
+        "body": "Escribe cualquier pregunta — por ejemplo '¿Qué dicen los canales sobre las rupturas de AAPL?' o '¿Cuál es el setup con mejor rendimiento para acciones tecnológicas?'. El sistema recupera contenido relevante de todas las fuentes ingeridas, sintetiza una respuesta bilingüe y muestra la evidencia exacta de la fuente usada.\n\nLas respuestas respetan tu idioma de visualización actual. Cuantas más fuentes tengas ingeridas, más ricas y específicas serán las respuestas.\n\nTus preguntas se guardan. Cada respuesta aparece en la lista junto al cuadro de preguntas, de la más reciente a la más antigua; al seleccionar una se muestra esa respuesta y las fuentes que citó, tal como estaban. Volver a abrir una respuesta es gratis — se lee de lo almacenado, nunca se vuelve a preguntar — así que regresar a algo de la semana pasada no cuesta nada. Elimina cualquier pregunta con la × a su lado, o borra toda la lista de una vez; en ambos casos las fuentes y las tarjetas de estrategia en las que se basó permanecen tal como están.\n\nSi la vista de Preguntar devuelve un error sobre el límite de exceso, el presupuesto de cómputo de tu espacio de trabajo se ha agotado para este período de facturación — consulta Facturación para más detalles."
       },
       "sources": {
         "title": "Fuentes — Ingesta y filtros de contenido",
@@ -238,7 +238,13 @@
     "opening": "Abriendo esa respuesta...",
     "openError": "No se pudo abrir esa respuesta.",
     "loadOlder": "Cargar preguntas anteriores",
-    "openRetry": "Intentar de nuevo"
+    "openRetry": "Intentar de nuevo",
+    "deleteOne": "Eliminar esta pregunta",
+    "deleteConfirm": "¿Eliminar esta pregunta y su respuesta?\n\n{{question}}\n\nLas fuentes que citó permanecen en tu base de conocimiento. Esto no se puede deshacer.",
+    "clearAll": "Eliminar todas mis preguntas",
+    "deleteFailed": "No se pudo eliminar. No se quitó nada.",
+    "clearAllConfirm_one": "¿Eliminar tu única pregunta guardada y su respuesta?\n\nTus fuentes y tarjetas de estrategia no se ven afectadas. Esto no se puede deshacer.",
+    "clearAllConfirm_other": "¿Eliminar tus {{count}} preguntas guardadas y sus respuestas?\n\nTus fuentes y tarjetas de estrategia no se ven afectadas. Esto no se puede deshacer."
   },
   "sources": {
     "title": "Fuentes",

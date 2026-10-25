@@ -109,11 +109,22 @@ export function Ask() {
   const [hasOlder, setHasOlder] = useState(false);
   const [olderLoading, setOlderLoading] = useState(false);
   const [opened, setOpened] = useState<Opened>({ status: "none" });
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
+  const [deleteFailed, setDeleteFailed] = useState(false);
+  // The records asked in this session, whose turns are the ones on screen when
+  // nothing is open. Deleting a record cannot leave its answer sitting there,
+  // and the turns carry no ids of their own: a session can hold several
+  // exchanges, so deleting any one of them clears the lot. Blunt, but a
+  // deleted answer must not stay on screen, and the ones that survive are a
+  // click away in the list.
+  const [askedIds, setAskedIds] = useState<string[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   // Which record the user asked for last. A slower reply for one they have
   // since clicked away from must not land on top of the one they want.
   const wanted = useRef<string | null>(null);
   const workspaceId = user?.default_workspace_id;
+  const openId = opened.status === "none" ? null : opened.id;
 
   useEffect(() => {
     if (opened.status === "none") bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -135,6 +146,13 @@ export function Ask() {
   const startNewQuestion = () => {
     wanted.current = null;                  // an open still in flight is no longer wanted
     setOpened({ status: "none" });
+  };
+
+  /** Nothing on screen, because what was on it is gone. */
+  const clearWhatIsShown = () => {
+    startNewQuestion();
+    setTurns([]);
+    setAskedIds([]);
   };
 
   // Which questions were already asked. The answers stay in the database until
@@ -182,6 +200,56 @@ export function Ask() {
     }
   };
 
+  /** Delete one question and its answer. The confirm is the point of no return. */
+  const deleteRecord = async (record: AskRecordSummary) => {
+    if (!workspaceId || !confirm(t("ask.deleteConfirm", { question: record.question }))) return;
+    setDeleting(record.id);
+    setDeleteFailed(false);
+    try {
+      await api.delete(`/workspaces/${workspaceId}/ask-records/${record.id}`);
+      setRecords((r) => r.filter((row) => row.id !== record.id));
+      // The answer on screen cannot outlive the record it came from, whether it
+      // got there by being opened or by being asked a moment ago.
+      if (openId === record.id || askedIds.includes(record.id)) clearWhatIsShown();
+    } catch {
+      setDeleteFailed(true);
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  /**
+   * Forget all of them.
+   *
+   * The count comes from the server, not from however much of the history is
+   * loaded: a confirm that undercounts what it is about to take is worse than
+   * no confirm at all.
+   */
+  const clearHistory = async () => {
+    if (!workspaceId || clearing) return;
+    setDeleteFailed(false);
+    setClearing(true);
+    try {
+      const { data } = await api.get<{ count: number }>(`/workspaces/${workspaceId}/ask-records/count`);
+      if (data.count === 0) {
+        // The list on screen is out of date — there is nothing left to confirm
+        // deleting, so say so by showing the empty state.
+        setRecords([]);
+        setHasOlder(false);
+        return;
+      }
+      if (!confirm(t("ask.clearAllConfirm", { count: data.count }))) return;
+      await api.delete(`/workspaces/${workspaceId}/ask-records`);
+      setRecords([]);
+      setHasOlder(false);
+      clearWhatIsShown();
+    } catch {
+      setDeleteFailed(true);
+    } finally {
+      setClearing(false);
+    }
+  };
+
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (!query.trim()) { setError(t("ask.emptyQuery")); return; }
@@ -199,8 +267,10 @@ export function Ask() {
         language: i18n.language,
       });
       setTurns((turn) => [...turn, { role: "assistant", text: data.answer, sources: data.sources }]);
-      // It belongs to the ask history the moment it is answered.
+      // It belongs to the ask history the moment it is answered, and the turns
+      // on screen are now that record's.
       setRecords((r) => [{ id: data.id, question: asked, created_at: data.created_at }, ...r]);
+      setAskedIds((ids) => [...ids, data.id]);
     } catch {
       setTurns((turn) => [...turn, { role: "assistant", text: t("ask.errorTitle"), sources: [] }]);
     } finally {
@@ -219,7 +289,7 @@ export function Ask() {
     alignSelf: "flex-start",
   };
   const panelRow = (open: boolean): React.CSSProperties => ({
-    display: "block", width: "100%", textAlign: "left", cursor: "pointer",
+    display: "flex", alignItems: "flex-start", width: "100%", textAlign: "left",
     background: open ? "#1a1a2e" : "#fff",
     color: open ? "#fff" : "#333",
     border: "1px solid #e0e0e0", borderRadius: "6px",
@@ -229,7 +299,6 @@ export function Ask() {
   const quiet: React.CSSProperties = { color: "#999", fontSize: "0.8rem", margin: 0, lineHeight: 1.5 };
 
   const visibleTurns = opened.status === "ready" ? asTurns(opened.record) : turns;
-  const openId = opened.status === "none" ? null : opened.id;
 
   return (
     <div style={{ minHeight: "100vh", background: "#f5f5f5", fontFamily: "system-ui, sans-serif", display: "flex", flexDirection: "column" }}>
@@ -269,18 +338,44 @@ export function Ask() {
               <p style={quiet}>{t("ask.historyEmpty")}</p>
             )}
 
+            {deleteFailed && (
+              <p style={{ ...quiet, color: "#c0392b" }}>{t("ask.deleteFailed")}</p>
+            )}
+
             {records.map((r) => (
-              <button key={r.id} onClick={() => openRecord(r.id)} style={panelRow(openId === r.id)}>
-                <span style={{
-                  display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
-                  overflow: "hidden", overflowWrap: "anywhere",
-                }}>
-                  {r.question}
-                </span>
-                <span style={{ display: "block", marginTop: "0.25rem", fontSize: "0.7rem", color: openId === r.id ? "#bbb" : "#999" }}>
-                  {askedOn(r.created_at)}
-                </span>
-              </button>
+              <div key={r.id} style={panelRow(openId === r.id)}>
+                <button
+                  onClick={() => openRecord(r.id)}
+                  style={{
+                    background: "none", border: "none", padding: 0, margin: 0, cursor: "pointer",
+                    textAlign: "left", font: "inherit", color: "inherit", flex: 1, minWidth: 0,
+                    alignSelf: "stretch",
+                  }}
+                >
+                  <span style={{
+                    display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
+                    overflow: "hidden", overflowWrap: "anywhere",
+                  }}>
+                    {r.question}
+                  </span>
+                  <span style={{ display: "block", marginTop: "0.25rem", fontSize: "0.7rem", color: openId === r.id ? "#bbb" : "#999" }}>
+                    {askedOn(r.created_at)}
+                  </span>
+                </button>
+                <button
+                  onClick={() => deleteRecord(r)}
+                  disabled={deleting === r.id}
+                  title={t("ask.deleteOne")}
+                  aria-label={t("ask.deleteOne")}
+                  style={{
+                    background: "none", border: "none", padding: "0 0 0 0.4rem", margin: 0,
+                    cursor: deleting === r.id ? "default" : "pointer", font: "inherit",
+                    color: openId === r.id ? "#bbb" : "#aaa", flexShrink: 0, lineHeight: 1,
+                  }}
+                >
+                  ×
+                </button>
+              </div>
             ))}
 
             {hasOlder && (
@@ -294,6 +389,20 @@ export function Ask() {
                 }}
               >
                 {olderLoading ? "..." : t("ask.loadOlder")}
+              </button>
+            )}
+
+            {records.length > 0 && (
+              <button
+                onClick={clearHistory}
+                disabled={clearing}
+                style={{
+                  display: "block", background: "none", border: "none", padding: "0.5rem 0 0",
+                  marginTop: "0.3rem", fontSize: "0.75rem", color: "#c0392b", cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                {clearing ? "..." : t("ask.clearAll")}
               </button>
             )}
           </aside>

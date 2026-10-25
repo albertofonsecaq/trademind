@@ -23,7 +23,7 @@
       "ask": {
         "title": "Ask — Query your knowledge base",
         "summary": "Ask questions about tickers, setups, and strategies in plain language and get cited answers from your sources.",
-        "body": "Type any question — for example 'What are the channels saying about AAPL breakouts?' or 'What is the best-performing setup for tech stocks?'. The system retrieves relevant content from all ingested sources, synthesizes a bilingual answer, and shows the exact source evidence it used.\n\nAnswers respect your current display language. The more sources you have ingested, the richer and more specific the answers.\n\nYour questions are kept. Every answer appears in the list beside the ask box, newest first; selecting one shows that answer and the sources it cited exactly as they were. Reopening an answer is free — it is read from storage, never asked again — so going back to something from last week costs nothing.\n\nIf the Ask view returns an error about the overage ceiling, your workspace's compute budget has been exhausted for this billing period — see Billing for details."
+        "body": "Type any question — for example 'What are the channels saying about AAPL breakouts?' or 'What is the best-performing setup for tech stocks?'. The system retrieves relevant content from all ingested sources, synthesizes a bilingual answer, and shows the exact source evidence it used.\n\nAnswers respect your current display language. The more sources you have ingested, the richer and more specific the answers.\n\nYour questions are kept. Every answer appears in the list beside the ask box, newest first; selecting one shows that answer and the sources it cited exactly as they were. Reopening an answer is free — it is read from storage, never asked again — so going back to something from last week costs nothing. Delete any question with the × beside it, or clear the whole list at once; either way the sources and strategy cards it drew on stay exactly as they are.\n\nIf the Ask view returns an error about the overage ceiling, your workspace's compute budget has been exhausted for this billing period — see Billing for details."
       },
       "sources": {
         "title": "Sources — Ingestion & content filters",
@@ -238,7 +238,13 @@
     "opening": "Opening that answer...",
     "openError": "That answer could not be opened.",
     "loadOlder": "Load older questions",
-    "openRetry": "Try again"
+    "openRetry": "Try again",
+    "deleteOne": "Delete this question",
+    "deleteConfirm": "Delete this question and its answer?\n\n{{question}}\n\nThe sources it cited stay in your knowledge base. This cannot be undone.",
+    "clearAll": "Delete all my questions",
+    "deleteFailed": "That could not be deleted. Nothing was removed.",
+    "clearAllConfirm_one": "Delete your 1 saved question and its answer?\n\nYour sources and strategy cards are not affected. This cannot be undone.",
+    "clearAllConfirm_other": "Delete all {{count}} of your saved questions and their answers?\n\nYour sources and strategy cards are not affected. This cannot be undone."
   },
   "sources": {
     "title": "Sources",

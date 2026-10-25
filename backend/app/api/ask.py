@@ -6,14 +6,16 @@ query_synthesis usage is tagged is_overage=True once included_budget is exhauste
 An answered question is kept as an ask record, so the page survives a reload
 and a question already paid for can be read again instead of asked again
 (#72, #73). Reading one back is a read and nothing else — no retrieval, no
-synthesis, no usage event. Records are personal: a user sees only their own.
+synthesis, no usage event. Records are personal: a user sees only their own,
+and deletes only their own (#74).
 """
 import uuid
 from datetime import datetime
 from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_
+from sqlalchemy import select, func, and_, or_, delete
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.database import get_db
 from app.core.dependencies import get_current_user
@@ -57,6 +59,14 @@ class AskRecordSummary(BaseModel):
     created_at: datetime
 
 
+class AskRecordCount(BaseModel):
+    count: int
+
+
+class AskRecordsCleared(BaseModel):
+    deleted: int
+
+
 class AskRecordOut(AskRecordSummary):
     """One ask record in full: what the list row leaves in the database."""
     model_config = {"from_attributes": True}
@@ -81,6 +91,19 @@ async def _get_workspace_and_assert_member(
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return workspace
+
+
+def _mine(user: User, workspace_id: uuid.UUID) -> tuple[ColumnElement[bool], ...]:
+    """
+    The clause that makes an ask record the caller's own.
+
+    Every route that reads, pages through or deletes one filters on it —
+    including the lookup of a paging anchor, which decides nothing on its own
+    and would still leak that somebody else's record exists. Written once
+    because an ask record is a personal layer, and a route that forgot half of
+    this would hand one user another's questions.
+    """
+    return (AskRecord.user_id == user.id, AskRecord.workspace_id == workspace_id)
 
 
 async def _check_overage(db: AsyncSession, workspace_id: uuid.UUID) -> bool:
@@ -251,10 +274,7 @@ async def list_ask_records(
     """
     await _get_workspace_and_assert_member(db, workspace_id, current_user.id)
 
-    mine = (
-        AskRecord.user_id == current_user.id,
-        AskRecord.workspace_id == workspace_id,
-    )
+    mine = _mine(current_user, workspace_id)
     query = select(AskRecord.id, AskRecord.question, AskRecord.created_at).where(*mine)
 
     if before_id is not None:
@@ -285,6 +305,93 @@ async def list_ask_records(
     ]
 
 
+@router.get("/{workspace_id}/ask-records/count", response_model=AskRecordCount)
+async def count_ask_records(
+    workspace_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    How many ask records the caller has here.
+
+    Declared above the `{record_id}` route on purpose: FastAPI matches in
+    declaration order, and below it "count" would be read as a record id and
+    rejected as malformed.
+
+    It exists so the confirm before clearing can say how many records it is
+    about to take. The page knows how much of the history it has loaded, which
+    is not the same number.
+
+    This and the delete that follows it are two requests, so a question asked
+    in between makes the confirmed number low by one. The delete takes what is
+    actually there and reports it, so nothing is missed — only the sentence the
+    user read was out of date, and by less than they took to read it.
+    """
+    await _get_workspace_and_assert_member(db, workspace_id, current_user.id)
+
+    total = await db.execute(
+        select(func.count(AskRecord.id)).where(*_mine(current_user, workspace_id))
+    )
+    return AskRecordCount(count=total.scalar() or 0)
+
+
+@router.delete("/{workspace_id}/ask-records", response_model=AskRecordsCleared)
+async def clear_ask_records(
+    workspace_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Every ask record the caller has here, gone, and says how many that was.
+
+    The one operation on this table that names no id, so the two filters are
+    the whole of what stands between a user's own history and the one next to
+    it. One statement rather than a read and a loop: nothing can be added
+    between deciding what to delete and deleting it.
+    """
+    await _get_workspace_and_assert_member(db, workspace_id, current_user.id)
+
+    result = await db.execute(delete(AskRecord).where(*_mine(current_user, workspace_id)))
+    await db.commit()
+    return AskRecordsCleared(deleted=result.rowcount or 0)
+
+
+@router.delete("/{workspace_id}/ask-records/{record_id}", status_code=204)
+async def delete_ask_record(
+    workspace_id: uuid.UUID,
+    record_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    One of the caller's own ask records, gone.
+
+    Idempotent: deleting a record that is not there succeeds, and so does
+    deleting one that belongs to somebody else. A delete states the end state
+    it wants — that record, not in this user's history — and that state is
+    already true in both cases, so there is nothing to report. A double click
+    is the first case, and is not a problem the user has to understand.
+
+    Note that this differs from `plan_items.remove_plan_item`, which 404s on
+    both. Either is defensible and neither leaks anything: a 404 here would be
+    just as silent, because it would be the same 404 for a record that never
+    existed as for one that is not yours — which is exactly what reading one
+    does. The choice here is idempotency, nothing subtler, and it is the one
+    place in this API that makes it.
+
+    The record goes and nothing else does. The usage event for the call that
+    produced the answer stays, because the money was spent and is still owed;
+    so do the evidence it cited and every strategy card, because the knowledge
+    base is not the user's transcript.
+    """
+    await _get_workspace_and_assert_member(db, workspace_id, current_user.id)
+
+    await db.execute(
+        delete(AskRecord).where(AskRecord.id == record_id, *_mine(current_user, workspace_id))
+    )
+    await db.commit()
+
+
 @router.get("/{workspace_id}/ask-records/{record_id}", response_model=AskRecordOut)
 async def read_ask_record(
     workspace_id: uuid.UUID,
@@ -303,11 +410,7 @@ async def read_ask_record(
     await _get_workspace_and_assert_member(db, workspace_id, current_user.id)
 
     result = await db.execute(
-        select(AskRecord).where(
-            AskRecord.id == record_id,
-            AskRecord.user_id == current_user.id,
-            AskRecord.workspace_id == workspace_id,
-        )
+        select(AskRecord).where(AskRecord.id == record_id, *_mine(current_user, workspace_id))
     )
     record = result.scalar_one_or_none()
     if not record:
