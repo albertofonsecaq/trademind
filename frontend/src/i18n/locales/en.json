@@ -229,7 +229,10 @@
     "sources": "Sources",
     "noResults": "No relevant content found. Try adding and fetching sources first.",
     "errorTitle": "Could not get an answer",
-    "emptyQuery": "Please enter a question"
+    "emptyQuery": "Please enter a question",
+    "loadingHistory": "Loading your earlier questions...",
+    "historyError": "Your earlier questions could not be loaded.",
+    "historyCapped": "Showing your {{count}} most recent questions."
   },
   "sources": {
     "title": "Sources",

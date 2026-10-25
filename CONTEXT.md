@@ -104,6 +104,12 @@ _Avoid_: Ticker, market, asset
 How far a strategy card has earned trust, from still learning through developing to established. Derived from how much validated evidence stands behind it, and it is the tier the user sees.
 _Avoid_: Score, rating, quality, maturity
 
+### Asking
+
+**Ask record**:
+One question a user asked of their workspace's knowledge base and the answer the system synthesized for it, with the sources that answer cited. Private to the user who asked it, like a plan item: another member of the same workspace never sees it. Kept so that a question already answered can be read again instead of asked again, which is why reading one costs nothing — the stored answer is served as it was, never re-synthesized. All of one user's records in one workspace are their **ask history**, which is the collection and never the name of a single record.
+_Avoid_: Chat, conversation, message, thread
+
 ### Validation
 
 **Outcome check**:

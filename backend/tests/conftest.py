@@ -44,7 +44,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import inspect as sa_inspect, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -196,6 +196,36 @@ class FakeResult:
         return self._value
 
 
+def _apply_column_defaults(obj) -> None:
+    """
+    Set the Python-side column defaults a flush would assign.
+
+    A handler may read a value back off a row it has just added rather than
+    waiting for the row to come back out of the database — the ask endpoint
+    names the record it stored an answer as (#72). Those values come from
+    `default=` on the mapping, which a real flush evaluates; a fake that only
+    counted the flush left them None and the handler failed for a reason that
+    exists nowhere but the test.
+    """
+    try:
+        mapper = sa_inspect(type(obj))
+    except Exception:
+        return                                  # not a mapped object
+    for column in mapper.columns:
+        default = column.default
+        if default is None or not (default.is_scalar or default.is_callable):
+            continue                            # server-side, or none at all
+        attribute = mapper.get_property_by_column(column).key
+        if getattr(obj, attribute, None) is not None:
+            continue                            # the caller said what it wanted
+        try:
+            value = default.arg(None) if default.is_callable else default.arg
+        except TypeError:
+            continue    # a default that wants the real execution context, which
+                        # there is none of here — leave it to the caller to set
+        setattr(obj, attribute, value)
+
+
 class FakeSavepoint:
     """
     Records that a savepoint was entered and how it ended, which is what #2's
@@ -250,6 +280,12 @@ class FakeSession:
         # source was turned back at a particular gate needs to know the gate was
         # reached at all — not just that nothing was fetched (#13).
         self.lookup_keys: list = []
+        # What was done, in order, as (operation, object). The counters above
+        # cannot answer *when* a write happened relative to a commit, and that
+        # is the question for anything written in the caller's transaction on
+        # purpose: an ask record is added before the request commits, unlike the
+        # usage event beside it (#72, #27).
+        self.timeline: list[tuple[str, object]] = []
 
     # the session is also used as a context manager by background runners
     async def __aenter__(self):
@@ -310,21 +346,28 @@ class FakeSession:
 
     def add(self, obj):
         self.added.append(obj)
+        self.timeline.append(("add", obj))
 
     def add_all(self, objects):
         self.added.extend(objects)
+        self.timeline.extend(("add", obj) for obj in objects)
 
     async def delete(self, obj):
         self.deleted.append(obj)
+        self.timeline.append(("delete", obj))
 
     async def flush(self):
         self.flushes += 1
+        for obj in self.added:
+            _apply_column_defaults(obj)
 
     async def commit(self):
         self.commits += 1
+        self.timeline.append(("commit", None))
 
     async def rollback(self):
         self.rollbacks += 1
+        self.timeline.append(("rollback", None))
 
     async def refresh(self, _obj):
         pass
@@ -346,6 +389,20 @@ class FakeSession:
     def lookups_of(self, model) -> list:
         """Which rows of this model were looked for, in order."""
         return [entity for entity in self.entities if entity is model]
+
+    def writes_and_commits(self, model) -> list[str]:
+        """
+        Every write of this model and every commit, in the order they happened.
+
+        `["add", "commit"]` is a row written inside the transaction that then
+        commits. `["commit", "add"]` is one added after the only commit the
+        caller makes, which is to say never committed at all.
+        """
+        return [
+            operation
+            for operation, obj in self.timeline
+            if operation == "commit" or isinstance(obj, model)
+        ]
 
 
 class _Missing:

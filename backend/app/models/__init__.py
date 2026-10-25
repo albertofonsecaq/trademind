@@ -16,6 +16,7 @@ from app.models.broker_order import BrokerOrder
 from app.models.journal_entry import JournalEntry
 from app.models.journal_outcome import JournalOutcome
 from app.models.admin_audit_log import AdminAuditLog
+from app.models.ask_record import AskRecord
 
 __all__ = [
     "User", "Workspace", "WorkspaceMember", "Subscription", "UsageEvent",
@@ -23,5 +24,5 @@ __all__ = [
     "EvidenceItem", "TradeIdea", "EmbeddingRow",
     "StrategyCard", "PlanItem", "OutcomeCheck",
     "BrokerOrder", "JournalEntry", "JournalOutcome",
-    "AdminAuditLog",
+    "AdminAuditLog", "AskRecord",
 ]

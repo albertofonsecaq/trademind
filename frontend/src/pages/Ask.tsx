@@ -14,42 +14,98 @@ type Source = {
   symbol: string | null;
 };
 
+/** One question this user asked and the answer kept for it. */
+type AskRecord = {
+  id: string;
+  question: string;
+  answer: string;
+  sources: Source[];
+  language: string;
+  created_at: string;
+};
+
 type Message = {
   role: "user" | "assistant";
   text: string;
   sources?: Source[];
 };
 
+/** How much of the ask history this page asks for, and so how much it can show. */
+const HISTORY_LIMIT = 50;
+
+/** An ask record reads as the question asked and the answer given, in that order. */
+const asMessages = (record: AskRecord): Message[] => [
+  { role: "user", text: record.question },
+  { role: "assistant", text: record.answer, sources: record.sources },
+];
+
 export function Ask() {
   const { t, i18n } = useTranslation();
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const [query, setQuery] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState(false);
+  const [historyCapped, setHistoryCapped] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const workspaceId = user?.default_workspace_id;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // What was already asked and answered. Reading it back costs nothing — the
+  // stored answer is served as it was, never synthesized again.
+  useEffect(() => {
+    if (authLoading) return;
+    if (!workspaceId) { setHistoryLoading(false); return; }
+
+    let cancelled = false;
+    setHistoryLoading(true);
+    api.get<AskRecord[]>(`/workspaces/${workspaceId}/ask-records`, {
+      params: { limit: HISTORY_LIMIT },
+    })
+      .then(({ data }) => {
+        if (cancelled) return;
+        // Newest first from the server; a transcript reads oldest first. Put
+        // them ahead of whatever is already on screen rather than replacing it,
+        // so a question asked while this was in flight is not thrown away.
+        const earlier = data.slice().reverse().flatMap(asMessages);
+        setMessages((current) => [...earlier, ...current]);
+        setHistoryError(false);
+        // A full page means there are older records this is not showing. Say
+        // so: a page that silently stops at fifty is the reload that loses
+        // answers, only quieter.
+        setHistoryCapped(data.length >= HISTORY_LIMIT);
+      })
+      .catch(() => { if (!cancelled) setHistoryError(true); })
+      .finally(() => { if (!cancelled) setHistoryLoading(false); });
+
+    return () => { cancelled = true; };
+  }, [workspaceId, authLoading]);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (!query.trim()) { setError(t("ask.emptyQuery")); return; }
     setError("");
 
-    const userMsg: Message = { role: "user", text: query };
-    setMessages((m) => [...m, userMsg]);
+    const asked = query.trim();
+    setMessages((m) => [...m, { role: "user", text: asked }]);
     setQuery("");
     setLoading(true);
 
     try {
-      const workspaceId = user?.default_workspace_id;
       const { data } = await api.post(`/workspaces/${workspaceId}/ask`, {
-        query: query.trim(),
+        query: asked,
         language: i18n.language,
       });
-      setMessages((m) => [...m, { role: "assistant", text: data.answer, sources: data.sources }]);
+      setMessages((m) => [...m, {
+        role: "assistant",
+        text: data.answer,
+        sources: data.sources,
+      }]);
     } catch {
       setMessages((m) => [...m, { role: "assistant", text: t("ask.errorTitle"), sources: [] }]);
     } finally {
@@ -69,6 +125,21 @@ export function Ask() {
         {error && <p style={{ color: "#c0392b", fontSize: "0.875rem" }}>{error}</p>}
 
         <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "1rem" }}>
+          {historyLoading && (
+            <p style={{ color: "#888", fontSize: "0.85rem", fontStyle: "italic", margin: 0 }}>
+              {t("ask.loadingHistory")}
+            </p>
+          )}
+          {historyError && (
+            <p style={{ color: "#b9770e", fontSize: "0.85rem", margin: 0 }}>
+              {t("ask.historyError")}
+            </p>
+          )}
+          {historyCapped && (
+            <p style={{ color: "#888", fontSize: "0.8rem", margin: 0 }}>
+              {t("ask.historyCapped", { count: HISTORY_LIMIT })}
+            </p>
+          )}
           {messages.map((msg, i) => (
             <div key={i} style={{
               alignSelf: msg.role === "user" ? "flex-end" : "flex-start",
