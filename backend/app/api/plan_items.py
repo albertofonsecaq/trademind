@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
 from pydantic import BaseModel
 
@@ -185,12 +185,26 @@ async def remove_plan_item(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    One of the caller's own plan items, gone.
+
+    Idempotent: a plan item that is not there, and one that belongs to somebody
+    else, both succeed. A delete states the end state it wants — that item, not
+    in this user's plan — and that state is already true in both cases, so
+    there is nothing to report. A double click is the first case.
+
+    This used to 404 on both, which left the client with nothing good to do:
+    `MyPlan` awaited the call with no catch at all, so a second click threw and
+    the row it had just removed stayed on screen. Treating one specific error
+    code as success is the alternative, and that is a worse thing to ask of
+    every caller.
+
+    One statement rather than a read and a delete, so nothing can change
+    between deciding what to remove and removing it. Reading the row first
+    bought nothing once its absence stopped being an error.
+    """
     await _assert_member(db, workspace_id, current_user.id)
-    result = await db.execute(
-        select(PlanItem).where(PlanItem.id == item_id, PlanItem.user_id == current_user.id)
+    await db.execute(
+        delete(PlanItem).where(PlanItem.id == item_id, PlanItem.user_id == current_user.id)
     )
-    item = result.scalar_one_or_none()
-    if not item:
-        raise HTTPException(status_code=404, detail="Plan item not found")
-    await db.delete(item)
     await db.commit()
