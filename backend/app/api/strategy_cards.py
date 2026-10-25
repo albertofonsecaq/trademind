@@ -2,6 +2,7 @@
 Strategy cards API — workspace-scoped, read-only for members.
 Mining is triggered via POST /mining/run.
 """
+import logging
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -20,6 +21,7 @@ from app.models.trade_idea import TradeIdea
 from app.models.evidence_item import EvidenceItem
 from app.models.outcome_check import OutcomeCheck
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/workspaces", tags=["strategy-cards"])
 
 
@@ -287,6 +289,5 @@ async def _run_mining_bg(workspace_id: uuid.UUID):
     async with AsyncSessionLocal() as db:
         try:
             await run_pattern_mining(db, workspace_id)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error("Background mining failed for %s: %s", workspace_id, e)
+        except Exception:
+            log.exception("Background mining failed for %s", workspace_id)

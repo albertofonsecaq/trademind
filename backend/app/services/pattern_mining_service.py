@@ -206,7 +206,8 @@ async def run_pattern_mining(
 
     clusters = rows.mappings().all()
     if not clusters:
-        log.info("Pattern mining: no clusters of size >= %d found", MIN_CLUSTER_SIZE)
+        log.info("Pattern mining complete: 0 cards touched for workspace %s (no setup type with %d or more trade ideas)",
+                 workspace_id, MIN_CLUSTER_SIZE)
         return 0
 
     cards_touched = 0

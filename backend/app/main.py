@@ -2,8 +2,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
+from app.core.log_setup import configure_logging
 from app.core.llm_errors import install_llm_error_handlers
 from app.api import auth, users, workspaces, connections, sources, ask, strategy_cards, plan_items, validation, changelog, broker, billing, admin
+
+configure_logging(settings.LOG_LEVEL)
 
 
 @asynccontextmanager

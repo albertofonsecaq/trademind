@@ -176,11 +176,9 @@ async def _mine_all_workspaces():
                 log.debug("Skipping mining for workspace %s: payment lapsed or budget exhausted", ws.id)
                 continue
             try:
-                count = await run_pattern_mining(db, ws.id)
-                if count:
-                    log.info("Mining: %d cards touched for workspace %s", count, ws.id)
-            except Exception as e:
-                log.error("Mining failed for workspace %s: %s", ws.id, e)
+                await run_pattern_mining(db, ws.id)  # logs its own completion line
+            except Exception:
+                log.exception("Mining failed for workspace %s", ws.id)
 
 
 async def _validate_all_workspaces():
@@ -195,11 +193,9 @@ async def _validate_all_workspaces():
         workspaces = result.scalars().all()
         for ws in workspaces:
             try:
-                count = await run_validation(db, ws.id)
-                if count:
-                    log.info("Validation: %d cards checked for workspace %s", count, ws.id)
-            except Exception as e:
-                log.error("Validation failed for workspace %s: %s", ws.id, e)
+                await run_validation(db, ws.id)  # logs its own completion line
+            except Exception:
+                log.exception("Validation failed for workspace %s", ws.id)
 
 
 def create_scheduler() -> AsyncIOScheduler:
