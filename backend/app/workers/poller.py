@@ -160,11 +160,27 @@ async def _poll_all_sources():
                 log.error("Poller error for source %s: %s", identifier, e)
 
 
+async def _scheduled_run(db, workspace_id, kind: str) -> None:
+    """
+    A weekly run, recorded like one a member started (#86), so the Library shows
+    it too; skipped while the workspace has a run of either kind going.
+    """
+    from app.services.analysis_run_service import RunAlreadyGoing, carry_out, start_run
+
+    try:
+        run = await start_run(db, workspace_id, kind, None)
+    except RunAlreadyGoing:
+        log.info("Scheduled %s skipped for workspace %s: one is already running", kind, workspace_id)
+        return
+    # Logs its own completion line, and its traceback if it crashes.
+    await carry_out(run_id=run.id, workspace_id=workspace_id, kind=kind)
+
+
 async def _mine_all_workspaces():
     """Weekly pattern mining across all workspaces."""
     import logging
     log = logging.getLogger(__name__)
-    from app.services.pattern_mining_service import run_pattern_mining
+    from app.models.analysis_run import MINING
     from app.models.workspace import Workspace
 
     async with AsyncSessionLocal() as db:
@@ -175,27 +191,19 @@ async def _mine_all_workspaces():
             if await is_payment_lapsed(db, ws.id) or await is_budget_exhausted(db, ws.id):
                 log.debug("Skipping mining for workspace %s: payment lapsed or budget exhausted", ws.id)
                 continue
-            try:
-                await run_pattern_mining(db, ws.id)  # logs its own completion line
-            except Exception:
-                log.exception("Mining failed for workspace %s", ws.id)
+            await _scheduled_run(db, ws.id, MINING)
 
 
 async def _validate_all_workspaces():
     """Weekly validation run — after mining, update win rates for all strategy cards."""
-    import logging
-    log = logging.getLogger(__name__)
-    from app.services.validation_service import run_validation
+    from app.models.analysis_run import VALIDATION
     from app.models.workspace import Workspace
 
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(Workspace))
         workspaces = result.scalars().all()
         for ws in workspaces:
-            try:
-                await run_validation(db, ws.id)  # logs its own completion line
-            except Exception:
-                log.exception("Validation failed for workspace %s", ws.id)
+            await _scheduled_run(db, ws.id, VALIDATION)
 
 
 def create_scheduler() -> AsyncIOScheduler:

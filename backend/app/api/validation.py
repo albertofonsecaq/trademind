@@ -1,7 +1,6 @@
 """
 Validation API — triggers outcome checking and win-rate computation for strategy cards.
 """
-import logging
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
@@ -10,13 +9,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 
-from app.core.database import get_db, AsyncSessionLocal
+from app.api.analysis_runs import AnalysisRunOut, already_running
+from app.core.database import get_db
+from app.models.analysis_run import VALIDATION
+from app.services.analysis_run_service import RunAlreadyGoing, carry_out, start_run
 from app.core.dependencies import get_current_user
 from app.models.user import User
 from app.models.workspace_member import WorkspaceMember
 from app.models.outcome_check import OutcomeCheck
 
-log = logging.getLogger(__name__)
 router = APIRouter(prefix="/workspaces", tags=["validation"])
 
 
@@ -29,11 +30,6 @@ async def _assert_member(db: AsyncSession, workspace_id: uuid.UUID, user_id: uui
     )
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=403, detail="Not a member of this workspace")
-
-
-class ValidationResult(BaseModel):
-    cards_processed: int
-    message: str
 
 
 class OutcomeCheckOut(BaseModel):
@@ -54,7 +50,7 @@ class OutcomeCheckOut(BaseModel):
     window_days: int
 
 
-@router.post("/{workspace_id}/validation/run", response_model=ValidationResult, status_code=202)
+@router.post("/{workspace_id}/validation/run", response_model=AnalysisRunOut, status_code=202)
 async def trigger_validation(
     workspace_id: uuid.UUID,
     background_tasks: BackgroundTasks,
@@ -62,15 +58,17 @@ async def trigger_validation(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Trigger outcome checking for all strategy cards in this workspace.
-    Runs asynchronously — check strategy cards a minute later for updated win rates.
+    Check every strategy card in this workspace against market prices, in the background.
+    Answers with the run it started, which runs/latest then follows; refuses
+    with 409 while the workspace has a run of either kind going (#86).
     """
     await _assert_member(db, workspace_id, current_user.id)
-    background_tasks.add_task(_run_validation_bg, workspace_id=workspace_id)
-    return ValidationResult(
-        cards_processed=0,
-        message="Validation started in background. Win rates will update within a minute.",
-    )
+    try:
+        run = await start_run(db, workspace_id, VALIDATION, current_user.id)
+    except RunAlreadyGoing as refused:
+        raise already_running(refused)
+    background_tasks.add_task(carry_out, run_id=run.id, workspace_id=workspace_id, kind=VALIDATION)
+    return run
 
 
 @router.get("/{workspace_id}/validation/outcomes", response_model=list[OutcomeCheckOut])
@@ -91,12 +89,3 @@ async def list_outcomes(
     q = q.order_by(OutcomeCheck.checked_at.desc()).limit(200)
     result = await db.execute(q)
     return result.scalars().all()
-
-
-async def _run_validation_bg(workspace_id: uuid.UUID):
-    from app.services.validation_service import run_validation
-    async with AsyncSessionLocal() as db:
-        try:
-            await run_validation(db, workspace_id)
-        except Exception:
-            log.exception("Background validation failed for %s", workspace_id)
