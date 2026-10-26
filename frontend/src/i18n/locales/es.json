@@ -33,7 +33,7 @@
       "library": {
         "title": "Biblioteca de estrategias — Patrones de trading descubiertos",
         "summary": "La biblioteca muestra los patrones de trading validados que el sistema ha extraído de tus fuentes conectadas.",
-        "body": "Cada tarjeta de estrategia es generada por el motor de minería de patrones, que agrupa ideas de trading similares por símbolo, tipo de setup y combinación de indicadores en todas las fuentes.\n\nUna tarjeta muestra: tipo de setup, descripción en tu idioma, tasa de aciertos con intervalo de confianza al 95% (una vez validada), comprobación walk-forward (marca posible sobreajuste) y un diagrama de flujo de cómo operar el setup.\n\nHaz clic en 'Cómo operarlo' para abrir la vista de detalle completa — que también muestra ejemplos citados de las fuentes originales, un desglose de resultados (ganadas/perdidas/abiertas) y tu historial de ejecución personal para ese setup.\n\nNiveles de confianza:\n• Aprendiendo — pocos ejemplos, trátalo como exploratorio\n• En desarrollo — acumulando evidencia, algunos datos de validación\n• Establecida — bien respaldada, resultados de validación consistentes\n\nUsa 'Ejecutar minería de patrones' después de ingerir contenido nuevo para actualizar tarjetas. La minería se ejecuta automáticamente cada domingo."
+        "body": "Cada tarjeta de estrategia es generada por el motor de minería de patrones, que agrupa ideas de trading similares por símbolo, tipo de setup y combinación de indicadores en todas las fuentes.\n\nUna tarjeta muestra: tipo de setup, descripción en tu idioma, tasa de aciertos con intervalo de confianza al 95% (una vez validada), comprobación walk-forward (marca posible sobreajuste) y un diagrama de flujo de cómo operar el setup.\n\nHaz clic en 'Cómo operarlo' para abrir la vista de detalle completa — que también muestra ejemplos citados de las fuentes originales, un desglose de resultados (ganadas/perdidas/abiertas) y tu historial de ejecución personal para ese setup.\n\nNiveles de confianza:\n• Aprendiendo — pocos ejemplos, trátalo como exploratorio\n• En desarrollo — acumulando evidencia, algunos datos de validación\n• Establecida — bien respaldada, resultados de validación consistentes\n\nUsa 'Ejecutar minería de patrones' después de ingerir contenido nuevo para actualizar tarjetas. La minería se ejecuta automáticamente cada domingo.\n\nMientras la minería o la validación están en curso, la Biblioteca lo indica, y al terminar muestra lo que hizo la ejecución — tarjetas creadas, actualizadas o revisadas — y lo que falló, con el motivo. Todos los miembros del espacio de trabajo ven las mismas ejecuciones."
       },
       "plan": {
         "title": "Mi plan — Curación personal de estrategias",
@@ -114,7 +114,6 @@
     "title": "Biblioteca de estrategias",
     "runMining": "Ejecutar minería de patrones",
     "mining": "Procesando...",
-    "miningStarted": "Minería iniciada — actualiza en unos segundos.",
     "noCards": "Aún no hay tarjetas de estrategia. Agrega fuentes, obtén contenido y ejecuta la minería de patrones.",
     "filterSymbol": "Filtrar por símbolo",
     "filterSetup": "Filtrar por tipo de setup",
@@ -138,12 +137,25 @@
     "noValidation": "Sin validar",
     "runValidation": "Ejecutar validación",
     "validating": "Validando...",
-    "validationStarted": "Validación iniciada — actualiza las tarjetas en breve.",
     "overfitWarning": "Posible sobreajuste — el rendimiento fuera de muestra cae significativamente",
     "walkForward": "Walk-forward",
     "inSample": "Muestra de entrenamiento",
     "outSample": "Muestra de prueba",
-    "validatedAt": "Validado"
+    "validatedAt": "Validado",
+    "run": {
+      "mining": "La minería de patrones",
+      "validation": "La validación",
+      "running": "{{kind}} está en curso — iniciada a las {{time}}. Las tarjetas se actualizarán al terminar.",
+      "miningDone": "La minería de patrones terminó a las {{time}}: {{created}} tarjetas creadas, {{updated}} actualizadas.",
+      "validationDone": "La validación terminó a las {{time}}: {{updated}} tarjetas revisadas.",
+      "failedCount_one": "{{count}} falló — ver por qué",
+      "failedCount_other": "{{count}} fallaron — ver por qué",
+      "stopped": "{{kind}} se detuvo a las {{time}}: {{reason}}",
+      "alreadyRunning": "{{kind}} ya está en curso para este espacio de trabajo.",
+      "scheduled": "(ejecución semanal)",
+      "beforeStopping": "Antes de detenerse: {{created}} tarjetas creadas, {{updated}} actualizadas.",
+      "couldNotStart": "No se pudo iniciar {{kind}}. Inténtalo de nuevo en un momento."
+    }
   },
   "changelog": {
     "title": "Historial de cambios",

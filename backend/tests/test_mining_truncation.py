@@ -184,12 +184,15 @@ class TestMiningWithAReplyThatCannotBeUsed:
         await _three_ideas(db_session, source)
         reply(TRUNCATED, "max_tokens")
 
-        touched = await pattern_mining_service.run_pattern_mining(db_session, source.workspace_id)
+        outcome = await pattern_mining_service.run_pattern_mining(db_session, source.workspace_id)
 
         cards = (await db_session.execute(
             select(StrategyCard).where(StrategyCard.workspace_id == source.workspace_id)
         )).scalars().all()
-        assert touched == 0
+        assert (outcome.cards_created, outcome.cards_updated) == (0, 0)
+        [failure] = outcome.failures
+        assert failure["subject"] == "EURUSD/breakout"
+        assert "cut off" in failure["reason"]
         assert cards == []
 
     async def test_an_existing_card_is_left_as_it_was(self, db_session, reply, billed):

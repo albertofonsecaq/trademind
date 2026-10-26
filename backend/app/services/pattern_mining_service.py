@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.clock import now_utc
 from app.core.config import settings
 from app.models.strategy_card import StrategyCard
+from app.models.analysis_run import RunOutcome
 from app.services.usage_service import log_usage_event
 from app.services.confidence_tier import compute_confidence_tier
 
@@ -36,6 +37,11 @@ MIN_CLUSTER_SIZE = 3
 # run longer. The cap is a ceiling, not a cost: only what is written is billed.
 _MAX_TOKENS = 2000
 _FLOWCHART_STEPS = ("entry", "confirmation", "risk_management", "exit")
+
+
+# A failure every remaining cluster would hit the same way: the run stops on the
+# first one and says so once, rather than once per cluster (#86).
+_WILL_REPEAT = (anthropic.AuthenticationError, anthropic.PermissionDeniedError)
 
 
 class CardGenerationFailed(RuntimeError):
@@ -168,10 +174,11 @@ def _preliminary_confidence(
 async def run_pattern_mining(
     db: AsyncSession,
     workspace_id: uuid.UUID,
-) -> int:
+) -> RunOutcome:
     """
     Mine trade_ideas → create/update strategy_cards.
-    Returns count of cards created or updated.
+    Returns what the run did: cards created and updated, clusters that failed,
+    and why it stopped if a failure would have repeated for every cluster.
     """
     # Single aggregation query — language-blind, operates only on structured fields
     rows = await db.execute(text("""
@@ -208,9 +215,14 @@ async def run_pattern_mining(
     if not clusters:
         log.info("Pattern mining complete: 0 cards touched for workspace %s (no setup type with %d or more trade ideas)",
                  workspace_id, MIN_CLUSTER_SIZE)
-        return 0
+        return RunOutcome()
 
-    cards_touched = 0
+    outcome = RunOutcome()
+    if not settings.ANTHROPIC_API_KEY:
+        outcome.stopped_because = "ANTHROPIC_API_KEY is not set, so no strategy card can be written."
+        log.error("Pattern mining stopped for workspace %s: %s", workspace_id, outcome.stopped_because)
+        return outcome
+
     total_input_tokens = 0
     total_output_tokens = 0
 
@@ -235,10 +247,20 @@ async def run_pattern_mining(
             fields, usage = await _generate_card_content(symbol_scope, setup_type, idea_samples)
         except CardGenerationFailed as e:
             log.error("Card generation failed for %s/%s: %s", symbol_scope, setup_type, e)
+            outcome.failures.append({"subject": f"{symbol_scope}/{setup_type}", "reason": str(e)})
             # A reply that was generated is billed even when it is not a card.
             usage = e.usage
+        except _WILL_REPEAT as e:
+            outcome.stopped_because = (
+                f"Anthropic refused the request ({e.status_code}): the API key is invalid or has no "
+                "access to the model, so no strategy card can be written. "
+                "Check ANTHROPIC_API_KEY and restart the backend."
+            )
+            log.error("Pattern mining stopped for workspace %s: %s", workspace_id, e)
+            break
         except Exception as e:
             log.error("Card generation failed for %s/%s: %s", symbol_scope, setup_type, e)
+            outcome.failures.append({"subject": f"{symbol_scope}/{setup_type}", "reason": str(e)})
             continue
 
         if usage:
@@ -277,6 +299,7 @@ async def run_pattern_mining(
                 last_updated=now_utc(),
             )
             db.add(card)
+            outcome.cards_created += 1
         else:
             prev_tier = card.confidence_tier or "still_learning"
             changes_parts = []
@@ -312,8 +335,7 @@ async def run_pattern_mining(
             card.source_count = source_count
             card.confidence_tier = tier
             card.last_updated = now_utc()
-
-        cards_touched += 1
+            outcome.cards_updated += 1
 
     await db.flush()
 
@@ -330,5 +352,6 @@ async def run_pattern_mining(
         )
 
     await db.commit()
-    log.info("Pattern mining complete: %d cards touched for workspace %s", cards_touched, workspace_id)
-    return cards_touched
+    log.info("Pattern mining complete: %d cards touched for workspace %s",
+             outcome.cards_created + outcome.cards_updated, workspace_id)
+    return outcome

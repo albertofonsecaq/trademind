@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { NavBar } from "../components/NavBar";
@@ -25,6 +25,21 @@ type StrategyCard = {
   validation_updated_at: string | null;
   version: number; last_updated: string;
 };
+
+type RunKind = "mining" | "validation";
+type AnalysisRun = {
+  id: string; kind: RunKind;
+  status: "running" | "completed" | "partial" | "failed";
+  triggered_by_user_id: string | null;
+  cards_created: number; cards_updated: number;
+  failures: { subject: string; reason: string }[];
+  error_message: string | null;
+  started_at: string; finished_at: string | null;
+};
+type LatestRuns = Record<RunKind, AnalysisRun | null>;
+
+// While a run is going, how often the Library asks how it is doing (#86).
+const RUN_POLL_MS = 3000;
 
 const TIER_COLORS: Record<string, string> = {
   still_learning: "#e67e22",
@@ -84,6 +99,52 @@ function WalkForwardBadge({ wf, t }: { wf: WalkForward | null; t: (k: string) =>
   );
 }
 
+function RunStatus({ run, t }: { run: AnalysisRun; t: (k: string, o?: Record<string, unknown>) => string }) {
+  const kind = t(`library.run.${run.kind}`);
+  const time = (iso: string | null) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
+  const scheduled = run.triggered_by_user_id === null ? ` ${t("library.run.scheduled")}` : "";
+  const line: React.CSSProperties = { margin: 0, fontSize: "0.85rem", lineHeight: 1.5 };
+
+  if (run.status === "running") {
+    return <p style={{ ...line, color: "#1565c0" }}>⏳ {t("library.run.running", { kind, time: time(run.started_at) })}{scheduled}</p>;
+  }
+  const failures = run.failures.length > 0 && (
+    <details style={{ fontSize: "0.8rem", color: "#666", marginTop: "0.2rem" }}>
+      <summary style={{ cursor: "pointer" }}>{t("library.run.failedCount", { count: run.failures.length })}</summary>
+      <ul style={{ margin: "0.3rem 0 0", paddingLeft: "1.2rem" }}>
+        {run.failures.map((f, i) => <li key={i}><strong>{f.subject}</strong>: {f.reason}</li>)}
+      </ul>
+    </details>
+  );
+  if (run.status === "failed") {
+    const didSomething = run.cards_created + run.cards_updated > 0;
+    return (
+      <div>
+        <p style={{ ...line, color: "#c0392b" }}>
+          ✕ {t("library.run.stopped", { kind, time: time(run.finished_at), reason: run.error_message ?? "" })}{scheduled}
+        </p>
+        {didSomething && (
+          <p style={{ ...line, color: "#666" }}>
+            {t("library.run.beforeStopping", { created: run.cards_created, updated: run.cards_updated })}
+          </p>
+        )}
+        {failures}
+      </div>
+    );
+  }
+  const done = run.kind === "mining"
+    ? t("library.run.miningDone", { time: time(run.finished_at), created: run.cards_created, updated: run.cards_updated })
+    : t("library.run.validationDone", { time: time(run.finished_at), updated: run.cards_updated });
+  return (
+    <div>
+      <p style={{ ...line, color: run.status === "partial" ? "#e67e22" : "#27ae60" }}>
+        {run.status === "partial" ? "⚠" : "✓"} {done}{scheduled}
+      </p>
+      {failures}
+    </div>
+  );
+}
+
 export function StrategyLibrary() {
   const { t, i18n } = useTranslation();
   const { user } = useAuth();
@@ -92,9 +153,11 @@ export function StrategyLibrary() {
   const [cards, setCards] = useState<StrategyCard[]>([]);
   const [planIds, setPlanIds] = useState<Set<string>>(new Set());
   const navigate = useNavigate();
-  const [mining, setMining] = useState(false);
-  const [validating, setValidating] = useState(false);
-  const [actionMsg, setActionMsg] = useState("");
+  const [runs, setRuns] = useState<LatestRuns>({ mining: null, validation: null });
+  const [starting, setStarting] = useState<RunKind | null>(null);
+  const [runMsg, setRunMsg] = useState("");
+  // What each kind's latest run was last time we looked, to notice one ending.
+  const wasRunning = useRef<Record<RunKind, boolean>>({ mining: false, validation: false });
   const [filterSymbol, setFilterSymbol] = useState("");
   const [filterSetup, setFilterSetup] = useState("");
 
@@ -112,24 +175,56 @@ export function StrategyLibrary() {
 
   useEffect(() => { load(); }, [workspaceId]);
 
-  const runMining = async () => {
-    if (!workspaceId) return;
-    setMining(true); setActionMsg("");
+  const loadRuns = async (): Promise<LatestRuns | null> => {
+    if (!workspaceId) return null;
     try {
-      await api.post(`/workspaces/${workspaceId}/mining/run`);
-      setActionMsg(t("library.miningStarted"));
-      setTimeout(() => { load(); setActionMsg(""); }, 4000);
-    } finally { setMining(false); }
+      const { data } = await api.get<LatestRuns>(`/workspaces/${workspaceId}/runs/latest`);
+      setRuns(data);
+      return data;
+    } catch {
+      // A failed look must not stop the following: a new object re-arms the
+      // poll below, which tries again.
+      setRuns((prev) => ({ ...prev }));
+      return null;
+    }
   };
 
-  const runValidation = async () => {
+  useEffect(() => { loadRuns(); }, [workspaceId]);
+
+  // Follow a running run until it ends, then refresh the cards it changed.
+  useEffect(() => {
+    const ended = (["mining", "validation"] as RunKind[]).some(
+      (k) => wasRunning.current[k] && runs[k]?.status !== "running",
+    );
+    wasRunning.current = {
+      mining: runs.mining?.status === "running",
+      validation: runs.validation?.status === "running",
+    };
+    if (ended) load();
+    if (!wasRunning.current.mining && !wasRunning.current.validation) return;
+    const timer = setTimeout(loadRuns, RUN_POLL_MS);
+    return () => clearTimeout(timer);
+  }, [runs]);
+
+  const startRun = async (kind: RunKind) => {
     if (!workspaceId) return;
-    setValidating(true); setActionMsg("");
+    setStarting(kind); setRunMsg("");
     try {
-      await api.post(`/workspaces/${workspaceId}/validation/run`);
-      setActionMsg(t("library.validationStarted"));
-      setTimeout(() => { load(); setActionMsg(""); }, 6000);
-    } finally { setValidating(false); }
+      const path = kind === "mining" ? "mining/run" : "validation/run";
+      const { data } = await api.post<AnalysisRun>(`/workspaces/${workspaceId}/${path}`);
+      setRuns((prev) => ({ ...prev, [kind]: data }));
+    } catch (e: unknown) {
+      if ((e as { response?: { status?: number } }).response?.status === 409) {
+        // One run at a time per workspace, of either kind: say which one is going.
+        const latest = await loadRuns();
+        const going = (["mining", "validation"] as RunKind[]).find((k) => latest?.[k]?.status === "running") ?? kind;
+        setRunMsg(t("library.run.alreadyRunning", { kind: t(`library.run.${going}`) }));
+      } else {
+        setRunMsg(t("library.run.couldNotStart", { kind: t(`library.run.${kind}`) }));
+      }
+    } finally {
+      setStarting(null);
+    }
   };
 
   const addToPlan = async (cardId: string) => {
@@ -161,16 +256,27 @@ export function StrategyLibrary() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
           <h1 style={{ margin: 0, fontSize: "1.4rem", color: "#1a1a2e" }}>{t("library.title")}</h1>
           <div style={{ display: "flex", gap: "0.5rem" }}>
-            <button onClick={runMining} disabled={mining} style={actionBtn(mining)}>
-              {mining ? t("library.mining") : t("library.runMining")}
-            </button>
-            <button onClick={runValidation} disabled={validating} style={actionBtn(validating)}>
-              {validating ? t("library.validating") : t("library.runValidation")}
-            </button>
+            {(["mining", "validation"] as RunKind[]).map((kind) => {
+              // Both wait while either runs: they write the same cards (#86).
+              const busy = starting !== null || runs.mining?.status === "running" || runs.validation?.status === "running";
+              return (
+                <button key={kind} onClick={() => startRun(kind)} disabled={busy} style={actionBtn(busy)}>
+                  {kind === "mining"
+                    ? (runs.mining?.status === "running" ? t("library.mining") : t("library.runMining"))
+                    : (runs.validation?.status === "running" ? t("library.validating") : t("library.runValidation"))}
+                </button>
+              );
+            })}
           </div>
         </div>
 
-        {actionMsg && <p style={{ color: "#27ae60", fontSize: "0.875rem", marginBottom: "0.75rem" }}>{actionMsg}</p>}
+        {(runs.mining || runs.validation || runMsg) && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem", marginBottom: "1rem" }}>
+            {runMsg && <p style={{ margin: 0, fontSize: "0.85rem", color: "#e67e22" }}>{runMsg}</p>}
+            {runs.mining && <RunStatus run={runs.mining} t={t} />}
+            {runs.validation && <RunStatus run={runs.validation} t={t} />}
+          </div>
+        )}
 
         <div style={{ display: "flex", gap: "0.6rem", marginBottom: "1.25rem", flexWrap: "wrap" }}>
           <input style={inp} placeholder={t("library.filterSymbol")} value={filterSymbol} onChange={(e) => setFilterSymbol(e.target.value)} />

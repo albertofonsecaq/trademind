@@ -13,6 +13,7 @@ import io
 import logging
 import uuid
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 
@@ -111,9 +112,17 @@ class TestConfiguredLogging:
             Settings(LOG_LEVEL="VERBOSE")
 
 
-@asynccontextmanager
-async def _no_session():
-    yield object()
+class _RecordingSession:
+    """Stands in for carry_out's sessions: hands back a run row, takes the commit."""
+
+    def __init__(self):
+        self.run = SimpleNamespace()
+
+    async def get(self, model, run_id):
+        return self.run
+
+    async def commit(self):
+        pass
 
 
 async def _crash(*args, **kwargs):
@@ -121,23 +130,28 @@ async def _crash(*args, **kwargs):
 
 
 class TestABackgroundRunThatCrashes:
-    @pytest.mark.parametrize("module, runner, service, function", [
-        ("app.api.strategy_cards", "_run_mining_bg",
-         "app.services.pattern_mining_service", "run_pattern_mining"),
-        ("app.api.validation", "_run_validation_bg",
-         "app.services.validation_service", "run_validation"),
+    @pytest.mark.parametrize("kind, service, function", [
+        ("mining", "app.services.pattern_mining_service", "run_pattern_mining"),
+        ("validation", "app.services.validation_service", "run_validation"),
     ])
-    async def test_logs_the_traceback(self, monkeypatch, caplog, module, runner, service, function):
+    async def test_logs_the_traceback(self, monkeypatch, caplog, kind, service, function):
         import importlib
 
-        api = importlib.import_module(module)
+        from app.services import analysis_run_service
 
-        monkeypatch.setattr(api, "AsyncSessionLocal", _no_session)
+        session = _RecordingSession()
+
+        @asynccontextmanager
+        async def _session():
+            yield session
+
+        monkeypatch.setattr(analysis_run_service, "AsyncSessionLocal", _session)
         monkeypatch.setattr(importlib.import_module(service), function, _crash)
 
         with caplog.at_level(logging.ERROR):
-            await getattr(api, runner)(uuid.uuid4())
+            await analysis_run_service.carry_out(run_id=uuid.uuid4(), workspace_id=uuid.uuid4(), kind=kind)
 
         [record] = [r for r in caplog.records if r.levelno >= logging.ERROR]
         assert record.exc_info is not None
         assert "the database went away" in caplog.text
+        assert session.run.status == "failed"

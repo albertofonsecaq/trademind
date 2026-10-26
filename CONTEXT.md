@@ -104,6 +104,10 @@ _Avoid_: Ticker, market, asset
 How far a strategy card has earned trust, from still learning through developing to established. Derived from how much validated evidence stands behind it, and it is the tier the user sees.
 _Avoid_: Score, rating, quality, maturity
 
+**Analysis run**:
+One pass of pattern mining or of validation over a workspace, started by a member or by the weekly schedule, and how it ended — in a backfill outcome's words: _completed_ lost nothing, _partial_ carried on past clusters or cards that failed and names each with the reason, _failed_ stopped on a failure that would repeat for everything left (a rejected API key) or was cut off by a restart. A workspace runs one at a time, of either kind, since both write its strategy cards; every member sees the same runs.
+_Avoid_: Job, task, batch, refresh
+
 ### Asking
 
 **Ask record**:
