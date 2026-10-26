@@ -1,6 +1,7 @@
 """
 Validation API — triggers outcome checking and win-rate computation for strategy cards.
 """
+import logging
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
@@ -15,6 +16,7 @@ from app.models.user import User
 from app.models.workspace_member import WorkspaceMember
 from app.models.outcome_check import OutcomeCheck
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/workspaces", tags=["validation"])
 
 
@@ -96,6 +98,5 @@ async def _run_validation_bg(workspace_id: uuid.UUID):
     async with AsyncSessionLocal() as db:
         try:
             await run_validation(db, workspace_id)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error("Background validation failed for %s: %s", workspace_id, e)
+        except Exception:
+            log.exception("Background validation failed for %s", workspace_id)

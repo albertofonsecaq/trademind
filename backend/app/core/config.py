@@ -1,9 +1,14 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import List
+from typing import Literal, List
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    # Logging: the application's own lines print at this level and above (#84).
+    # Third-party libraries stay at WARNING. A value outside these four fails
+    # at start-up, naming the setting.
+    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
     # trademind_app reads and writes rows and owns nothing, so these
     # credentials cannot drop a table or the database (#59). Migrations are
