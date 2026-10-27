@@ -364,7 +364,21 @@
     "itemsFailed_one": "1 con error",
     "itemsFailed_other": "{{count}} con error",
     "from": "desde",
-    "fetchInProgress": "Obteniendo en segundo plano — se actualizará al terminar..."
+    "fetchInProgress": "Obteniendo en segundo plano — se actualizará al terminar...",
+    "failedTab": "Mensajes con error ({{count}})",
+    "failedHint": "Mensajes cuyo procesamiento falló. Cada ingesta los reintenta primero; tras 3 intentos fallidos un mensaje se da por perdido y queda aquí con el último motivo, para que lo revises.",
+    "failedNone": "No hay mensajes con error.",
+    "failedRetrying_one": "1 con error, reintentando",
+    "failedRetrying_other": "{{count}} con error, reintentando",
+    "failedGivenUp_one": "1 dado por perdido",
+    "failedGivenUp_other": "{{count}} dados por perdidos",
+    "failedPosted": "publicado {{when}}",
+    "failedAttempts_one": "1 intento",
+    "failedAttempts_other": "{{count}} intentos",
+    "failedStatus": {
+      "retrying": "Reintentando",
+      "givenUp": "Dado por perdido"
+    }
   },
   "trading": {
     "title": "Trading en papel",

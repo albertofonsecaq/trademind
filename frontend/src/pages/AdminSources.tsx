@@ -12,6 +12,12 @@ type Source = {
   fetch_cadence: string; content_filters: Record<string, boolean>;
   last_fetched_at: string | null; platform_connection_id: string | null;
   backfill_start_date: string | null; is_paused: boolean; paused_at: string | null;
+  // Failed messages still being retried, and given up (#96). Only the list carries them.
+  failed_retrying: number; failed_given_up: number;
+};
+type FailedMessage = {
+  stable_id: string; message_at: string | null; error: string; attempts: number;
+  first_failed_at: string; last_failed_at: string; given_up_at: string | null;
 };
 type ResumeMode = "catch_up" | "from_now";
 
@@ -221,13 +227,70 @@ function WorkspaceIngestion({ workspace, busy, error, onToggle }: {
   );
 }
 
+// ── failed messages: what a fetch lost, and whether it is still retried ───────
+// The fetch position moves past a message whose processing raised; this is
+// where those messages are kept in sight (#96, ADR 0005).
+function FailedBadges({ source }: { source: Source }) {
+  const { t } = useTranslation();
+  return (
+    <>
+      {source.failed_retrying > 0 && (
+        <span style={{ ...pill, background: "#fff3e0", color: "#e65100", border: "1px solid #ffcc80" }}>
+          {t("sources.failedRetrying", { count: source.failed_retrying })}
+        </span>
+      )}
+      {source.failed_given_up > 0 && (
+        <span style={{ ...pill, background: "#fdecea", color: "#c0392b", border: "1px solid #f5b7b1", fontWeight: 600 }}>
+          {t("sources.failedGivenUp", { count: source.failed_given_up })}
+        </span>
+      )}
+    </>
+  );
+}
+
+function FailedMessages({ workspaceId, sourceId }: { workspaceId: string; sourceId: string }) {
+  const { t } = useTranslation();
+  const [messages, setMessages] = useState<FailedMessage[] | null>(null);
+
+  useEffect(() => {
+    api.get<FailedMessage[]>(`/workspaces/${workspaceId}/sources/${sourceId}/failed-messages`)
+      .then(({ data }) => setMessages(data));
+  }, [workspaceId, sourceId]);
+
+  if (messages === null) return <p style={{ fontSize: "0.82rem", color: "#aaa" }}>{t("common.loading")}</p>;
+  return (
+    <div>
+      <p style={{ fontSize: "0.8rem", color: "#888", margin: "0 0 0.6rem" }}>{t("sources.failedHint")}</p>
+      {messages.length === 0 ? (
+        <p style={{ fontSize: "0.82rem", color: "#aaa" }}>{t("sources.failedNone")}</p>
+      ) : messages.map((m) => (
+        <div key={m.stable_id} style={{ padding: "0.45rem 0", borderBottom: "1px solid #f0f0f0", fontSize: "0.8rem" }}>
+          <div style={{ display: "flex", gap: "0.6rem", alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ fontWeight: 700, color: m.given_up_at ? "#c0392b" : "#e65100", minWidth: "80px" }}>
+              {m.given_up_at ? t("sources.failedStatus.givenUp") : t("sources.failedStatus.retrying")}
+            </span>
+            <span style={{ fontFamily: "monospace", color: "#555" }}>{m.stable_id}</span>
+            {m.message_at && (
+              <span style={{ color: "#888" }}>
+                {t("sources.failedPosted", { when: new Date(m.message_at).toLocaleString() })}
+              </span>
+            )}
+            <span style={{ color: "#888" }}>{t("sources.failedAttempts", { count: m.attempts })}</span>
+          </div>
+          <div style={{ color: "#c0392b", marginTop: "0.15rem", wordBreak: "break-word" }}>{m.error}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── per-source config + backfill panel ────────────────────────────────────────
 function SourcePanel({ source, workspaceId, workspacePaused, connectionBlocked, onSaved }: {
   source: Source; workspaceId: string; workspacePaused: boolean;
   connectionBlocked: ConnectionBlock; onSaved: () => void;
 }) {
   const { t } = useTranslation();
-  const [tab, setTab] = useState<"settings" | "backfill">("settings");
+  const [tab, setTab] = useState<"settings" | "backfill" | "failed">("settings");
 
   // settings state
   const [cadence, setCadence] = useState(source.fetch_cadence);
@@ -296,7 +359,7 @@ function SourcePanel({ source, workspaceId, workspacePaused, connectionBlocked, 
 
   const backfillOff = source.is_paused || workspacePaused || connectionBlocked !== null;
 
-  const tabBtn = (id: "settings" | "backfill"): React.CSSProperties => ({
+  const tabBtn = (id: "settings" | "backfill" | "failed"): React.CSSProperties => ({
     padding: "0.35rem 0.85rem", borderRadius: "4px", cursor: "pointer", fontSize: "0.82rem",
     fontWeight: 500, border: "none",
     background: tab === id ? "#1a1a2e" : "#f0f0f0",
@@ -308,7 +371,11 @@ function SourcePanel({ source, workspaceId, workspacePaused, connectionBlocked, 
       <div style={{ display: "flex", gap: "0.4rem", marginBottom: "0.9rem" }}>
         <button style={tabBtn("settings")} onClick={() => setTab("settings")}>{t("sources.settings")}</button>
         <button style={tabBtn("backfill")} onClick={() => setTab("backfill")}>{t("sources.backfill")}</button>
+        <button style={tabBtn("failed")} onClick={() => setTab("failed")}>
+          {t("sources.failedTab", { count: source.failed_retrying + source.failed_given_up })}
+        </button>
       </div>
+      {tab === "failed" && <FailedMessages workspaceId={workspaceId} sourceId={source.id} />}
 
       {tab === "settings" && (
         <div style={{ display: "flex", flexDirection: "column", gap: "0.55rem" }}>
@@ -495,6 +562,7 @@ function SourceRow({
             {t(`sources.cadenceOptions.${source.fetch_cadence}`, source.fetch_cadence)}
           </span>
           {source.is_paused && <PausedBadge />}
+          <FailedBadges source={source} />
         </div>
         <div style={{ display: "flex", gap: "0.4rem" }}>
           <button style={btn(false)} onClick={onToggleExpanded}>
