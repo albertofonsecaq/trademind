@@ -378,7 +378,8 @@
     "failedStatus": {
       "retrying": "Retrying",
       "givenUp": "Given up"
-    }
+    },
+    "failedLoadError": "Could not load the failed messages. Try again in a moment."
   },
   "trading": {
     "title": "Paper Trading",

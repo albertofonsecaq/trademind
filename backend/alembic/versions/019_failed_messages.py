@@ -2,9 +2,10 @@
 
 The fetch position moves past a message whose processing raised, and nothing
 recorded which one it was: twelve links and sixty-three videos went that way on
-25–26 Oct and could only be recovered by hand (#93, #96, ADR 0005).
+25–26 Oct and could only be recovered by hand (#93, #97). This remembers them
+instead (#96, ADR 0005).
 
-Additive: one new table and its indexes. No existing table or column is
+Additive: one new table and its unique constraint. No existing table or column is
 touched, so every row already stored keeps every value it had, and the
 downgrade drops only what this created.
 
@@ -36,7 +37,7 @@ def upgrade() -> None:
         sa.Column("last_failed_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("given_up_at", sa.DateTime(timezone=True), nullable=True),
     )
-    # app/models/failed_message.py says what each is for.
+    # app/models/failed_message.py says what it is for.
     op.create_unique_constraint(
         "uq_failed_messages_source_stable_id", "failed_messages", ["source_config_id", "stable_id"]
     )

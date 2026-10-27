@@ -212,6 +212,12 @@ class TestBackfillRemembersWhatItLost:
         ]
         assert all(row.error == "relevance check blew up" for row in recorded)
 
+    async def test_forgets_a_failed_message_it_now_stores(self, backfill):
+        result = await backfill(_ok, count=2)
+
+        forgotten = [s for s in result.db.statements if s.lower().startswith("delete from failed_messages")]
+        assert len(forgotten) == 2
+
     async def test_does_not_record_the_failure_that_ended_the_run(self, backfill):
         fatal = _status_error(anthropic.BadRequestError, 400, USAGE_LIMIT)
 

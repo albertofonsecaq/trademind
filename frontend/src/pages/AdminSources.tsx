@@ -251,12 +251,24 @@ function FailedBadges({ source }: { source: Source }) {
 function FailedMessages({ workspaceId, sourceId }: { workspaceId: string; sourceId: string }) {
   const { t } = useTranslation();
   const [messages, setMessages] = useState<FailedMessage[] | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
-    api.get<FailedMessage[]>(`/workspaces/${workspaceId}/sources/${sourceId}/failed-messages`)
-      .then(({ data }) => setMessages(data));
+    const load = async () => {
+      setLoadFailed(false);
+      try {
+        const { data } = await api.get<FailedMessage[]>(
+          `/workspaces/${workspaceId}/sources/${sourceId}/failed-messages`
+        );
+        setMessages(data);
+      } catch {
+        setLoadFailed(true);
+      }
+    };
+    load();
   }, [workspaceId, sourceId]);
 
+  if (loadFailed) return <p style={{ fontSize: "0.82rem", color: "#c0392b" }}>{t("sources.failedLoadError")}</p>;
   if (messages === null) return <p style={{ fontSize: "0.82rem", color: "#aaa" }}>{t("common.loading")}</p>;
   return (
     <div>

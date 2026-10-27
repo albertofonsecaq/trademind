@@ -26,10 +26,12 @@ moves past it.
 
 Each fetch of a source first retries that source's recorded failures, fetching
 each message again from the platform by its own identity. A success removes the
-record. A failure counts another attempt. After the third failed attempt the
-message is given up: it is no longer retried, and it stays recorded and visible
-on the source, with the last reason, until a person deals with it. A message
-the platform no longer has is given up at once.
+record. A failure counts another attempt, and so does failing to fetch it
+again. After the third failed attempt the message is given up: it is no longer
+retried, and it stays recorded and visible on the source, with the last reason,
+until a person deals with it. A message the platform no longer offers — deleted
+there, or a kind of content the source no longer asks for — is given up at
+once. A message a backfill stores is no longer a failure, whatever its state.
 
 A failure that would repeat for everything left in the run — an exhausted
 account, a rejected session — is not the message's fault. It is not recorded
@@ -48,6 +50,10 @@ and does not count as an attempt; the run stops as it did before.
   attempts bound that.
 - A message that fails for a reason no retry can fix costs three attempts
   before it is given up, and then waits for a person.
+- An outage of the platform or of a service a message needs, lasting three
+  fetches of a source, gives up that source's recorded failures. For a source
+  fetched every minute that is three minutes. They stay visible, and a backfill
+  over their dates stores them and clears them; there is no button for it yet.
 - Given-up messages accumulate until someone looks. That is the point — they
   are what was lost — but nothing clears them automatically.
 

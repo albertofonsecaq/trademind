@@ -94,7 +94,12 @@ def youtube(monkeypatch):
 
     async def _chunks(video):
         for n in range(3):
+            # As video_transcript_messages does: Whisper's cost rides on the first chunk.
+            cost = "0.42" if n == 0 else "0"
             yield RawMessage(
+                pre_pipeline_cost_usd=cost,
+                pre_pipeline_task_type="transcription" if n == 0 else None,
+                pre_pipeline_model="whisper" if n == 0 else None,
                 stable_id=f"youtube:{video['video_id']}:chunk_{n}",
                 source_config_id=c.source_config_id,
                 workspace_id=c.workspace_id,
@@ -117,6 +122,14 @@ class TestYouTubeFetchesOneChunkAgain:
 
         assert msg.stable_id == "youtube:v1:chunk_1"
         assert msg.text == "chunk 1"
+
+    async def test_carries_the_transcription_paid_again_to_get_it(self, youtube):
+        """Retrying chunk 1 transcribes the whole video again; that cost is logged (#27)."""
+        msg = await youtube.fetch_one("youtube:v1:chunk_1")
+
+        assert (msg.pre_pipeline_cost_usd, msg.pre_pipeline_task_type, msg.pre_pipeline_model) == (
+            "0.42", "transcription", "whisper",
+        )
 
     async def test_hands_back_none_for_a_video_gone_from_the_window(self, youtube):
         assert await youtube.fetch_one("youtube:v0:chunk_1") is None

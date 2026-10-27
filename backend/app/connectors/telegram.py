@@ -239,9 +239,7 @@ class TelegramConnector(BaseConnector):
         min_id = 0
         if since_id:
             try:
-                # stable_id may have suffixes (:image, :url:N, :video) — extract base msg id
-                base = since_id.split(":")[2]
-                min_id = int(base)
+                min_id = _message_id(since_id)
             except (ValueError, IndexError):
                 min_id = 0
 
@@ -254,9 +252,8 @@ class TelegramConnector(BaseConnector):
                     yield raw
 
     async def fetch_one(self, stable_id: str) -> RawMessage | None:
-        # "telegram:{channel}:{msg_id}[:image|:url:N|:video]" — the message is
-        # fetched whole, and the one part asked for is handed back.
-        msg_id = int(stable_id.split(":")[2])
+        # The message is fetched whole, and the one part asked for is handed back.
+        msg_id = _message_id(stable_id)
         entity = self._resolve_identifier()
         found: RawMessage | None = None
         async with self._client() as client:
@@ -299,6 +296,11 @@ class TelegramConnector(BaseConnector):
                     break
                 async for raw in self._yield_all_types(client, msg):
                     yield raw
+
+
+def _message_id(stable_id: str) -> int:
+    """The message id in "telegram:{channel}:{msg_id}[:image|:url:N|:video]"."""
+    return int(stable_id.split(":")[2])
 
 
 def _delete_download(raw: RawMessage) -> None:

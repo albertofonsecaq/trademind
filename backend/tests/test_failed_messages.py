@@ -39,6 +39,7 @@ class FakeChannel:
         self._source = source
         self.new: list[int] = []
         self.gone: set[int] = set()
+        self.unreachable: dict[int, Exception] = {}
         self.fetched_again: list[str] = []
 
     def message(self, msg_id: int) -> RawMessage:
@@ -61,6 +62,8 @@ class FakeChannel:
     async def fetch_one(self, stable_id: str) -> RawMessage | None:
         self.fetched_again.append(stable_id)
         msg_id = int(stable_id.split(":")[2])
+        if msg_id in self.unreachable:
+            raise self.unreachable[msg_id]
         return None if msg_id in self.gone else self.message(msg_id)
 
     def repaired_position(self):
@@ -76,9 +79,13 @@ async def setup(db_session, monkeypatch):
     failing: dict[str, Exception] = {}
     processed: list[str] = []
 
+    already_stored: set[str] = set()
+
     async def _process(db, msg, topic_scope):
         if msg.stable_id in failing:
             raise failing[msg.stable_id]
+        if msg.stable_id in already_stored:
+            return None                 # what process_message says for a duplicate
         processed.append(msg.stable_id)
         return object()
 
@@ -99,6 +106,7 @@ async def setup(db_session, monkeypatch):
 
     s = Setup()
     s.source, s.channel, s.failing, s.processed = source, channel, failing, processed
+    s.already_stored = already_stored
     s.fetch, s.recorded = fetch, recorded
     return s
 
@@ -178,6 +186,35 @@ class TestAMessageThatFails:
         assert row.given_up_at is not None
         assert row.attempts == 1
         assert "no longer" in row.error
+
+
+    async def test_that_cannot_be_fetched_again_counts_an_attempt_and_does_not_stall_the_source(self, setup):
+        setup.channel.new = [2]
+        setup.failing["telegram:chan:2"] = RuntimeError("relevance check timed out")
+        await setup.fetch()
+        setup.channel.unreachable[2] = ConnectionError("Telegram did not answer")
+        setup.channel.new = [3]
+
+        outcome = await setup.fetch()
+
+        assert setup.processed == ["telegram:chan:3"]
+        [row] = await setup.recorded()
+        assert row.attempts == 2
+        assert "Telegram did not answer" in row.error
+        assert (outcome.ingested, outcome.failed) == (1, 1)
+
+    async def test_stored_meanwhile_is_forgotten_without_counting_as_ingested(self, setup):
+        setup.channel.new = [2]
+        setup.failing["telegram:chan:2"] = RuntimeError("relevance check timed out")
+        await setup.fetch()
+        setup.failing.clear()
+        setup.already_stored.add("telegram:chan:2")
+        setup.channel.new = []
+
+        outcome = await setup.fetch()
+
+        assert await setup.recorded() == []
+        assert outcome.ingested == 0
 
 
 @pytest.mark.db

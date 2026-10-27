@@ -648,6 +648,9 @@ async def _run_backfill_bg(job_id: uuid.UUID):
                         item = await process_message(db, msg, topic_scope)
                     if item:
                         count += 1
+                        # Stored now: a failure recorded for it earlier, given up
+                        # or not, is over (#96).
+                        await failed_message_service.forget(db, msg.source_config_id, msg.stable_id)
                     await db.commit()
                 except Exception as e:
                     failed += 1
@@ -656,10 +659,6 @@ async def _run_backfill_bg(job_id: uuid.UUID):
                     log.error(
                         "Backfill pipeline error on %s: %s", msg.stable_id, e, exc_info=True
                     )
-                    if not is_fatal_for_run(e):
-                        # Counted on the job, and remembered so the source's
-                        # next fetch retries it (#96, ADR 0005).
-                        await failed_message_service.record_failure(db, msg, e)
                     if is_fatal_for_run(e):
                         # Every remaining message hits the same wall, so walking
                         # the rest of the range buys nothing but wall-clock time
@@ -667,6 +666,9 @@ async def _run_backfill_bg(job_id: uuid.UUID):
                         fatal = e
                         stopped_at = msg.timestamp
                         break
+                    # Counted on the job, and remembered so the source's next
+                    # fetch retries it (#96, ADR 0005).
+                    await failed_message_service.record_failure(db, msg, e)
 
             # A row has to be readable on its own: "completed" used to be written
             # whether a run lost nothing or lost most of what it saw (#9).

@@ -653,9 +653,6 @@ async def run_fetch_pipeline(
             except Exception as e:
                 failed += 1
                 log.error("Pipeline error for %s: %s", msg.stable_id, e, exc_info=True)
-                if not is_fatal_for_run(e):
-                    # The position still moves past it; this is what remembers it.
-                    await failed_message_service.record_failure(db, msg, e)
                 if is_fatal_for_run(e):
                     # Nothing after this can succeed either, so stop rather than
                     # spend the rest of the tick proving it. Raising is how the
@@ -669,6 +666,8 @@ async def run_fetch_pipeline(
                         db, source_id, position, initial_position, touch_fetched_at=False
                     )
                     raise
+                # The position still moves past it; this is what remembers it.
+                await failed_message_service.record_failure(db, msg, e)
                 continue
             else:
                 await db.commit()
@@ -718,22 +717,37 @@ async def _retry_failed_messages(
     """
     ingested = failed = 0
     for row in await failed_message_service.to_retry(db, source_id):
-        msg = await connector.fetch_one(row.stable_id)
+        try:
+            msg = await connector.fetch_one(row.stable_id)
+        except Exception as e:
+            # A rejected session or an exhausted account is the run's problem,
+            # not this message's. Anything else is one failed attempt at it:
+            # it must not keep the source from fetching what is new.
+            if credentials_rejected(e) or is_fatal_for_run(e):
+                raise
+            log.error("Could not fetch %s again: %s", row.stable_id, e, exc_info=True)
+            failed += 1
+            await failed_message_service.count_attempt(db, row, e)
+            continue
         if msg is None:
             await failed_message_service.give_up(db, row, failed_message_service.GONE_FROM_SOURCE)
             continue
         try:
             async with db.begin_nested():
-                await process_message(db, msg, topic_scope)
+                item = await process_message(db, msg, topic_scope)
+        except IntegrityError:
+            # Stored by something else between the duplicate check and the insert.
+            await failed_message_service.resolve(db, row)
         except Exception as e:
             log.error("Retry failed for %s: %s", msg.stable_id, e, exc_info=True)
             if is_fatal_for_run(e):
                 raise
             failed += 1
-            await failed_message_service.record_failure(db, msg, e)
+            await failed_message_service.count_attempt(db, row, e)
         else:
-            # A duplicate counts as done too: something else stored it meanwhile.
-            ingested += 1
+            # None is a duplicate or an item judged not worth keeping: done either way.
+            if item:
+                ingested += 1
             await failed_message_service.resolve(db, row)
     return ingested, failed
 
