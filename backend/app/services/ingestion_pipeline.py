@@ -38,6 +38,7 @@ from app.services import (
     url_service,
     keyframe_service,
     youtube_transcript,
+    failed_message_service,
 )
 from app.services.usage_service import log_usage_event
 from app.core.config import settings
@@ -624,6 +625,12 @@ async def run_fetch_pipeline(
     position = initial_position
 
     try:
+        # What failed before comes first, so a fixed bug's casualties are picked
+        # back up before anything new is fetched (#96, ADR 0005).
+        retried, retry_failed = await _retry_failed_messages(db, connector, source_id, topic_scope)
+        count += retried
+        failed += retry_failed
+
         async for msg in connector.fetch_new(position):
             # The position advances for everything we have seen, not only what we
             # store: content that fails a filter or the relevance check is still
@@ -659,6 +666,8 @@ async def run_fetch_pipeline(
                         db, source_id, position, initial_position, touch_fetched_at=False
                     )
                     raise
+                # The position still moves past it; this is what remembers it.
+                await failed_message_service.record_failure(db, msg, e)
                 continue
             else:
                 await db.commit()
@@ -694,6 +703,53 @@ async def run_fetch_pipeline(
             "Fetch for source %s: %d ingested, %d failed", source_id, count, failed
         )
     return FetchOutcome(ingested=count, failed=failed)
+
+
+async def _retry_failed_messages(
+    db: AsyncSession, connector, source_id: uuid.UUID, topic_scope: str
+) -> tuple[int, int]:
+    """
+    Fetch each of a source's recorded failures again and process it.
+
+    A success forgets the failure, a failure counts another attempt, and a
+    message the platform no longer has is given up. A failure that would repeat
+    for everything left raises, without counting against the message.
+    """
+    ingested = failed = 0
+    for row in await failed_message_service.to_retry(db, source_id):
+        try:
+            msg = await connector.fetch_one(row.stable_id)
+        except Exception as e:
+            # A rejected session or an exhausted account is the run's problem,
+            # not this message's. Anything else is one failed attempt at it:
+            # it must not keep the source from fetching what is new.
+            if credentials_rejected(e) or is_fatal_for_run(e):
+                raise
+            log.error("Could not fetch %s again: %s", row.stable_id, e, exc_info=True)
+            failed += 1
+            await failed_message_service.count_attempt(db, row, e)
+            continue
+        if msg is None:
+            await failed_message_service.give_up(db, row, failed_message_service.GONE_FROM_SOURCE)
+            continue
+        try:
+            async with db.begin_nested():
+                item = await process_message(db, msg, topic_scope)
+        except IntegrityError:
+            # Stored by something else between the duplicate check and the insert.
+            await failed_message_service.resolve(db, row)
+        except Exception as e:
+            log.error("Retry failed for %s: %s", msg.stable_id, e, exc_info=True)
+            if is_fatal_for_run(e):
+                raise
+            failed += 1
+            await failed_message_service.count_attempt(db, row, e)
+        else:
+            # None is a duplicate or an item judged not worth keeping: done either way.
+            if item:
+                ingested += 1
+            await failed_message_service.resolve(db, row)
+    return ingested, failed
 
 
 async def _store_position(

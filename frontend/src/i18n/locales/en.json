@@ -364,7 +364,22 @@
     "itemsFailed_one": "1 failed",
     "itemsFailed_other": "{{count}} failed",
     "from": "from",
-    "fetchInProgress": "Fetching in background — updating when complete..."
+    "fetchInProgress": "Fetching in background — updating when complete...",
+    "failedTab": "Failed messages ({{count}})",
+    "failedHint": "Messages whose processing failed. Each fetch retries them first; after 3 failed attempts a message is given up and stays here with the last reason, for you to look at.",
+    "failedNone": "No failed messages.",
+    "failedRetrying_one": "1 failed, retrying",
+    "failedRetrying_other": "{{count}} failed, retrying",
+    "failedGivenUp_one": "1 given up",
+    "failedGivenUp_other": "{{count}} given up",
+    "failedPosted": "posted {{when}}",
+    "failedAttempts_one": "1 attempt",
+    "failedAttempts_other": "{{count}} attempts",
+    "failedStatus": {
+      "retrying": "Retrying",
+      "givenUp": "Given up"
+    },
+    "failedLoadError": "Could not load the failed messages. Try again in a moment."
   },
   "trading": {
     "title": "Paper Trading",

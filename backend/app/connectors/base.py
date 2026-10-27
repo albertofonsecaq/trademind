@@ -94,6 +94,17 @@ class BaseConnector(ABC):
         return None
 
     @abstractmethod
+    async def fetch_one(self, stable_id: str) -> RawMessage | None:
+        """The message with this stable_id, fetched from the platform again.
+
+        How a failed message is retried (ADR 0005): the message as it is now,
+        not a copy kept from the attempt that failed. None when the platform no
+        longer has it, which gives the failure up — so None must mean gone, not
+        "could not ask": a failure to ask raises, and counts as an attempt.
+        """
+        ...
+
+    @abstractmethod
     async def latest_stable_id(self) -> str | None:
         """The newest available evidence's stable_id, without ingesting anything.
 

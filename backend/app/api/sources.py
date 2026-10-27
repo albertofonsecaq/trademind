@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import func, select
 from pydantic import BaseModel, field_validator
 
 from sqlalchemy.orm import selectinload
@@ -18,8 +18,9 @@ from app.models.workspace_member import WorkspaceMember
 from app.models.source_config import SourceConfig
 from app.models import backfill_job as job_status
 from app.models.backfill_job import BackfillJob
+from app.models.failed_message import FailedMessage
 from app.models.platform_connection import PlatformConnection
-from app.services import source_resume_service as resume_service
+from app.services import failed_message_service, source_resume_service as resume_service
 from app.core.clock import as_utc, now_utc
 from app.core.llm_errors import is_fatal_for_run, safe_failure_summary
 from app.services.connection_health import (
@@ -203,6 +204,25 @@ class SourceOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class SourceListOut(SourceOut):
+    # Only the list carries these: the Sources page reads every source from it,
+    # and a single-source answer would otherwise claim a 0 it never counted (#96).
+    failed_retrying: int = 0
+    failed_given_up: int = 0
+
+
+class FailedMessageOut(BaseModel):
+    stable_id: str
+    message_at: datetime | None
+    error: str
+    attempts: int
+    first_failed_at: datetime
+    last_failed_at: datetime
+    given_up_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
 class ResumeRequest(BaseModel):
     # No default: a resume that picks for the user is the thing #12 exists to
     # prevent, so an omitted mode is a 422, not a guess.
@@ -266,7 +286,7 @@ async def add_source(
     return source
 
 
-@router.get("/{workspace_id}/sources", response_model=list[SourceOut])
+@router.get("/{workspace_id}/sources", response_model=list[SourceListOut])
 async def list_sources(
     workspace_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
@@ -276,7 +296,46 @@ async def list_sources(
     result = await db.execute(
         select(SourceConfig).where(SourceConfig.workspace_id == workspace_id)
     )
-    return result.scalars().all()
+    sources = result.scalars().all()
+    counts = await db.execute(
+        select(
+            FailedMessage.source_config_id,
+            func.count().filter(FailedMessage.given_up_at.is_(None)),
+            func.count().filter(FailedMessage.given_up_at.is_not(None)),
+        )
+        .where(FailedMessage.workspace_id == workspace_id)
+        .group_by(FailedMessage.source_config_id)
+    )
+    failed = {source_id: (retrying, given_up) for source_id, retrying, given_up in counts.all()}
+    listed = []
+    for source in sources:
+        retrying, given_up = failed.get(source.id, (0, 0))
+        listed.append(SourceListOut.model_validate(source).model_copy(
+            update={"failed_retrying": retrying, "failed_given_up": given_up}
+        ))
+    return listed
+
+
+@router.get("/{workspace_id}/sources/{source_id}/failed-messages", response_model=list[FailedMessageOut])
+async def list_failed_messages(
+    workspace_id: uuid.UUID,
+    source_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Which of a source's messages failed, why, and whether they are still retried (#96)."""
+    await _assert_member(db, workspace_id, current_user.id)
+    source = (await db.execute(
+        select(SourceConfig.id).where(SourceConfig.id == source_id, SourceConfig.workspace_id == workspace_id)
+    )).scalar_one_or_none()
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+    rows = await db.execute(
+        select(FailedMessage)
+        .where(FailedMessage.source_config_id == source_id)
+        .order_by(FailedMessage.last_failed_at.desc(), FailedMessage.stable_id)
+    )
+    return rows.scalars().all()
 
 
 class SourceUpdateRequest(_ReadsTimestampsAsUtc):
@@ -589,6 +648,9 @@ async def _run_backfill_bg(job_id: uuid.UUID):
                         item = await process_message(db, msg, topic_scope)
                     if item:
                         count += 1
+                        # Stored now: a failure recorded for it earlier, given up
+                        # or not, is over (#96).
+                        await failed_message_service.forget(db, msg.source_config_id, msg.stable_id)
                     await db.commit()
                 except Exception as e:
                     failed += 1
@@ -604,6 +666,9 @@ async def _run_backfill_bg(job_id: uuid.UUID):
                         fatal = e
                         stopped_at = msg.timestamp
                         break
+                    # Counted on the job, and remembered so the source's next
+                    # fetch retries it (#96, ADR 0005).
+                    await failed_message_service.record_failure(db, msg, e)
 
             # A row has to be readable on its own: "completed" used to be written
             # whether a run lost nothing or lost most of what it saw (#9).

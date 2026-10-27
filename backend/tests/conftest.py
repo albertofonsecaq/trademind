@@ -174,6 +174,13 @@ class FakeResult:
     def scalars(self):
         return self
 
+    def __iter__(self):
+        """
+        Iterating a query for rows is how a list query reads them; one that
+        nothing was registered for finds none, as a real one would (#96).
+        """
+        return iter([] if self._value is None else self.all())
+
     def all(self):
         return self._value if isinstance(self._value, list) else [self._value]
 

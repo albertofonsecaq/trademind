@@ -8,7 +8,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import AsyncIterator
 
 from app.connectors.base import BaseConnector, FetchPosition, RawMessage, to_aware_utc
@@ -209,6 +211,37 @@ class YouTubeConnector(BaseConnector):
             return None
         parts = stable_id.split(":")
         return parts[1] if len(parts) >= 2 else None
+
+    async def fetch_one(self, stable_id: str) -> RawMessage | None:
+        """
+        One chunk of a video again, found through the channel's current window.
+
+        The window is the only way this connector finds a video, so one that has
+        left it can no longer be fetched and comes back as None (ADR 0005). The
+        whole video is transcribed again to hand back one chunk: free with
+        captions, paid again without.
+        """
+        video_id = self._video_id_from(stable_id)
+        video = next((v for v in await self._get_videos() if v["video_id"] == video_id), None)
+        if video is None:
+            return None
+        found = None
+        paid: RawMessage | None = None
+        async for msg in self._yield_video_chunks(video):
+            if msg.stable_id == stable_id:
+                found = msg
+            if Decimal(msg.pre_pipeline_cost_usd) > 0:
+                paid = msg
+        if found is None or paid is None or paid is found:
+            return found
+        # The transcription that produced it rides on the first chunk; asking for
+        # a later one paid it all the same, so it is logged with this one (#27).
+        return replace(
+            found,
+            pre_pipeline_cost_usd=paid.pre_pipeline_cost_usd,
+            pre_pipeline_task_type=paid.pre_pipeline_task_type,
+            pre_pipeline_model=paid.pre_pipeline_model,
+        )
 
     async def latest_stable_id(self) -> str | None:
         """
