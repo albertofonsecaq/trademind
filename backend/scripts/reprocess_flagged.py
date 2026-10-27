@@ -1,10 +1,11 @@
 #!/usr/bin/env python
 """
-One-off repair: replay the images whose vision reply was unreadable (#3).
+Replay the evidence flagged for reprocessing: images whose vision reply was
+unreadable (#3), and Telegram videos kept without key frames (#95, #97).
 
-    python scripts/reprocess_flagged_images.py --list
-    python scripts/reprocess_flagged_images.py --source-id <uuid> --dry-run
-    python scripts/reprocess_flagged_images.py --source-id <uuid> --limit 25 --yes
+    python scripts/reprocess_flagged.py --list
+    python scripts/reprocess_flagged.py --source-id <uuid> --dry-run
+    python scripts/reprocess_flagged.py --source-id <uuid> --limit 25 --yes
 
 Dry-run scans the source without a single model call. A real run spends money,
 so it needs --yes and prints an estimate (from this install's own usage history)
@@ -25,7 +26,8 @@ from app.core.database import AsyncSessionLocal
 from app.models.evidence_item import EvidenceItem
 from app.models.source_config import SourceConfig
 from app.models.usage_event import UsageEvent
-from app.services.reprocess_service import reprocess_flagged_images
+from app.services.keyframe_service import DEFAULT_MAX_FRAMES
+from app.services.reprocess_service import REPLAYABLE, reprocess_flagged
 
 
 async def _flagged_by_source(db):
@@ -36,9 +38,10 @@ async def _flagged_by_source(db):
             func.count().label("n"),
             func.min(EvidenceItem.message_timestamp),
             func.max(EvidenceItem.message_timestamp),
+            func.count().filter(EvidenceItem.type == "video_transcript").label("videos"),
         )
         .join(SourceConfig, SourceConfig.id == EvidenceItem.source_config_id)
-        .where(EvidenceItem.needs_reprocessing.is_(True), EvidenceItem.type == "image")
+        .where(EvidenceItem.needs_reprocessing.is_(True), REPLAYABLE)
         .group_by(EvidenceItem.source_config_id, SourceConfig.identifier)
         .order_by(func.count().desc())
     )
@@ -69,27 +72,32 @@ async def main() -> int:
             if not rows:
                 print("Nothing flagged for reprocessing.")
                 return 0
-            print(f"{'source_config_id':38} {'identifier':28} {'flagged':>7}  range")
-            for sid, ident, n, lo, hi in rows:
+            print(f"{'source_config_id':38} {'identifier':28} {'flagged':>7} {'videos':>6}  range")
+            for sid, ident, n, lo, hi, videos in rows:
                 span = f"{lo:%Y-%m-%d} → {hi:%Y-%m-%d}" if lo and hi else "unknown"
-                print(f"{str(sid):38} {(ident or '')[:28]:28} {n:>7}  {span}")
+                print(f"{str(sid):38} {(ident or '')[:28]:28} {n:>7} {videos:>6}  {span}")
             if not args.source_id:
                 print("\nPass --source-id to reprocess one of these.")
             return 0
 
         if not args.dry_run and not args.yes:
-            n = next((r[2] for r in await _flagged_by_source(db) if r[0] == args.source_id), 0)
+            row = next((r for r in await _flagged_by_source(db) if r[0] == args.source_id), None)
+            n, videos = (row[2], row[5]) if row else (0, 0)
             n = min(n, args.limit) if args.limit else n
+            videos = min(videos, n)
             vision = await _avg_cost(db, "vision")
             distill = await _avg_cost(db, "distillation")
-            # Assume every recovered item distills — the honest upper bound.
-            print(f"{n} item(s) would be reprocessed.")
-            print(f"Estimated cost: ~${n * (vision + distill):.2f} "
-                  f"(vision ~${vision:.5f} + distillation ~${distill:.5f} per item, upper bound)")
+            # Assume every recovered item distills, and every video yields the
+            # most frames it can — the honest upper bound.
+            calls = (n - videos) + videos * DEFAULT_MAX_FRAMES
+            print(f"{n} item(s) would be reprocessed, {videos} of them video(s).")
+            print(f"Estimated cost: ~${calls * vision + n * distill:.2f} "
+                  f"(up to {calls} vision call(s) at ~${vision:.5f}, "
+                  f"distillation ~${distill:.5f} per item, upper bound)")
             print("Re-run with --yes to proceed, or --dry-run to scan for free.")
             return 1
 
-        report = await reprocess_flagged_images(
+        report = await reprocess_flagged(
             db, source_config_id=args.source_id, limit=args.limit, dry_run=args.dry_run
         )
         print(report.summary())

@@ -387,77 +387,13 @@ async def _process_video(db: AsyncSession, msg: RawMessage, topic_scope: str) ->
         if not video_path or not os.path.exists(video_path):
             return None
 
-        frames = await keyframe_service.extract_keyframes(video_path)
-        if not frames:
-            # Nothing was looked at, so nothing was judged: kept and flagged for a
-            # replay, not dropped while the fetch position moves past it (#95).
-            reason = (
-                "No key frames extracted: ffmpeg is not installed"
-                if not keyframe_service.ffmpeg_available()
-                else "No key frames could be extracted from the video"
-            )
-            item = _video_evidence(
-                msg,
-                content="Video not analysed: no key frames could be extracted.",
-                confidence=0.0,
-                original_language=None,
-                is_on_topic=None,
-                needs_reprocessing=True,
-                relevance_reason=reason,
-            )
-            db.add(item)
-            await db.flush()
-            return item
-
-        descriptions: list[str] = []
-        total_vision_input = 0
-        total_vision_output = 0
-        unreadable_frames = 0
-
-        for frame_bytes in frames:
-            result, usage = await vision_service.extract_image(frame_bytes)
-            total_vision_input += usage["input_tokens"]
-            total_vision_output += usage["output_tokens"]
-            # Each frame is its own call, so each is logged as it returns: one
-            # event for the whole video lost every earlier frame's cost when a
-            # later one failed (#27).
-            await log_usage_event(
-                workspace_id=msg.workspace_id,
-                task_type="vision",
-                provider_model=settings.DISTILLATION_MODEL,
-                input_units=usage["input_tokens"],
-                output_units=usage["output_tokens"],
-                cost_usd=vision_service.vision_cost(
-                    usage["input_tokens"], usage["output_tokens"]
-                ),
-            )
-            if result.get("needs_reprocessing"):
-                unreadable_frames += 1
-            if result.get("is_on_topic") and result.get("description"):
-                descriptions.append(result["description"])
-
-        is_on_topic = len(descriptions) > 0
-        content = "\n\n".join(descriptions) if descriptions else "No trading content detected in video frames."
-        lang = _detect_lang(content)
-
-        item = _video_evidence(
-            msg,
-            content=content,
-            confidence=0.8,
-            original_language=lang,
-            is_on_topic=is_on_topic,
-            # Any unreadable frame means the video was judged on partial evidence.
-            needs_reprocessing=unreadable_frames > 0,
-            relevance_reason=(
-                f"{len(descriptions)}/{len(frames)} frames had trading content"
-                + (f"; {unreadable_frames} frame(s) unreadable" if unreadable_frames else "")
-            ),
-        )
+        fields = await _analyse_video(msg, video_path)
+        item = _video_evidence(msg, **fields)
         db.add(item)
         await db.flush()
 
-        if is_on_topic:
-            await _distill_and_embed(db, item, msg, content, lang)
+        if item.is_on_topic:
+            await _distill_and_embed(db, item, msg, item.content, item.original_language)
 
         return item
 
@@ -468,6 +404,67 @@ async def _process_video(db: AsyncSession, msg: RawMessage, topic_scope: str) ->
                 os.unlink(video_path)
             except OSError:
                 pass
+
+
+async def _analyse_video(msg: RawMessage, video_path: str) -> dict:
+    """
+    Key frames → Claude Vision per frame → what the video's evidence says.
+    Shared by ingestion and by the replay of a video flagged for reprocessing (#97).
+    """
+    frames = await keyframe_service.extract_keyframes(video_path)
+    if not frames:
+        # Nothing was looked at, so nothing was judged: kept and flagged for a
+        # replay, not dropped while the fetch position moves past it (#95).
+        reason = (
+            "No key frames extracted: ffmpeg is not installed"
+            if not keyframe_service.ffmpeg_available()
+            else "No key frames could be extracted from the video"
+        )
+        return dict(
+            content="Video not analysed: no key frames could be extracted.",
+            confidence=0.0,
+            original_language=None,
+            is_on_topic=None,
+            needs_reprocessing=True,
+            relevance_reason=reason,
+        )
+
+    descriptions: list[str] = []
+    unreadable_frames = 0
+
+    for frame_bytes in frames:
+        result, usage = await vision_service.extract_image(frame_bytes)
+        # Each frame is its own call, so each is logged as it returns: one
+        # event for the whole video lost every earlier frame's cost when a
+        # later one failed (#27).
+        await log_usage_event(
+            workspace_id=msg.workspace_id,
+            task_type="vision",
+            provider_model=settings.DISTILLATION_MODEL,
+            input_units=usage["input_tokens"],
+            output_units=usage["output_tokens"],
+            cost_usd=vision_service.vision_cost(
+                usage["input_tokens"], usage["output_tokens"]
+            ),
+        )
+        if result.get("needs_reprocessing"):
+            unreadable_frames += 1
+        if result.get("is_on_topic") and result.get("description"):
+            descriptions.append(result["description"])
+
+    content = "\n\n".join(descriptions) if descriptions else "No trading content detected in video frames."
+    return dict(
+        content=content,
+        confidence=0.8,
+        original_language=_detect_lang(content),
+        is_on_topic=len(descriptions) > 0,
+        # Any unreadable frame means the video was judged on partial evidence.
+        needs_reprocessing=unreadable_frames > 0,
+        relevance_reason=(
+            f"{len(descriptions)}/{len(frames)} frames had trading content"
+            + (f"; {unreadable_frames} frame(s) unreadable" if unreadable_frames else "")
+        ),
+    )
 
 
 def _video_evidence(msg: RawMessage, **fields) -> EvidenceItem:
