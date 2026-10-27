@@ -303,6 +303,15 @@ async def _process_url(db: AsyncSession, msg: RawMessage, topic_scope: str) -> E
     db.add(item)
     await db.flush()
 
+    await judge_link(db, item, msg, topic_scope)
+    return item
+
+
+async def judge_link(
+    db: AsyncSession, item: EvidenceItem, msg: RawMessage, topic_scope: str, *, distill: bool = True
+) -> None:
+    """Relevance-check a link's stored page text, and distill it if on topic."""
+    text = item.content
     on_topic, reason, rel_usage = await relevance_service.is_on_topic(text[:2000], topic_scope)
     item.is_on_topic = on_topic
     item.relevance_reason = reason
@@ -316,11 +325,10 @@ async def _process_url(db: AsyncSession, msg: RawMessage, topic_scope: str) -> E
         cost_usd=_compute_cost(settings.RELEVANCE_MODEL, rel_usage["input_tokens"], rel_usage["output_tokens"]),
     )
 
-    if not on_topic:
-        return item
+    if not on_topic or not distill:
+        return
 
-    await _distill_and_embed(db, item, msg, text, lang)
-    return item
+    await _distill_and_embed(db, item, msg, text, item.original_language)
 
 
 async def _process_youtube_link(
@@ -370,96 +378,82 @@ async def _process_youtube_link(
 async def _process_video(db: AsyncSession, msg: RawMessage, topic_scope: str) -> EvidenceItem | None:
     """
     Telegram video: extract key frames → Claude Vision per frame → combine on-topic frames.
-    Temp video file is cleaned up after processing.
+    The downloaded file is deleted by process_message, whatever happens here.
     """
-    meta = msg.metadata or {}
-    video_path = meta.get("video_path")
+    video_path = (msg.metadata or {}).get("video_path")
+    if not video_path or not os.path.exists(video_path):
+        return None
 
-    try:
-        if not video_path or not os.path.exists(video_path):
-            return None
+    fields = await analyse_video(msg, video_path)
+    item = _video_evidence(msg, **fields)
+    db.add(item)
+    await db.flush()
 
-        frames = await keyframe_service.extract_keyframes(video_path)
-        if not frames:
-            # Nothing was looked at, so nothing was judged: kept and flagged for a
-            # replay, not dropped while the fetch position moves past it (#95).
-            reason = (
-                "No key frames extracted: ffmpeg is not installed"
-                if not keyframe_service.ffmpeg_available()
-                else "No key frames could be extracted from the video"
-            )
-            item = _video_evidence(
-                msg,
-                content="Video not analysed: no key frames could be extracted.",
-                confidence=0.0,
-                original_language=None,
-                is_on_topic=None,
-                needs_reprocessing=True,
-                relevance_reason=reason,
-            )
-            db.add(item)
-            await db.flush()
-            return item
+    if item.is_on_topic:
+        await _distill_and_embed(db, item, msg, item.content, item.original_language)
 
-        descriptions: list[str] = []
-        total_vision_input = 0
-        total_vision_output = 0
-        unreadable_frames = 0
+    return item
 
-        for frame_bytes in frames:
-            result, usage = await vision_service.extract_image(frame_bytes)
-            total_vision_input += usage["input_tokens"]
-            total_vision_output += usage["output_tokens"]
-            # Each frame is its own call, so each is logged as it returns: one
-            # event for the whole video lost every earlier frame's cost when a
-            # later one failed (#27).
-            await log_usage_event(
-                workspace_id=msg.workspace_id,
-                task_type="vision",
-                provider_model=settings.DISTILLATION_MODEL,
-                input_units=usage["input_tokens"],
-                output_units=usage["output_tokens"],
-                cost_usd=vision_service.vision_cost(
-                    usage["input_tokens"], usage["output_tokens"]
-                ),
-            )
-            if result.get("needs_reprocessing"):
-                unreadable_frames += 1
-            if result.get("is_on_topic") and result.get("description"):
-                descriptions.append(result["description"])
 
-        is_on_topic = len(descriptions) > 0
-        content = "\n\n".join(descriptions) if descriptions else "No trading content detected in video frames."
-        lang = _detect_lang(content)
+async def analyse_video(msg: RawMessage, video_path: str) -> dict:
+    """
+    Key frames → Claude Vision per frame → what the video's evidence says.
+    Shared by ingestion and by the replay of a video flagged for reprocessing (#97).
+    """
+    frames = await keyframe_service.extract_keyframes(video_path)
+    if not frames:
+        # Nothing was looked at, so nothing was judged: kept and flagged for a
+        # replay, not dropped while the fetch position moves past it (#95).
+        reason = (
+            "No key frames extracted: ffmpeg is not installed"
+            if not keyframe_service.ffmpeg_available()
+            else "No key frames could be extracted from the video"
+        )
+        return dict(
+            content="Video not analysed: no key frames could be extracted.",
+            confidence=0.0,
+            original_language=None,
+            is_on_topic=None,
+            needs_reprocessing=True,
+            relevance_reason=reason,
+        )
 
-        item = _video_evidence(
-            msg,
-            content=content,
-            confidence=0.8,
-            original_language=lang,
-            is_on_topic=is_on_topic,
-            # Any unreadable frame means the video was judged on partial evidence.
-            needs_reprocessing=unreadable_frames > 0,
-            relevance_reason=(
-                f"{len(descriptions)}/{len(frames)} frames had trading content"
-                + (f"; {unreadable_frames} frame(s) unreadable" if unreadable_frames else "")
+    descriptions: list[str] = []
+    unreadable_frames = 0
+
+    for frame_bytes in frames:
+        result, usage = await vision_service.extract_image(frame_bytes)
+        # Each frame is its own call, so each is logged as it returns: one
+        # event for the whole video lost every earlier frame's cost when a
+        # later one failed (#27).
+        await log_usage_event(
+            workspace_id=msg.workspace_id,
+            task_type="vision",
+            provider_model=settings.DISTILLATION_MODEL,
+            input_units=usage["input_tokens"],
+            output_units=usage["output_tokens"],
+            cost_usd=vision_service.vision_cost(
+                usage["input_tokens"], usage["output_tokens"]
             ),
         )
-        db.add(item)
-        await db.flush()
+        if result.get("needs_reprocessing"):
+            unreadable_frames += 1
+        if result.get("is_on_topic") and result.get("description"):
+            descriptions.append(result["description"])
 
-        if is_on_topic:
-            await _distill_and_embed(db, item, msg, content, lang)
-
-        return item
-
-    finally:
-        # Always clean up the temp video file
-        if video_path and os.path.exists(video_path):
-            try:
-                os.unlink(video_path)
-            except OSError:
-                pass
+    content = "\n\n".join(descriptions) if descriptions else "No trading content detected in video frames."
+    return dict(
+        content=content,
+        confidence=0.8,
+        original_language=_detect_lang(content),
+        is_on_topic=len(descriptions) > 0,
+        # Any unreadable frame means the video was judged on partial evidence.
+        needs_reprocessing=unreadable_frames > 0,
+        relevance_reason=(
+            f"{len(descriptions)}/{len(frames)} frames had trading content"
+            + (f"; {unreadable_frames} frame(s) unreadable" if unreadable_frames else "")
+        ),
+    )
 
 
 def _video_evidence(msg: RawMessage, **fields) -> EvidenceItem:
@@ -490,6 +484,25 @@ async def process_message(
     Returns the created EvidenceItem, or None if skipped.
     Does NOT commit — caller is responsible.
     """
+    try:
+        return await _route(db, msg, topic_scope)
+    finally:
+        # The connector downloaded it before the pipeline saw it: a duplicate
+        # skipped here used to leave its file behind, once per backfilled video (#97).
+        discard_download(msg)
+
+
+def discard_download(msg: RawMessage) -> None:
+    """Delete the temp file a connector downloaded a video to, if there is one."""
+    video_path = (msg.metadata or {}).get("video_path")
+    if video_path and os.path.exists(video_path):
+        try:
+            os.unlink(video_path)
+        except OSError:
+            pass
+
+
+async def _route(db: AsyncSession, msg: RawMessage, topic_scope: str) -> EvidenceItem | None:
     # Pre-pipeline cost (Whisper, in the YouTube connector) is logged before
     # anything can return: the call already happened upstream to produce this
     # message, so it is owed even if the message turns out to be a duplicate we

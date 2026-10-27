@@ -586,6 +586,15 @@ async def make_card(session, workspace=None):
     return card
 
 
+async def reread(session, row):
+    """The row as the database now holds it, not as this session remembers it."""
+    from sqlalchemy import select
+
+    model = type(row)
+    session.expunge(row)
+    return (await session.execute(select(model).where(model.id == row.id))).scalar_one()
+
+
 # ── the ingestion pipeline, offline ──────────────────────────────────────────
 
 

@@ -119,3 +119,23 @@ class TestAMissingFfmpeg:
         assert not _warnings(keyframe_log)
         # Logged, just not as a warning: the capture is not what kept it quiet.
         assert any("ffmpeg" in r.getMessage() for r in keyframe_log.records)
+
+
+class TestADownloadedVideo:
+    """The connector downloads it; whatever the pipeline decides, the file goes (#97)."""
+
+    async def test_already_stored_is_deleted_without_being_analysed(self, offline_pipeline, tmp_path, monkeypatch):
+        from app.models.evidence_item import EvidenceItem
+
+        async def _no_analysis(video_path):
+            raise AssertionError("a duplicate must not be analysed")
+
+        monkeypatch.setattr(keyframe_service, "extract_keyframes", _no_analysis)
+        msg = _video(tmp_path)
+
+        item = await ingestion_pipeline.process_message(
+            FakeSession(rows={EvidenceItem: object()}), msg, "forex"
+        )
+
+        assert item is None
+        assert not (tmp_path / "clip.mp4").exists()
