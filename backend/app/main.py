@@ -13,12 +13,15 @@ configure_logging(settings.LOG_LEVEL)
 async def lifespan(app: FastAPI):
     from app.core.database import AsyncSessionLocal
     from app.services.analysis_run_service import close_interrupted_runs
+    from app.services.keyframe_service import warn_if_ffmpeg_missing
     from app.workers.poller import create_scheduler
 
     # Runs are carried out inside this process: one still marked running now
     # was cut off by the restart, and would refuse every run of its kind after it.
     async with AsyncSessionLocal() as db:
         await close_interrupted_runs(db)
+
+    warn_if_ffmpeg_missing()
 
     scheduler = create_scheduler()
     scheduler.start()
