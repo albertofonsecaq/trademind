@@ -19,7 +19,7 @@ from app.models.source_config import SourceConfig
 from app.models import backfill_job as job_status
 from app.models.backfill_job import BackfillJob
 from app.models.platform_connection import PlatformConnection
-from app.services import source_resume_service as resume_service
+from app.services import failed_message_service, source_resume_service as resume_service
 from app.core.clock import as_utc, now_utc
 from app.core.llm_errors import is_fatal_for_run, safe_failure_summary
 from app.services.connection_health import (
@@ -597,6 +597,10 @@ async def _run_backfill_bg(job_id: uuid.UUID):
                     log.error(
                         "Backfill pipeline error on %s: %s", msg.stable_id, e, exc_info=True
                     )
+                    if not is_fatal_for_run(e):
+                        # Counted on the job, and remembered so the source's
+                        # next fetch retries it (#96, ADR 0005).
+                        await failed_message_service.record_failure(db, msg, e)
                     if is_fatal_for_run(e):
                         # Every remaining message hits the same wall, so walking
                         # the rest of the range buys nothing but wall-clock time

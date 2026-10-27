@@ -23,6 +23,7 @@ from app.api import sources as sources_api
 from app.connectors.base import RawMessage
 from app.core.llm_errors import is_fatal_for_run
 from app.models.backfill_job import BackfillJob
+from app.models.failed_message import FailedMessage
 from app.models.source_config import SourceConfig
 from app.models.workspace import Workspace
 from app.services import ingestion_pipeline
@@ -197,6 +198,26 @@ class TestBackfillCountsFailures:
         result = await backfill(_fails_from(3, RuntimeError("relevance check blew up")), count=5)
 
         assert "relevance check blew up" in result.job.error_message
+
+
+class TestBackfillRemembersWhatItLost:
+    """#96: a count says how many were lost; a record says which, and retries them."""
+
+    async def test_records_each_failed_message(self, backfill):
+        result = await backfill(_fails_from(3, RuntimeError("relevance check blew up")), count=5)
+
+        recorded = [row for row in result.db.added if isinstance(row, FailedMessage)]
+        assert sorted(row.stable_id for row in recorded) == [
+            "telegram:chan:3", "telegram:chan:4", "telegram:chan:5",
+        ]
+        assert all(row.error == "relevance check blew up" for row in recorded)
+
+    async def test_does_not_record_the_failure_that_ended_the_run(self, backfill):
+        fatal = _status_error(anthropic.BadRequestError, 400, USAGE_LIMIT)
+
+        result = await backfill(_fails_from(2, fatal), count=5)
+
+        assert not [row for row in result.db.added if isinstance(row, FailedMessage)]
 
 
 # ── a doomed run stops instead of grinding through the range ──────────────────
