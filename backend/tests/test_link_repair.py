@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 from app.models.evidence_item import EvidenceItem
 from app.services import ingestion_pipeline, link_repair_service, url_service
-from tests.conftest import make_source
+from tests.conftest import make_source, reread
 
 _ARTICLE = "EURUSD broke above the weekly range on the ECB decision. " * 5
 
@@ -94,11 +94,6 @@ async def _stored_link(db, source, *, content, msg_id=42, url=_URL, on_topic=Fal
     return item
 
 
-async def _reread(db, item) -> EvidenceItem:
-    db.expunge(item)
-    return (await db.execute(select(EvidenceItem).where(EvidenceItem.id == item.id))).scalar_one()
-
-
 @pytest.mark.db
 class TestGarbledLinkEvidence:
     async def test_is_fetched_again_and_replaced_in_place(self, db_session, web, distilled, offline_pipeline):
@@ -109,7 +104,7 @@ class TestGarbledLinkEvidence:
 
         report = await link_repair_service.repair_garbled_links(db_session, source_config_id=source.id)
 
-        repaired = await _reread(db_session, item)
+        repaired = await reread(db_session, item)
         assert repaired.id == item.id
         assert repaired.content == _ARTICLE
         assert repaired.source_metadata["title"] == "ECB decision"
@@ -128,7 +123,7 @@ class TestGarbledLinkEvidence:
         report = await link_repair_service.repair_garbled_links(db_session, source_config_id=source.id)
 
         assert fetched == []
-        assert (await _reread(db_session, item)).content == _ARTICLE
+        assert (await reread(db_session, item)).content == _ARTICLE
         assert report.garbled == 0
 
     async def test_is_only_counted_in_a_dry_run(self, db_session, web, distilled, offline_pipeline):
@@ -145,7 +140,7 @@ class TestGarbledLinkEvidence:
         assert report.garbled == 1
         assert fetched == []
         assert offline_pipeline.added == []
-        assert (await _reread(db_session, item)).content == junk
+        assert (await reread(db_session, item)).content == junk
 
     async def test_whose_page_is_gone_is_kept_and_named(self, db_session, web, distilled, offline_pipeline):
         source = await make_source(db_session)
@@ -155,7 +150,7 @@ class TestGarbledLinkEvidence:
         report = await link_repair_service.repair_garbled_links(db_session, source_config_id=source.id)
 
         assert report.unfetchable == [item.stable_id]
-        assert (await _reread(db_session, item)).content == junk
+        assert (await reread(db_session, item)).content == junk
         assert offline_pipeline.added == []
 
     async def test_of_another_source_is_not_touched(self, db_session, web, distilled):
@@ -191,4 +186,36 @@ class TestGarbledLinkEvidence:
 
         assert report.errors == 1
         assert report.repaired_on_topic == 1
-        assert (await _reread(db_session, item)).content == _ARTICLE
+        assert (await reread(db_session, item)).content == _ARTICLE
+
+    async def test_whose_page_is_still_junk_is_left_without_a_paid_call(
+        self, db_session, web, distilled, offline_pipeline
+    ):
+        pages, _ = web
+        junk = _as_the_bug_stored_it(_ARTICLE)
+        pages[_URL] = {"url": _URL, "title": "?", "text": junk}
+        source = await make_source(db_session)
+        item = await _stored_link(db_session, source, content=junk)
+
+        report = await link_repair_service.repair_garbled_links(db_session, source_config_id=source.id)
+
+        assert report.unfetchable == [item.stable_id]
+        assert offline_pipeline.added == []
+
+    async def test_already_distilled_from_the_junk_is_named_and_not_distilled_again(
+        self, db_session, web, distilled
+    ):
+        from app.models.trade_idea import TradeIdea
+
+        pages, _ = web
+        pages[_URL] = {"url": _URL, "title": "ECB decision", "text": _ARTICLE}
+        source = await make_source(db_session)
+        item = await _stored_link(db_session, source, content=_as_the_bug_stored_it(_ARTICLE), on_topic=True)
+        db_session.add(TradeIdea(evidence_item_id=item.id, workspace_id=source.workspace_id))
+        await db_session.flush()
+
+        report = await link_repair_service.repair_garbled_links(db_session, source_config_id=source.id)
+
+        assert report.already_distilled == [item.stable_id]
+        assert distilled == []
+        assert (await reread(db_session, item)).content == _ARTICLE

@@ -16,15 +16,15 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.connectors.base import RawMessage
 from app.models.evidence_item import EvidenceItem
 from app.models.source_config import SourceConfig
-from app.models.trade_idea import TradeIdea
 from app.models.workspace import Workspace
 from app.services import url_service
+from app.services.reprocess_service import already_distilled
 
 log = logging.getLogger(__name__)
 
@@ -35,7 +35,9 @@ class LinkRepairReport:
     repaired_on_topic: int = 0
     repaired_off_topic: int = 0
     errors: int = 0
-    unfetchable: list[str] = field(default_factory=list)   # page gone: row left as it was
+    unfetchable: list[str] = field(default_factory=list)   # page gone or still junk: row left as it was
+    # Distilled from the junk before the repair: the old idea is kept, for a person to check.
+    already_distilled: list[str] = field(default_factory=list)
     dry_run: bool = False
 
     def summary(self) -> str:
@@ -43,7 +45,7 @@ class LinkRepairReport:
         return (
             f"{head}: garbled={self.garbled} on_topic={self.repaired_on_topic} "
             f"off_topic={self.repaired_off_topic} errors={self.errors} "
-            f"unfetchable={len(self.unfetchable)}"
+            f"unfetchable={len(self.unfetchable)} already_distilled={len(self.already_distilled)}"
         )
 
 
@@ -107,7 +109,9 @@ async def _repair_one(db, item: EvidenceItem, topic_scope: str, report: LinkRepa
 
     meta = dict(item.source_metadata or {})
     fetched = await url_service.extract(meta.get("url") or "")
-    if not fetched:
+    # Still junk: a page in an encoding the fetcher does not read. Judging it
+    # again would only pay for the same verdict on every run.
+    if not fetched or url_service.looks_garbled(fetched["text"]):
         report.unfetchable.append(item.stable_id)
         return
 
@@ -118,10 +122,10 @@ async def _repair_one(db, item: EvidenceItem, topic_scope: str, report: LinkRepa
 
     # A junk row judged on topic may already have been distilled: no second idea
     # is added beside it, and the old one is left for a person to look at.
-    already = (await db.execute(
-        select(func.count()).select_from(TradeIdea).where(TradeIdea.evidence_item_id == item.id)
-    )).scalar()
-    await ingestion_pipeline._judge_link(db, item, _message_for(item), topic_scope, distill=not already)
+    already = await already_distilled(db, item)
+    if already:
+        report.already_distilled.append(item.stable_id)
+    await ingestion_pipeline.judge_link(db, item, _message_for(item), topic_scope, distill=not already)
 
     if item.is_on_topic:
         report.repaired_on_topic += 1

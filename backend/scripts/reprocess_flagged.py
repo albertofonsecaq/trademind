@@ -9,7 +9,7 @@ unreadable (#3), and Telegram videos kept without key frames (#95, #97).
 
 Dry-run scans the source without a single model call. A real run spends money,
 so it needs --yes and prints an estimate (from this install's own usage history)
-first. --limit takes the newest flagged items, so a partial run recovers the
+first. --limit takes the newest flagged evidence, so a partial run recovers the
 most useful evidence.
 """
 import argparse
@@ -59,7 +59,7 @@ async def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--list", action="store_true", help="show flagged counts per source and exit")
     ap.add_argument("--source-id", type=uuid.UUID)
-    ap.add_argument("--limit", type=int, help="only the N newest flagged items")
+    ap.add_argument("--limit", type=int, help="only the N newest flagged evidence")
     ap.add_argument("--dry-run", action="store_true", help="scan only — no model calls, no cost")
     ap.add_argument("--yes", action="store_true", help="confirm a real (paid) run")
     args = ap.parse_args()
@@ -87,13 +87,13 @@ async def main() -> int:
             videos = min(videos, n)
             vision = await _avg_cost(db, "vision")
             distill = await _avg_cost(db, "distillation")
-            # Assume every recovered item distills, and every video yields the
+            # Assume all recovered evidence distills, and every video yields the
             # most frames it can — the honest upper bound.
             calls = (n - videos) + videos * DEFAULT_MAX_FRAMES
-            print(f"{n} item(s) would be reprocessed, {videos} of them video(s).")
+            print(f"{n} flagged evidence would be reprocessed, {videos} of them video(s).")
             print(f"Estimated cost: ~${calls * vision + n * distill:.2f} "
                   f"(up to {calls} vision call(s) at ~${vision:.5f}, "
-                  f"distillation ~${distill:.5f} per item, upper bound)")
+                  f"distillation ~${distill:.5f} each, upper bound)")
             print("Re-run with --yes to proceed, or --dry-run to scan for free.")
             return 1
 

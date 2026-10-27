@@ -303,11 +303,11 @@ async def _process_url(db: AsyncSession, msg: RawMessage, topic_scope: str) -> E
     db.add(item)
     await db.flush()
 
-    await _judge_link(db, item, msg, topic_scope)
+    await judge_link(db, item, msg, topic_scope)
     return item
 
 
-async def _judge_link(
+async def judge_link(
     db: AsyncSession, item: EvidenceItem, msg: RawMessage, topic_scope: str, *, distill: bool = True
 ) -> None:
     """Relevance-check a link's stored page text, and distill it if on topic."""
@@ -378,35 +378,24 @@ async def _process_youtube_link(
 async def _process_video(db: AsyncSession, msg: RawMessage, topic_scope: str) -> EvidenceItem | None:
     """
     Telegram video: extract key frames → Claude Vision per frame → combine on-topic frames.
-    Temp video file is cleaned up after processing.
+    The downloaded file is deleted by process_message, whatever happens here.
     """
-    meta = msg.metadata or {}
-    video_path = meta.get("video_path")
+    video_path = (msg.metadata or {}).get("video_path")
+    if not video_path or not os.path.exists(video_path):
+        return None
 
-    try:
-        if not video_path or not os.path.exists(video_path):
-            return None
+    fields = await analyse_video(msg, video_path)
+    item = _video_evidence(msg, **fields)
+    db.add(item)
+    await db.flush()
 
-        fields = await _analyse_video(msg, video_path)
-        item = _video_evidence(msg, **fields)
-        db.add(item)
-        await db.flush()
+    if item.is_on_topic:
+        await _distill_and_embed(db, item, msg, item.content, item.original_language)
 
-        if item.is_on_topic:
-            await _distill_and_embed(db, item, msg, item.content, item.original_language)
-
-        return item
-
-    finally:
-        # Always clean up the temp video file
-        if video_path and os.path.exists(video_path):
-            try:
-                os.unlink(video_path)
-            except OSError:
-                pass
+    return item
 
 
-async def _analyse_video(msg: RawMessage, video_path: str) -> dict:
+async def analyse_video(msg: RawMessage, video_path: str) -> dict:
     """
     Key frames → Claude Vision per frame → what the video's evidence says.
     Shared by ingestion and by the replay of a video flagged for reprocessing (#97).
@@ -495,6 +484,25 @@ async def process_message(
     Returns the created EvidenceItem, or None if skipped.
     Does NOT commit — caller is responsible.
     """
+    try:
+        return await _route(db, msg, topic_scope)
+    finally:
+        # The connector downloaded it before the pipeline saw it: a duplicate
+        # skipped here used to leave its file behind, once per backfilled video (#97).
+        discard_download(msg)
+
+
+def discard_download(msg: RawMessage) -> None:
+    """Delete the temp file a connector downloaded a video to, if there is one."""
+    video_path = (msg.metadata or {}).get("video_path")
+    if video_path and os.path.exists(video_path):
+        try:
+            os.unlink(video_path)
+        except OSError:
+            pass
+
+
+async def _route(db: AsyncSession, msg: RawMessage, topic_scope: str) -> EvidenceItem | None:
     # Pre-pipeline cost (Whisper, in the YouTube connector) is logged before
     # anything can return: the call already happened upstream to produce this
     # message, so it is owed even if the message turns out to be a duplicate we

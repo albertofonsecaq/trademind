@@ -104,7 +104,7 @@ async def reprocess_flagged(
 
     connector = ingestion_pipeline._build_connector(source)
     log.info(
-        "Reprocess: %d flagged item(s) for source %s, scanning %s → %s%s",
+        "Reprocess: %d flagged evidence for source %s, scanning %s → %s%s",
         len(pending), source.identifier, date_start.date(), date_end.date(),
         " (dry run)" if dry_run else "",
     )
@@ -113,30 +113,15 @@ async def reprocess_flagged(
     async for msg in connector.fetch_range(date_start, date_end):
         report.scanned += 1
         try:
-            if msg.stable_id not in outstanding:
-                continue            # not ours — drop it before spending anything
-            outstanding.discard(msg.stable_id)
-            report.matched += 1
-
-            if dry_run:
-                continue
-            try:
-                if msg.content_type == "video":
-                    await _replay_video(db, msg, workspace_id, report)
-                else:
-                    await _replay_one(
-                        db, msg, workspace_id, report,
-                        detect_lang=ingestion_pipeline._detect_lang,
-                        distill=ingestion_pipeline._distill_and_embed,
-                    )
-                await db.commit()
-            except Exception as e:
-                report.errors += 1
-                log.error("Reprocess failed for %s: %s", msg.stable_id, e, exc_info=True)
-                await db.rollback()
+            # Anything not ours is dropped here, before anything is spent on it.
+            if msg.stable_id in outstanding:
+                outstanding.discard(msg.stable_id)
+                report.matched += 1
+                if not dry_run:
+                    await _replay_matched(db, msg, workspace_id, report)
         finally:
             # The connector downloads every video it hands over, ours or not.
-            _discard_download(msg)
+            ingestion_pipeline.discard_download(msg)
 
         if not outstanding:
             break
@@ -146,10 +131,30 @@ async def reprocess_flagged(
     return report
 
 
+async def _replay_matched(db, msg, workspace_id, report) -> None:
+    """Replay one of ours and commit it; a failure costs only that one."""
+    from app.services import ingestion_pipeline
+
+    try:
+        if msg.content_type == "video":
+            await _replay_video(db, msg, workspace_id, report)
+        else:
+            await _replay_one(
+                db, msg, workspace_id, report,
+                detect_lang=ingestion_pipeline._detect_lang,
+                distill=ingestion_pipeline._distill_and_embed,
+            )
+        await db.commit()
+    except Exception as e:
+        report.errors += 1
+        log.error("Reprocess failed for %s: %s", msg.stable_id, e, exc_info=True)
+        await db.rollback()
+
+
 async def _load_flagged(
     db: AsyncSession, source_config_id: uuid.UUID, limit: int | None
 ) -> dict[str, object]:
-    """stable_id → message_timestamp for the flagged items of this source."""
+    """stable_id → message_timestamp for the flagged evidence of this source."""
     stmt = (
         select(EvidenceItem.stable_id, EvidenceItem.message_timestamp)
         .where(
@@ -212,7 +217,7 @@ async def _replay_one(db, msg, workspace_id, report, *, detect_lang, distill) ->
         report.recovered_off_topic += 1
         return
 
-    if await _already_distilled(db, item):
+    if await already_distilled(db, item):
         report.recovered_on_topic += 1
         return
 
@@ -231,20 +236,22 @@ async def _replay_video(db, msg, workspace_id, report) -> None:
         return
 
     # Vision is logged per frame inside, as each call returns (#27).
-    for name, value in (await ingestion_pipeline._analyse_video(msg, video_path)).items():
+    for name, value in (await ingestion_pipeline.analyse_video(msg, video_path)).items():
         setattr(item, name, value)
     await db.flush()
 
+    # A partly unreadable video is still judged on the frames that were read:
+    # it counts as on or off topic, and as still unreadable as well.
     if item.needs_reprocessing:
         report.still_unreadable += 1
-    elif item.is_on_topic:
+    if item.is_on_topic:
         report.recovered_on_topic += 1
-    else:
+    elif item.is_on_topic is False:
         report.recovered_off_topic += 1
 
     # As at ingestion: on-topic frames are distilled even if another frame was
     # unreadable, and the row stays flagged for that frame.
-    if item.is_on_topic and not await _already_distilled(db, item):
+    if item.is_on_topic and not await already_distilled(db, item):
         await ingestion_pipeline._distill_and_embed(db, item, msg, item.content, item.original_language)
 
 
@@ -257,18 +264,9 @@ async def _stored(db, workspace_id, stable_id) -> EvidenceItem | None:
     )).scalar_one_or_none()
 
 
-async def _already_distilled(db, item) -> bool:
+async def already_distilled(db, item) -> bool:
     """Guard against a second run duplicating what the first one distilled."""
     already = await db.execute(
         select(func.count()).select_from(TradeIdea).where(TradeIdea.evidence_item_id == item.id)
     )
     return bool(already.scalar())
-
-
-def _discard_download(msg) -> None:
-    video_path = (msg.metadata or {}).get("video_path")
-    if video_path and os.path.exists(video_path):
-        try:
-            os.unlink(video_path)
-        except OSError:
-            pass

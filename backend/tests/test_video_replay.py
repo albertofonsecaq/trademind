@@ -20,7 +20,7 @@ from sqlalchemy import select
 from app.connectors.base import RawMessage
 from app.models.evidence_item import EvidenceItem
 from app.services import ingestion_pipeline, keyframe_service, reprocess_service, vision_service
-from tests.conftest import make_source
+from tests.conftest import make_source, reread
 
 _AT = datetime(2026, 10, 25, 21, 0, tzinfo=timezone.utc)
 
@@ -108,11 +108,6 @@ async def _flagged_video(db, source, msg_id: int, *, source_type="telegram") -> 
     return item
 
 
-async def _reread(db, item) -> EvidenceItem:
-    db.expunge(item)
-    return (await db.execute(select(EvidenceItem).where(EvidenceItem.id == item.id))).scalar_one()
-
-
 @pytest.mark.db
 class TestAFlaggedTelegramVideo:
     async def test_is_analysed_and_updated_in_place(self, db_session, channel, frames, tmp_path):
@@ -124,7 +119,7 @@ class TestAFlaggedTelegramVideo:
 
         report = await reprocess_service.reprocess_flagged(db_session, source_config_id=source.id)
 
-        replayed = await _reread(db_session, item)
+        replayed = await reread(db_session, item)
         assert replayed.content == "EURUSD long above the range\n\nEURUSD long above the range"
         assert replayed.is_on_topic is True
         assert replayed.needs_reprocessing is False
@@ -140,7 +135,7 @@ class TestAFlaggedTelegramVideo:
 
         report = await reprocess_service.reprocess_flagged(db_session, source_config_id=source.id)
 
-        replayed = await _reread(db_session, item)
+        replayed = await reread(db_session, item)
         assert replayed.needs_reprocessing is True
         assert replayed.is_on_topic is None
         assert report.still_unreadable == 1
@@ -159,8 +154,32 @@ class TestAFlaggedTelegramVideo:
 
         assert report.matched == 1
         assert frames["vision_calls"] == 0
-        assert (await _reread(db_session, item)).needs_reprocessing is True
+        assert (await reread(db_session, item)).needs_reprocessing is True
         assert not os.path.exists(msg.metadata["video_path"])
+
+
+    async def test_partly_unreadable_counts_as_on_topic_and_still_unreadable(
+        self, db_session, channel, frames, tmp_path, monkeypatch
+    ):
+        calls = iter([
+            ({"is_on_topic": True, "description": "EURUSD long", "needs_reprocessing": False}, {"input_tokens": 1, "output_tokens": 1}),
+            ({"is_on_topic": None, "description": None, "needs_reprocessing": True}, {"input_tokens": 1, "output_tokens": 1}),
+        ])
+
+        async def _vision(image_bytes, mime="image/jpeg"):
+            return next(calls)
+
+        monkeypatch.setattr(vision_service, "extract_image", _vision)
+        source = await make_source(db_session)
+        item = await _flagged_video(db_session, source, 51)
+        channel.messages.append(_downloaded(tmp_path, source, 51))
+        frames["frames"]["video-51.mp4"] = [b"frame-1", b"frame-2"]
+
+        report = await reprocess_service.reprocess_flagged(db_session, source_config_id=source.id)
+
+        assert (report.recovered_on_topic, report.still_unreadable) == (1, 1)
+        assert frames["distilled"] == [item.stable_id]
+        assert (await reread(db_session, item)).needs_reprocessing is True
 
 
 @pytest.mark.db
@@ -212,7 +231,7 @@ class TestAFlaggedImage:
 
         report = await reprocess_service.reprocess_flagged(db_session, source_config_id=source.id)
 
-        replayed = await _reread(db_session, item)
+        replayed = await reread(db_session, item)
         assert replayed.content == "EURUSD long above the range"
         assert replayed.needs_reprocessing is False
         assert report.recovered_on_topic == 1
