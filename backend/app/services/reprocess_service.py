@@ -28,10 +28,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
+from app.core.llm_errors import is_fatal_for_run
 from app.models.evidence_item import EvidenceItem
 from app.models.source_config import SourceConfig
 from app.models.trade_idea import TradeIdea
 from app.services import vision_service
+from app.services.connection_health import credentials_rejected
 from app.services.usage_service import log_usage_event
 
 log = logging.getLogger(__name__)
@@ -52,7 +54,8 @@ class ReprocessReport:
     recovered_off_topic: int = 0
     still_unreadable: int = 0   # vision failed again — stays flagged
     errors: int = 0
-    unreachable: list[str] = field(default_factory=list)  # the source no longer has them
+    # The source no longer offers them: deleted, or their kind now filtered out.
+    unreachable: list[str] = field(default_factory=list)
     dry_run: bool = False
 
     def summary(self) -> str:
@@ -102,15 +105,19 @@ async def reprocess_flagged(
         try:
             msg = await connector.fetch_one(stable_id)
         except Exception as e:
-            # One message the platform will not hand over must not stop the rest.
+            # A rejected session or an exhausted account would fail every one
+            # after it the same way: stop, as the fetch does (ADR 0005).
+            if credentials_rejected(e) or is_fatal_for_run(e):
+                raise
+            # Anything else is about this one message, and must not stop the rest.
             report.errors += 1
             log.error("Reprocess could not fetch %s: %s", stable_id, e, exc_info=True)
             continue
         if msg is None:
             report.unreachable.append(stable_id)
             continue
+        report.matched += 1
         try:
-            report.matched += 1
             if not dry_run:
                 await _replay_matched(db, msg, workspace_id, report)
         finally:
@@ -137,9 +144,11 @@ async def _replay_matched(db, msg, workspace_id, report) -> None:
             )
         await db.commit()
     except Exception as e:
-        report.errors += 1
         log.error("Reprocess failed for %s: %s", msg.stable_id, e, exc_info=True)
         await db.rollback()
+        if is_fatal_for_run(e):
+            raise                   # every message after it would fail the same way
+        report.errors += 1
 
 
 async def _load_flagged(

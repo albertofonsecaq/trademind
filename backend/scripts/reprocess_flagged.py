@@ -7,10 +7,10 @@ unreadable (#3), and Telegram videos kept without key frames (#95, #97).
     python scripts/reprocess_flagged.py --source-id <uuid> --dry-run
     python scripts/reprocess_flagged.py --source-id <uuid> --limit 25 --yes
 
-Dry-run fetches each flagged message by its id without a single model call. A real run spends money,
-so it needs --yes and prints an estimate (from this install's own usage history)
-first. --limit takes the newest flagged evidence, so a partial run recovers the
-most useful evidence.
+Dry-run fetches each flagged message by its id without a single model call. A
+real run spends money, so it needs --yes and prints an estimate (from this
+install's own usage history) first. --limit takes the newest flagged evidence,
+so a partial run recovers the most useful evidence.
 """
 import argparse
 import asyncio
@@ -102,7 +102,7 @@ async def main() -> int:
         )
         print(report.summary())
         if report.unreachable:
-            print(f"unreachable (the source no longer has them): {len(report.unreachable)}")
+            print(f"unreachable (deleted at the source, or their kind is now filtered out): {len(report.unreachable)}")
             for sid in report.unreachable[:10]:
                 print(f"  {sid}")
             if len(report.unreachable) > 10:

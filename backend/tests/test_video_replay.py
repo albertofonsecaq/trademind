@@ -20,7 +20,7 @@ from sqlalchemy import select
 from app.connectors.base import RawMessage
 from app.models.evidence_item import EvidenceItem
 from app.services import ingestion_pipeline, keyframe_service, reprocess_service, vision_service
-from tests.conftest import make_source, reread
+from tests.conftest import make_source, reread, rpc_error
 
 _AT = datetime(2026, 10, 25, 21, 0, tzinfo=timezone.utc)
 
@@ -30,14 +30,14 @@ class FakeChannel:
 
     def __init__(self):
         self.messages: list[RawMessage] = []
-        self.unreachable: dict[str, Exception] = {}
+        self.raises: dict[str, Exception] = {}
         self.fetched: list[str] = []
         self.ranges: list[tuple] = []
 
     async def fetch_one(self, stable_id):
         self.fetched.append(stable_id)
-        if stable_id in self.unreachable:
-            raise self.unreachable[stable_id]
+        if stable_id in self.raises:
+            raise self.raises[stable_id]
         return next((m for m in self.messages if m.stable_id == stable_id), None)
 
     async def fetch_range(self, date_start, date_end):
@@ -225,13 +225,54 @@ class TestTheReplayFetchesByID:
         await _flagged_video(db_session, source, 51)
         item = await _flagged_video(db_session, source, 52)
         channel.messages.append(_downloaded(tmp_path, source, 52))
-        channel.unreachable["telegram:chan:51:video"] = ConnectionError("Telegram did not answer")
+        channel.raises["telegram:chan:51:video"] = ConnectionError("Telegram did not answer")
         frames["frames"]["video-52.mp4"] = [b"frame-1"]
 
         report = await reprocess_service.reprocess_flagged(db_session, source_config_id=source.id)
 
         assert report.errors == 1
         assert (await reread(db_session, item)).needs_reprocessing is False
+
+    async def test_stops_when_telegram_rejects_the_session(self, db_session, channel, frames):
+        """Every message after it would fail the same way: the run stops, as ADR 0005's fetch does."""
+        from telethon.errors import AuthKeyUnregisteredError
+
+        source = await make_source(db_session)
+        await _flagged_video(db_session, source, 51)
+        await _flagged_video(db_session, source, 52)
+        channel.raises["telegram:chan:51:video"] = rpc_error(AuthKeyUnregisteredError)
+        channel.raises["telegram:chan:52:video"] = rpc_error(AuthKeyUnregisteredError)
+
+        with pytest.raises(AuthKeyUnregisteredError):
+            await reprocess_service.reprocess_flagged(db_session, source_config_id=source.id)
+
+        assert len(channel.fetched) == 1
+
+    async def test_stops_when_the_ai_account_is_exhausted(self, db_session, channel, frames, tmp_path, monkeypatch):
+        import anthropic
+        import httpx
+
+        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        exhausted = anthropic.BadRequestError(
+            "You have reached your specified API usage limits.",
+            response=httpx.Response(400, request=request, json={"error": {"message": "You have reached your specified API usage limits."}}),
+            body=None,
+        )
+
+        async def _vision(image_bytes, mime="image/jpeg"):
+            raise exhausted
+
+        monkeypatch.setattr(vision_service, "extract_image", _vision)
+        source = await make_source(db_session)
+        for n in (51, 52):
+            await _flagged_video(db_session, source, n)
+            channel.messages.append(_downloaded(tmp_path, source, n))
+            frames["frames"][f"video-{n}.mp4"] = [b"frame-1"]
+
+        with pytest.raises(anthropic.BadRequestError):
+            await reprocess_service.reprocess_flagged(db_session, source_config_id=source.id)
+
+        assert len(channel.fetched) == 1
 
     async def test_leaves_a_youtube_transcript_alone(self, db_session, channel, frames):
         source = await make_source(db_session)
