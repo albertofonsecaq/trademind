@@ -11,6 +11,7 @@ evidence marked for reprocessing, with relevance unknown, not off-topic.
 
 ffmpeg is made genuinely absent by pointing PATH at an empty directory.
 """
+import logging
 import uuid
 
 import pytest
@@ -72,33 +73,49 @@ class TestAVideoWithNoKeyFrames:
         assert "no key frames" in item.relevance_reason.lower()
 
 
+def _warnings(caplog) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.levelno == logging.WARNING]
+
+
+@pytest.fixture
+def keyframe_log(caplog):
+    """Everything keyframe_service logs, down to debug, so silence is not mistaken for none."""
+    caplog.set_level(logging.DEBUG, logger=keyframe_service.log.name)
+    return caplog
+
+
+@pytest.fixture
+def fake_ffmpeg(monkeypatch, tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "ffmpeg"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+
 class TestAMissingFfmpeg:
     """Reported once, when the backend starts, not once per video."""
 
-    def test_is_reported_at_startup(self, no_ffmpeg, caplog):
+    def test_is_reported_at_startup(self, no_ffmpeg, keyframe_log):
         keyframe_service.warn_if_ffmpeg_missing()
 
-        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        warnings = _warnings(keyframe_log)
         assert len(warnings) == 1
         assert "ffmpeg" in warnings[0].getMessage()
 
-    def test_is_not_reported_when_it_is_installed(self, monkeypatch, tmp_path, caplog):
-        bin_dir = tmp_path / "bin"
-        bin_dir.mkdir()
-        fake = bin_dir / "ffmpeg"
-        fake.write_text("#!/bin/sh\nexit 0\n")
-        fake.chmod(0o755)
-        monkeypatch.setenv("PATH", str(bin_dir))
-
+    def test_is_not_reported_when_it_is_installed(self, fake_ffmpeg, keyframe_log):
         keyframe_service.warn_if_ffmpeg_missing()
 
-        assert not [r for r in caplog.records if r.levelname == "WARNING"]
+        assert not _warnings(keyframe_log)
 
-    async def test_is_not_warned_about_again_for_each_video(self, no_ffmpeg, tmp_path, caplog):
+    async def test_is_not_warned_about_again_for_each_video(self, no_ffmpeg, tmp_path, keyframe_log):
         video = tmp_path / "clip.mp4"
         video.write_bytes(b"not really a video")
 
         frames = await keyframe_service.extract_keyframes(str(video))
 
         assert frames == []
-        assert not [r for r in caplog.records if r.levelname == "WARNING"]
+        assert not _warnings(keyframe_log)
+        # Logged, just not as a warning: the capture is not what kept it quiet.
+        assert any("ffmpeg" in r.getMessage() for r in keyframe_log.records)

@@ -388,20 +388,14 @@ async def _process_video(db: AsyncSession, msg: RawMessage, topic_scope: str) ->
                 if not keyframe_service.ffmpeg_available()
                 else "No key frames could be extracted from the video"
             )
-            item = EvidenceItem(
-                workspace_id=msg.workspace_id,
-                source_config_id=msg.source_config_id,
-                stable_id=msg.stable_id,
-                source_type=msg.source_type,
-                type="video_transcript",
+            item = _video_evidence(
+                msg,
                 content="Video not analysed: no key frames could be extracted.",
                 confidence=0.0,
                 original_language=None,
                 is_on_topic=None,
                 needs_reprocessing=True,
                 relevance_reason=reason,
-                source_metadata=_video_metadata(msg),
-                message_timestamp=msg.timestamp,
             )
             db.add(item)
             await db.flush()
@@ -438,12 +432,8 @@ async def _process_video(db: AsyncSession, msg: RawMessage, topic_scope: str) ->
         content = "\n\n".join(descriptions) if descriptions else "No trading content detected in video frames."
         lang = _detect_lang(content)
 
-        item = EvidenceItem(
-            workspace_id=msg.workspace_id,
-            source_config_id=msg.source_config_id,
-            stable_id=msg.stable_id,
-            source_type=msg.source_type,
-            type="video_transcript",
+        item = _video_evidence(
+            msg,
             content=content,
             confidence=0.8,
             original_language=lang,
@@ -454,8 +444,6 @@ async def _process_video(db: AsyncSession, msg: RawMessage, topic_scope: str) ->
                 f"{len(descriptions)}/{len(frames)} frames had trading content"
                 + (f"; {unreadable_frames} frame(s) unreadable" if unreadable_frames else "")
             ),
-            source_metadata=_video_metadata(msg),
-            message_timestamp=msg.timestamp,
         )
         db.add(item)
         await db.flush()
@@ -474,10 +462,20 @@ async def _process_video(db: AsyncSession, msg: RawMessage, topic_scope: str) ->
                 pass
 
 
-def _video_metadata(msg: RawMessage) -> dict:
+def _video_evidence(msg: RawMessage, **fields) -> EvidenceItem:
+    """A Telegram video's evidence: what is the same whether or not it was analysed."""
     # The temp file is deleted once the video is processed: its path means nothing later.
-    meta = msg.metadata or {}
-    return {"author": msg.author, "channel": msg.channel, **{k: v for k, v in meta.items() if k != "video_path"}}
+    meta = {k: v for k, v in (msg.metadata or {}).items() if k != "video_path"}
+    return EvidenceItem(
+        workspace_id=msg.workspace_id,
+        source_config_id=msg.source_config_id,
+        stable_id=msg.stable_id,
+        source_type=msg.source_type,
+        type="video_transcript",
+        source_metadata={"author": msg.author, "channel": msg.channel, **meta},
+        message_timestamp=msg.timestamp,
+        **fields,
+    )
 
 
 # ── main entry point ──────────────────────────────────────────────────────────
