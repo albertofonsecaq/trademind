@@ -103,6 +103,19 @@ def _bs4_extract(html: str) -> tuple[str, str]:
         return "", ""
 
 
+# Binary decoded as text is mostly replacement characters and control bytes; an
+# article in any language has next to none, so a tenth is far from both.
+_GARBLED_SHARE = 0.10
+
+
+def looks_garbled(text: str) -> bool:
+    """True for a page's bytes read as text without decompressing them (#94, #97)."""
+    if not text:
+        return False
+    junk = sum(1 for c in text if c == "\ufffd" or (c < " " and c not in "\t\n\r"))
+    return junk / len(text) > _GARBLED_SHARE
+
+
 async def extract(url: str) -> dict | None:
     """
     Async wrapper. Returns {url, title, text} or None.

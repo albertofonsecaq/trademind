@@ -303,6 +303,15 @@ async def _process_url(db: AsyncSession, msg: RawMessage, topic_scope: str) -> E
     db.add(item)
     await db.flush()
 
+    await _judge_link(db, item, msg, topic_scope)
+    return item
+
+
+async def _judge_link(
+    db: AsyncSession, item: EvidenceItem, msg: RawMessage, topic_scope: str, *, distill: bool = True
+) -> None:
+    """Relevance-check a link's stored page text, and distill it if on topic."""
+    text = item.content
     on_topic, reason, rel_usage = await relevance_service.is_on_topic(text[:2000], topic_scope)
     item.is_on_topic = on_topic
     item.relevance_reason = reason
@@ -316,11 +325,10 @@ async def _process_url(db: AsyncSession, msg: RawMessage, topic_scope: str) -> E
         cost_usd=_compute_cost(settings.RELEVANCE_MODEL, rel_usage["input_tokens"], rel_usage["output_tokens"]),
     )
 
-    if not on_topic:
-        return item
+    if not on_topic or not distill:
+        return
 
-    await _distill_and_embed(db, item, msg, text, lang)
-    return item
+    await _distill_and_embed(db, item, msg, text, item.original_language)
 
 
 async def _process_youtube_link(
