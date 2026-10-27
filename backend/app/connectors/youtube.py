@@ -210,6 +210,25 @@ class YouTubeConnector(BaseConnector):
         parts = stable_id.split(":")
         return parts[1] if len(parts) >= 2 else None
 
+    async def fetch_one(self, stable_id: str) -> RawMessage | None:
+        """
+        One chunk of a video again, found through the channel's current window.
+
+        The window is the only way this connector finds a video, so one that has
+        left it can no longer be fetched and comes back as None (ADR 0005). The
+        whole video is transcribed again to hand back one chunk: free with
+        captions, paid again without.
+        """
+        video_id = self._video_id_from(stable_id)
+        video = next((v for v in await self._get_videos() if v["video_id"] == video_id), None)
+        if video is None:
+            return None
+        found = None
+        async for msg in self._yield_video_chunks(video):
+            if msg.stable_id == stable_id:
+                found = msg
+        return found
+
     async def latest_stable_id(self) -> str | None:
         """
         Newest video, no transcript work: fetch_new only reads the video id out
