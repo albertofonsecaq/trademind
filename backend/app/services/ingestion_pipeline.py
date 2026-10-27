@@ -381,7 +381,31 @@ async def _process_video(db: AsyncSession, msg: RawMessage, topic_scope: str) ->
 
         frames = await keyframe_service.extract_keyframes(video_path)
         if not frames:
-            return None
+            # Nothing was looked at, so nothing was judged: kept and flagged for a
+            # replay, not dropped while the fetch position moves past it (#95).
+            reason = (
+                "No key frames extracted: ffmpeg is not installed"
+                if not keyframe_service.ffmpeg_available()
+                else "No key frames could be extracted from the video"
+            )
+            item = EvidenceItem(
+                workspace_id=msg.workspace_id,
+                source_config_id=msg.source_config_id,
+                stable_id=msg.stable_id,
+                source_type=msg.source_type,
+                type="video_transcript",
+                content="Video not analysed: no key frames could be extracted.",
+                confidence=0.0,
+                original_language=None,
+                is_on_topic=None,
+                needs_reprocessing=True,
+                relevance_reason=reason,
+                source_metadata=_video_metadata(msg),
+                message_timestamp=msg.timestamp,
+            )
+            db.add(item)
+            await db.flush()
+            return item
 
         descriptions: list[str] = []
         total_vision_input = 0
@@ -430,7 +454,7 @@ async def _process_video(db: AsyncSession, msg: RawMessage, topic_scope: str) ->
                 f"{len(descriptions)}/{len(frames)} frames had trading content"
                 + (f"; {unreadable_frames} frame(s) unreadable" if unreadable_frames else "")
             ),
-            source_metadata={"author": msg.author, "channel": msg.channel, **{k: v for k, v in meta.items() if k != "video_path"}},
+            source_metadata=_video_metadata(msg),
             message_timestamp=msg.timestamp,
         )
         db.add(item)
@@ -448,6 +472,12 @@ async def _process_video(db: AsyncSession, msg: RawMessage, topic_scope: str) ->
                 os.unlink(video_path)
             except OSError:
                 pass
+
+
+def _video_metadata(msg: RawMessage) -> dict:
+    # The temp file is deleted once the video is processed: its path means nothing later.
+    meta = msg.metadata or {}
+    return {"author": msg.author, "channel": msg.channel, **{k: v for k, v in meta.items() if k != "video_path"}}
 
 
 # ── main entry point ──────────────────────────────────────────────────────────
