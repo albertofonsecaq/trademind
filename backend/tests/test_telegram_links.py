@@ -18,31 +18,16 @@ import pytest
 
 from app.connectors.base import RawMessage
 from app.models.evidence_item import EvidenceItem
-from app.services import ingestion_pipeline, transcription_service, usage_service, youtube_transcript
+from app.services import ingestion_pipeline, transcription_service, youtube_transcript
 from tests.conftest import FakeSession
 
 _ARTICLE = "EURUSD broke above the weekly range on the ECB decision. " * 5
 
 
-@pytest.fixture
-def usage_log():
-    return FakeSession()
-
-
 @pytest.fixture(autouse=True)
-def offline(monkeypatch, usage_log):
+def usage_log(offline_pipeline):
     """Every paid or networked call this path can make, answered locally."""
-    monkeypatch.setattr(usage_service, "AsyncSessionLocal", lambda: usage_log)
-
-    async def _on_topic(text, topic_scope):
-        return True, "about a currency pair", {"input_tokens": 10, "output_tokens": 2}
-
-    async def _distill(db, item, msg, text, lang):
-        return None
-
-    monkeypatch.setattr(ingestion_pipeline.relevance_service, "is_on_topic", _on_topic)
-    monkeypatch.setattr(ingestion_pipeline, "_distill_and_embed", _distill)
-    monkeypatch.setattr(ingestion_pipeline, "_detect_lang", lambda text: "en")
+    return offline_pipeline
 
 
 @pytest.fixture(autouse=True)

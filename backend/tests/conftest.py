@@ -584,3 +584,32 @@ async def make_card(session, workspace=None):
     session.add(card)
     await session.flush()
     return card
+
+
+# ── the ingestion pipeline, offline ──────────────────────────────────────────
+
+
+@pytest.fixture
+def offline_pipeline(monkeypatch):
+    """
+    `process_message` with every paid call it can make answered locally: the
+    relevance check says on topic, distillation does nothing, the language is
+    English, and usage events land in the returned session's `added`.
+
+    Two test files had their own copy of this (found reviewing #94).
+    """
+    from app.services import ingestion_pipeline, usage_service
+
+    usage_log = FakeSession()
+    monkeypatch.setattr(usage_service, "AsyncSessionLocal", lambda: usage_log)
+
+    async def _on_topic(text, topic_scope):
+        return True, "about a currency pair", {"input_tokens": 10, "output_tokens": 2}
+
+    async def _distill(db, item, msg, text, lang):
+        return None
+
+    monkeypatch.setattr(ingestion_pipeline.relevance_service, "is_on_topic", _on_topic)
+    monkeypatch.setattr(ingestion_pipeline, "_distill_and_embed", _distill)
+    monkeypatch.setattr(ingestion_pipeline, "_detect_lang", lambda text: "en")
+    return usage_log
