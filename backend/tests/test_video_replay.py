@@ -20,19 +20,28 @@ from sqlalchemy import select
 from app.connectors.base import RawMessage
 from app.models.evidence_item import EvidenceItem
 from app.services import ingestion_pipeline, keyframe_service, reprocess_service, vision_service
-from tests.conftest import make_source, reread
+from tests.conftest import make_source, reread, rpc_error
 
 _AT = datetime(2026, 10, 25, 21, 0, tzinfo=timezone.utc)
 
 
 class FakeChannel:
-    """The source as the replay walks it: whatever messages are put in it."""
+    """The source as the replay asks it: one message at a time, by stable id."""
 
     def __init__(self):
         self.messages: list[RawMessage] = []
+        self.raises: dict[str, Exception] = {}
+        self.fetched: list[str] = []
         self.ranges: list[tuple] = []
 
+    async def fetch_one(self, stable_id):
+        self.fetched.append(stable_id)
+        if stable_id in self.raises:
+            raise self.raises[stable_id]
+        return next((m for m in self.messages if m.stable_id == stable_id), None)
+
     async def fetch_range(self, date_start, date_end):
+        # Walking a range downloaded every photo and video in it to find a few (#97).
         self.ranges.append((date_start, date_end))
         for msg in self.messages:
             yield msg
@@ -183,18 +192,87 @@ class TestAFlaggedTelegramVideo:
 
 
 @pytest.mark.db
-class TestTheReplayScan:
-    async def test_deletes_every_video_it_downloads_not_only_the_flagged_ones(
-        self, db_session, channel, frames, tmp_path
-    ):
+class TestTheReplayFetchesByID:
+    """
+    Five flagged images spread over five years made the replay walk ~25,000
+    messages, downloading every photo and video between them. Each flagged
+    message is fetched on its own instead (#97).
+    """
+
+    async def test_asks_for_each_flagged_message_and_walks_no_range(self, db_session, channel, frames, tmp_path):
         source = await make_source(db_session)
         await _flagged_video(db_session, source, 51)
-        other = _downloaded(tmp_path, source, 50)
-        channel.messages += [other, _downloaded(tmp_path, source, 51)]
+        await _flagged_video(db_session, source, 60)
+        channel.messages += [_downloaded(tmp_path, source, n) for n in (50, 51, 60)]
 
-        await reprocess_service.reprocess_flagged(db_session, source_config_id=source.id)
+        report = await reprocess_service.reprocess_flagged(db_session, source_config_id=source.id)
 
-        assert not os.path.exists(other.metadata["video_path"])
+        assert sorted(channel.fetched) == ["telegram:chan:51:video", "telegram:chan:60:video"]
+        assert channel.ranges == []
+        assert report.matched == 2
+
+    async def test_one_the_source_no_longer_has_is_named_and_stays_flagged(self, db_session, channel, frames):
+        source = await make_source(db_session)
+        item = await _flagged_video(db_session, source, 51)
+
+        report = await reprocess_service.reprocess_flagged(db_session, source_config_id=source.id)
+
+        assert report.unreachable == ["telegram:chan:51:video"]
+        assert (await reread(db_session, item)).needs_reprocessing is True
+
+    async def test_one_that_cannot_be_fetched_does_not_stop_the_next(self, db_session, channel, frames, tmp_path):
+        source = await make_source(db_session)
+        await _flagged_video(db_session, source, 51)
+        item = await _flagged_video(db_session, source, 52)
+        channel.messages.append(_downloaded(tmp_path, source, 52))
+        channel.raises["telegram:chan:51:video"] = ConnectionError("Telegram did not answer")
+        frames["frames"]["video-52.mp4"] = [b"frame-1"]
+
+        report = await reprocess_service.reprocess_flagged(db_session, source_config_id=source.id)
+
+        assert report.errors == 1
+        assert (await reread(db_session, item)).needs_reprocessing is False
+
+    async def test_stops_when_telegram_rejects_the_session(self, db_session, channel, frames):
+        """Every message after it would fail the same way: the run stops, as ADR 0005's fetch does."""
+        from telethon.errors import AuthKeyUnregisteredError
+
+        source = await make_source(db_session)
+        await _flagged_video(db_session, source, 51)
+        await _flagged_video(db_session, source, 52)
+        channel.raises["telegram:chan:51:video"] = rpc_error(AuthKeyUnregisteredError)
+        channel.raises["telegram:chan:52:video"] = rpc_error(AuthKeyUnregisteredError)
+
+        with pytest.raises(AuthKeyUnregisteredError):
+            await reprocess_service.reprocess_flagged(db_session, source_config_id=source.id)
+
+        assert len(channel.fetched) == 1
+
+    async def test_stops_when_the_ai_account_is_exhausted(self, db_session, channel, frames, tmp_path, monkeypatch):
+        import anthropic
+        import httpx
+
+        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        exhausted = anthropic.BadRequestError(
+            "You have reached your specified API usage limits.",
+            response=httpx.Response(400, request=request, json={"error": {"message": "You have reached your specified API usage limits."}}),
+            body=None,
+        )
+
+        async def _vision(image_bytes, mime="image/jpeg"):
+            raise exhausted
+
+        monkeypatch.setattr(vision_service, "extract_image", _vision)
+        source = await make_source(db_session)
+        for n in (51, 52):
+            await _flagged_video(db_session, source, n)
+            channel.messages.append(_downloaded(tmp_path, source, n))
+            frames["frames"][f"video-{n}.mp4"] = [b"frame-1"]
+
+        with pytest.raises(anthropic.BadRequestError):
+            await reprocess_service.reprocess_flagged(db_session, source_config_id=source.id)
+
+        assert len(channel.fetched) == 1
 
     async def test_leaves_a_youtube_transcript_alone(self, db_session, channel, frames):
         source = await make_source(db_session)
@@ -203,7 +281,7 @@ class TestTheReplayScan:
         report = await reprocess_service.reprocess_flagged(db_session, source_config_id=source.id)
 
         assert report.flagged == 0
-        assert channel.ranges == []
+        assert channel.fetched == []
 
 
 @pytest.mark.db

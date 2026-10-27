@@ -5,12 +5,16 @@ vision reply was unreadable (#3), and Telegram videos kept without key frames
 
 Why this exists rather than a backfill: run_fetch_pipeline INSERTs, so replaying
 a message that is already stored raises IntegrityError on uq_evidence_stable_id
-and is skipped — after the vision call has already been paid for. This walks the
-same connector but matches against the flagged stable_ids, skips everything else
-before any model call, and UPDATEs the row in place.
+and is skipped — after the vision call has already been paid for. This fetches
+each flagged message again from the platform by its stable id and UPDATEs its
+row in place.
 
-Dry-run does the connector scan without a single model call, so recoverability
-can be checked for free before committing to the spend.
+It used to walk the source over the flagged messages' date range instead, which
+for five images spread over five years meant downloading every photo and video
+of ~25,000 messages to find them (#97).
+
+Dry-run fetches each one without a single model call, so recoverability can be
+checked for free before committing to the spend.
 """
 from __future__ import annotations
 
@@ -18,25 +22,21 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass, field
-from datetime import timedelta
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
+from app.core.llm_errors import is_fatal_for_run
 from app.models.evidence_item import EvidenceItem
 from app.models.source_config import SourceConfig
 from app.models.trade_idea import TradeIdea
 from app.services import vision_service
+from app.services.connection_health import credentials_rejected
 from app.services.usage_service import log_usage_event
 
 log = logging.getLogger(__name__)
-
-# The connector filters by date, not by id, so widen the window slightly to
-# absorb any timestamp skew between what we stored and what the source reports.
-_WINDOW_PADDING = timedelta(days=1)
-
 
 # What the replay knows how to redo. A YouTube transcript has the same evidence
 # type as a Telegram video, and is told apart by where it came from.
@@ -49,19 +49,19 @@ REPLAYABLE = or_(
 @dataclass
 class ReprocessReport:
     flagged: int = 0            # items asked for
-    scanned: int = 0            # messages the connector yielded
-    matched: int = 0            # messages that were one of ours
+    matched: int = 0            # flagged messages the source still has
     recovered_on_topic: int = 0
     recovered_off_topic: int = 0
     still_unreadable: int = 0   # vision failed again — stays flagged
     errors: int = 0
-    unreachable: list[str] = field(default_factory=list)  # never seen in the range
+    # The source no longer offers them: deleted, or their kind now filtered out.
+    unreachable: list[str] = field(default_factory=list)
     dry_run: bool = False
 
     def summary(self) -> str:
         head = "DRY RUN — no model calls made" if self.dry_run else "reprocessed"
         return (
-            f"{head}: flagged={self.flagged} scanned={self.scanned} matched={self.matched} "
+            f"{head}: flagged={self.flagged} matched={self.matched} "
             f"on_topic={self.recovered_on_topic} off_topic={self.recovered_off_topic} "
             f"still_unreadable={self.still_unreadable} errors={self.errors} "
             f"unreachable={len(self.unreachable)}"
@@ -95,38 +95,36 @@ async def reprocess_flagged(
         raise ValueError(f"Source {source_config_id} not found")
 
     workspace_id = source.workspace_id
-    timestamps = [ts for ts in pending.values() if ts is not None]
-    if not timestamps:
-        raise ValueError("Flagged items carry no message_timestamp — cannot bound the scan")
-    # Bounds stay as read (aware, from timestamptz); the connector normalizes them.
-    date_start = min(timestamps) - _WINDOW_PADDING
-    date_end = max(timestamps) + _WINDOW_PADDING
-
     connector = ingestion_pipeline._build_connector(source)
     log.info(
-        "Reprocess: %d flagged evidence for source %s, scanning %s → %s%s",
-        len(pending), source.identifier, date_start.date(), date_end.date(),
-        " (dry run)" if dry_run else "",
+        "Reprocess: %d flagged evidence for source %s%s",
+        len(pending), source.identifier, " (dry run)" if dry_run else "",
     )
 
-    outstanding = set(pending)
-    async for msg in connector.fetch_range(date_start, date_end):
-        report.scanned += 1
+    for stable_id in pending:
         try:
-            # Anything not ours is dropped here, before anything is spent on it.
-            if msg.stable_id in outstanding:
-                outstanding.discard(msg.stable_id)
-                report.matched += 1
-                if not dry_run:
-                    await _replay_matched(db, msg, workspace_id, report)
+            msg = await connector.fetch_one(stable_id)
+        except Exception as e:
+            # A rejected session or an exhausted account would fail every one
+            # after it the same way: stop, as the fetch does (ADR 0005).
+            if credentials_rejected(e) or is_fatal_for_run(e):
+                raise
+            # Anything else is about this one message, and must not stop the rest.
+            report.errors += 1
+            log.error("Reprocess could not fetch %s: %s", stable_id, e, exc_info=True)
+            continue
+        if msg is None:
+            report.unreachable.append(stable_id)
+            continue
+        report.matched += 1
+        try:
+            if not dry_run:
+                await _replay_matched(db, msg, workspace_id, report)
         finally:
-            # The connector downloads every video it hands over, ours or not.
+            # A video comes back downloaded to a temp file, dry run or not.
             ingestion_pipeline.discard_download(msg)
 
-        if not outstanding:
-            break
-
-    report.unreachable = sorted(outstanding)
+    report.unreachable.sort()
     log.info("Reprocess: %s", report.summary())
     return report
 
@@ -146,17 +144,19 @@ async def _replay_matched(db, msg, workspace_id, report) -> None:
             )
         await db.commit()
     except Exception as e:
-        report.errors += 1
         log.error("Reprocess failed for %s: %s", msg.stable_id, e, exc_info=True)
         await db.rollback()
+        if is_fatal_for_run(e):
+            raise                   # every message after it would fail the same way
+        report.errors += 1
 
 
 async def _load_flagged(
     db: AsyncSession, source_config_id: uuid.UUID, limit: int | None
-) -> dict[str, object]:
-    """stable_id → message_timestamp for the flagged evidence of this source."""
+) -> list[str]:
+    """The stable ids of this source's flagged evidence, newest first."""
     stmt = (
-        select(EvidenceItem.stable_id, EvidenceItem.message_timestamp)
+        select(EvidenceItem.stable_id)
         .where(
             EvidenceItem.source_config_id == source_config_id,
             EvidenceItem.needs_reprocessing.is_(True),
@@ -166,7 +166,7 @@ async def _load_flagged(
     )
     if limit:
         stmt = stmt.limit(limit)
-    return {row.stable_id: row.message_timestamp for row in (await db.execute(stmt)).all()}
+    return list((await db.execute(stmt)).scalars())
 
 
 async def _replay_one(db, msg, workspace_id, report, *, detect_lang, distill) -> None:
