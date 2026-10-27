@@ -26,13 +26,22 @@ _AT = datetime(2026, 10, 25, 21, 0, tzinfo=timezone.utc)
 
 
 class FakeChannel:
-    """The source as the replay walks it: whatever messages are put in it."""
+    """The source as the replay asks it: one message at a time, by stable id."""
 
     def __init__(self):
         self.messages: list[RawMessage] = []
+        self.unreachable: dict[str, Exception] = {}
+        self.fetched: list[str] = []
         self.ranges: list[tuple] = []
 
+    async def fetch_one(self, stable_id):
+        self.fetched.append(stable_id)
+        if stable_id in self.unreachable:
+            raise self.unreachable[stable_id]
+        return next((m for m in self.messages if m.stable_id == stable_id), None)
+
     async def fetch_range(self, date_start, date_end):
+        # Walking a range downloaded every photo and video in it to find a few (#97).
         self.ranges.append((date_start, date_end))
         for msg in self.messages:
             yield msg
@@ -183,18 +192,46 @@ class TestAFlaggedTelegramVideo:
 
 
 @pytest.mark.db
-class TestTheReplayScan:
-    async def test_deletes_every_video_it_downloads_not_only_the_flagged_ones(
-        self, db_session, channel, frames, tmp_path
-    ):
+class TestTheReplayFetchesByID:
+    """
+    Five flagged images spread over five years made the replay walk ~25,000
+    messages, downloading every photo and video between them. Each flagged
+    message is fetched on its own instead (#97).
+    """
+
+    async def test_asks_for_each_flagged_message_and_walks_no_range(self, db_session, channel, frames, tmp_path):
         source = await make_source(db_session)
         await _flagged_video(db_session, source, 51)
-        other = _downloaded(tmp_path, source, 50)
-        channel.messages += [other, _downloaded(tmp_path, source, 51)]
+        await _flagged_video(db_session, source, 60)
+        channel.messages += [_downloaded(tmp_path, source, n) for n in (50, 51, 60)]
 
-        await reprocess_service.reprocess_flagged(db_session, source_config_id=source.id)
+        report = await reprocess_service.reprocess_flagged(db_session, source_config_id=source.id)
 
-        assert not os.path.exists(other.metadata["video_path"])
+        assert sorted(channel.fetched) == ["telegram:chan:51:video", "telegram:chan:60:video"]
+        assert channel.ranges == []
+        assert report.matched == 2
+
+    async def test_one_the_source_no_longer_has_is_named_and_stays_flagged(self, db_session, channel, frames):
+        source = await make_source(db_session)
+        item = await _flagged_video(db_session, source, 51)
+
+        report = await reprocess_service.reprocess_flagged(db_session, source_config_id=source.id)
+
+        assert report.unreachable == ["telegram:chan:51:video"]
+        assert (await reread(db_session, item)).needs_reprocessing is True
+
+    async def test_one_that_cannot_be_fetched_does_not_stop_the_next(self, db_session, channel, frames, tmp_path):
+        source = await make_source(db_session)
+        await _flagged_video(db_session, source, 51)
+        item = await _flagged_video(db_session, source, 52)
+        channel.messages.append(_downloaded(tmp_path, source, 52))
+        channel.unreachable["telegram:chan:51:video"] = ConnectionError("Telegram did not answer")
+        frames["frames"]["video-52.mp4"] = [b"frame-1"]
+
+        report = await reprocess_service.reprocess_flagged(db_session, source_config_id=source.id)
+
+        assert report.errors == 1
+        assert (await reread(db_session, item)).needs_reprocessing is False
 
     async def test_leaves_a_youtube_transcript_alone(self, db_session, channel, frames):
         source = await make_source(db_session)
@@ -203,7 +240,7 @@ class TestTheReplayScan:
         report = await reprocess_service.reprocess_flagged(db_session, source_config_id=source.id)
 
         assert report.flagged == 0
-        assert channel.ranges == []
+        assert channel.fetched == []
 
 
 @pytest.mark.db

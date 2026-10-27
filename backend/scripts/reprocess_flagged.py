@@ -7,7 +7,7 @@ unreadable (#3), and Telegram videos kept without key frames (#95, #97).
     python scripts/reprocess_flagged.py --source-id <uuid> --dry-run
     python scripts/reprocess_flagged.py --source-id <uuid> --limit 25 --yes
 
-Dry-run scans the source without a single model call. A real run spends money,
+Dry-run fetches each flagged message by its id without a single model call. A real run spends money,
 so it needs --yes and prints an estimate (from this install's own usage history)
 first. --limit takes the newest flagged evidence, so a partial run recovers the
 most useful evidence.
@@ -60,7 +60,7 @@ async def main() -> int:
     ap.add_argument("--list", action="store_true", help="show flagged counts per source and exit")
     ap.add_argument("--source-id", type=uuid.UUID)
     ap.add_argument("--limit", type=int, help="only the N newest flagged evidence")
-    ap.add_argument("--dry-run", action="store_true", help="scan only — no model calls, no cost")
+    ap.add_argument("--dry-run", action="store_true", help="fetch only — no model calls, no cost")
     ap.add_argument("--yes", action="store_true", help="confirm a real (paid) run")
     args = ap.parse_args()
 
@@ -94,7 +94,7 @@ async def main() -> int:
             print(f"Estimated cost: ~${calls * vision + n * distill:.2f} "
                   f"(up to {calls} vision call(s) at ~${vision:.5f}, "
                   f"distillation ~${distill:.5f} each, upper bound)")
-            print("Re-run with --yes to proceed, or --dry-run to scan for free.")
+            print("Re-run with --yes to proceed, or --dry-run to check them for free.")
             return 1
 
         report = await reprocess_flagged(
@@ -102,7 +102,7 @@ async def main() -> int:
         )
         print(report.summary())
         if report.unreachable:
-            print(f"unreachable (not found in the scanned range): {len(report.unreachable)}")
+            print(f"unreachable (the source no longer has them): {len(report.unreachable)}")
             for sid in report.unreachable[:10]:
                 print(f"  {sid}")
             if len(report.unreachable) > 10:
