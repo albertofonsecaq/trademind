@@ -249,7 +249,7 @@ function FailedBadges({ source }: { source: Source }) {
 }
 
 function FailedMessages({ workspaceId, sourceId, onChanged }: {
-  workspaceId: string; sourceId: string; onChanged: () => void;
+  workspaceId: string; sourceId: string; onChanged: () => void | Promise<void>;
 }) {
   const { t } = useTranslation();
   const [messages, setMessages] = useState<FailedMessage[] | null>(null);
@@ -278,7 +278,8 @@ function FailedMessages({ workspaceId, sourceId, onChanged }: {
     try {
       await api.post(path);
       await load();
-      onChanged();
+      // The badges catch up on the list's next refresh if this one fails.
+      Promise.resolve(onChanged()).catch(() => {});
     } catch {
       setSendFailed(true);
     } finally {
@@ -296,7 +297,7 @@ function FailedMessages({ workspaceId, sourceId, onChanged }: {
         <button
           style={{ ...btn(false, false, sending !== null), marginBottom: "0.6rem" }}
           disabled={sending !== null}
-          onClick={() => sendBack("all", `${base}/retry-given-up`)}
+          onClick={() => sendBack("all", `${base}/send-back-given-up`)}
         >
           {sending === "all" ? t("common.loading") : t("sources.failedRetryAll", { count: givenUp })}
         </button>
@@ -323,7 +324,7 @@ function FailedMessages({ workspaceId, sourceId, onChanged }: {
               <button
                 style={{ ...btn(false, false, sending !== null), padding: "0.15rem 0.6rem", fontSize: "0.75rem" }}
                 disabled={sending !== null}
-                onClick={() => sendBack(m.id, `${base}/${m.id}/retry`)}
+                onClick={() => sendBack(m.id, `${base}/${m.id}/send-back`)}
               >
                 {sending === m.id ? t("common.loading") : t("sources.failedRetry")}
               </button>

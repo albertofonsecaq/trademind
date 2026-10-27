@@ -332,10 +332,10 @@ async def _source_in_workspace(db: AsyncSession, workspace_id: uuid.UUID, source
 
 
 @router.post(
-    "/{workspace_id}/sources/{source_id}/failed-messages/{failed_message_id}/retry",
+    "/{workspace_id}/sources/{source_id}/failed-messages/{failed_message_id}/send-back",
     response_model=FailedMessageOut,
 )
-async def retry_failed_message(
+async def send_back_failed_message(
     workspace_id: uuid.UUID,
     source_id: uuid.UUID,
     failed_message_id: uuid.UUID,
@@ -359,8 +359,8 @@ async def retry_failed_message(
     return await failed_message_service.send_back(db, row)
 
 
-@router.post("/{workspace_id}/sources/{source_id}/failed-messages/retry-given-up", response_model=SentBackOut)
-async def retry_given_up(
+@router.post("/{workspace_id}/sources/{source_id}/failed-messages/send-back-given-up", response_model=SentBackOut)
+async def send_back_given_up(
     workspace_id: uuid.UUID,
     source_id: uuid.UUID,
     current_user: User = Depends(get_current_user),

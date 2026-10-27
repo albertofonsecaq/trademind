@@ -383,7 +383,7 @@
     "failedRetry": "Reintentar",
     "failedRetryAll_one": "Reintentar el mensaje dado por perdido",
     "failedRetryAll_other": "Reintentar los {{count}} dados por perdidos",
-    "failedRetryError": "No se pudo volver a poner en reintento. Inténtalo de nuevo en un momento."
+    "failedRetryError": "No se pudo reintentar. Vuelve a probar en un momento."
   },
   "trading": {
     "title": "Trading en papel",

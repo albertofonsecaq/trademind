@@ -102,7 +102,7 @@ class TestSendingAGivenUpMessageBack:
         source = await make_source(db_session, workspace)
         row = await _failed(db_session, source, 1, given_up=True, attempts=3)
 
-        sent = await sources_api.retry_failed_message(workspace.id, source.id, row.id, user, db_session)
+        sent = await sources_api.send_back_failed_message(workspace.id, source.id, row.id, user, db_session)
 
         assert (sent.given_up_at, sent.attempts) == (None, 0)
         assert sent.error == "broken 1"
@@ -115,7 +115,7 @@ class TestSendingAGivenUpMessageBack:
         source = await make_source(db_session, workspace)
         row = await _failed(db_session, source, 1, attempts=2)
 
-        sent = await sources_api.retry_failed_message(workspace.id, source.id, row.id, user, db_session)
+        sent = await sources_api.send_back_failed_message(workspace.id, source.id, row.id, user, db_session)
 
         assert sent.attempts == 2
 
@@ -129,11 +129,12 @@ class TestSendingAGivenUpMessageBack:
         await _failed(db_session, source, 3, attempts=2)
         await _failed(db_session, other, 4, given_up=True, attempts=3)
 
-        sent = await sources_api.retry_given_up(workspace.id, source.id, user, db_session)
+        sent = await sources_api.send_back_given_up(workspace.id, source.id, user, db_session)
 
         assert sent.sent_back == 2
         listed = {m.stable_id: m for m in await sources_api.list_failed_messages(workspace.id, source.id, user, db_session)}
         assert all(m.given_up_at is None for m in listed.values())
+        assert (listed["telegram:chan:1"].attempts, listed["telegram:chan:2"].attempts) == (0, 0)
         assert listed["telegram:chan:3"].attempts == 2
         [elsewhere] = await sources_api.list_failed_messages(workspace.id, other.id, user, db_session)
         assert elsewhere.given_up_at is not None
@@ -145,8 +146,8 @@ class TestSendingAGivenUpMessageBack:
         stranger = await make_user(db_session)
 
         for attempt in (
-            sources_api.retry_failed_message(workspace.id, source.id, row.id, stranger, db_session),
-            sources_api.retry_given_up(workspace.id, source.id, stranger, db_session),
+            sources_api.send_back_failed_message(workspace.id, source.id, row.id, stranger, db_session),
+            sources_api.send_back_given_up(workspace.id, source.id, stranger, db_session),
         ):
             with pytest.raises(HTTPException) as refused:
                 await attempt
@@ -161,8 +162,8 @@ class TestSendingAGivenUpMessageBack:
         row = await _failed(db_session, sibling, 1, given_up=True, attempts=3)
 
         for attempt in (
-            sources_api.retry_failed_message(workspace.id, source.id, row.id, user, db_session),
-            sources_api.retry_given_up(workspace.id, elsewhere.id, user, db_session),
+            sources_api.send_back_failed_message(workspace.id, source.id, row.id, user, db_session),
+            sources_api.send_back_given_up(workspace.id, elsewhere.id, user, db_session),
         ):
             with pytest.raises(HTTPException) as refused:
                 await attempt
