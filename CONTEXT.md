@@ -78,6 +78,10 @@ _Avoid_: Resume strategy, catch-up policy, skip
 How far through a source's content the system has already got, stored per source and advanced only forward. A platform gives it one of two shapes: a _bound_, which says "everything after this point" and survives the content it names being deleted (Telegram's message id), or a _marker_, which has to be found again in the platform's current window and is lost if that item disappears (YouTube's video id). A marker that cannot be found falls back to the timestamp of the newest evidence already stored, so a source never stalls on a deleted item.
 _Avoid_: Cursor, offset, watermark, last seen
 
+**Failed message**:
+A message whose processing raised during a fetch or a backfill, recorded against its source so it is not lost when the fetch position moves past it. Each fetch of the source retries it first; after three failed attempts it is _given up_ — no longer retried, but kept and shown on the source with the last reason, until a person deals with it. A failure that would repeat for everything left in the run is not the message's fault and is not recorded. See ADR 0005.
+_Avoid_: Error, dead letter, poison message, skipped
+
 **Backlog**:
 The content a paused source has published since it was last fetched — what catching up would ingest. Measured from the fetch position, not from the pause.
 _Avoid_: Queue, pending items, lag
