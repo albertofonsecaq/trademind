@@ -20,7 +20,7 @@ from sqlalchemy import select
 from app.connectors.base import RawMessage
 from app.models.failed_message import FailedMessage
 from app.models.source_config import SourceConfig
-from app.services import ingestion_pipeline
+from app.services import failed_message_service, ingestion_pipeline
 from tests.conftest import make_source, make_workspace
 
 _AT = datetime(2026, 10, 25, 21, 0, tzinfo=timezone.utc)
@@ -215,6 +215,47 @@ class TestAMessageThatFails:
 
         assert await setup.recorded() == []
         assert outcome.ingested == 0
+
+
+@pytest.mark.db
+class TestAGivenUpMessageSentBack:
+    """#102: sent back by a person, it is retried by the next fetch like any other."""
+
+    async def _given_up(self, setup):
+        setup.channel.new = [2]
+        setup.failing["telegram:chan:2"] = RuntimeError("relevance check timed out")
+        for _ in range(3):
+            await setup.fetch()
+            setup.channel.new = []
+        [row] = await setup.recorded()
+        assert row.given_up_at is not None
+        return row
+
+    async def test_is_retried_by_the_next_fetch(self, setup, db_session):
+        row = await self._given_up(setup)
+        await failed_message_service.send_back(db_session, row)
+        setup.failing.clear()
+
+        await setup.fetch()
+
+        assert setup.processed == ["telegram:chan:2"]
+        assert await setup.recorded() == []
+
+    async def test_that_fails_three_more_times_is_given_up_again_with_the_new_reason(self, setup, db_session):
+        row = await self._given_up(setup)
+        await failed_message_service.send_back(db_session, row)
+        setup.failing["telegram:chan:2"] = RuntimeError("the page is gone")
+
+        for _ in range(2):
+            await setup.fetch()
+            [row] = await setup.recorded()
+            assert row.given_up_at is None
+        await setup.fetch()
+
+        [row] = await setup.recorded()
+        assert row.given_up_at is not None
+        assert row.attempts == 3
+        assert row.error == "the page is gone"
 
 
 @pytest.mark.db

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -73,6 +73,30 @@ async def give_up(db: AsyncSession, row: FailedMessage, reason: str) -> None:
     row.error = reason
     row.given_up_at = now_utc()
     await db.commit()
+
+
+async def send_back(db: AsyncSession, row: FailedMessage) -> FailedMessage:
+    """
+    A person sends a given-up message back: the next fetch retries it, with a
+    fresh set of attempts (#102). The last reason stays until an attempt
+    replaces it. One still being retried is left as it is.
+    """
+    if row.given_up_at is not None:
+        row.given_up_at = None
+        row.attempts = 0
+        await db.commit()
+    return row
+
+
+async def send_back_given_up(db: AsyncSession, source_config_id: uuid.UUID) -> int:
+    """Every given-up message of a source, sent back at once — after an outage, say."""
+    result = await db.execute(
+        update(FailedMessage)
+        .where(FailedMessage.source_config_id == source_config_id, FailedMessage.given_up_at.is_not(None))
+        .values(given_up_at=None, attempts=0)
+    )
+    await db.commit()
+    return result.rowcount
 
 
 async def resolve(db: AsyncSession, row: FailedMessage) -> None:

@@ -16,7 +16,7 @@ type Source = {
   failed_retrying: number; failed_given_up: number;
 };
 type FailedMessage = {
-  stable_id: string; message_at: string | null; error: string; attempts: number;
+  id: string; stable_id: string; message_at: string | null; error: string; attempts: number;
   first_failed_at: string; last_failed_at: string; given_up_at: string | null;
 };
 type ResumeMode = "catch_up" | "from_now";
@@ -248,31 +248,63 @@ function FailedBadges({ source }: { source: Source }) {
   );
 }
 
-function FailedMessages({ workspaceId, sourceId }: { workspaceId: string; sourceId: string }) {
+function FailedMessages({ workspaceId, sourceId, onChanged }: {
+  workspaceId: string; sourceId: string; onChanged: () => void | Promise<void>;
+}) {
   const { t } = useTranslation();
   const [messages, setMessages] = useState<FailedMessage[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [sending, setSending] = useState<string | null>(null);     // a message id, or "all"
+  const [sendFailed, setSendFailed] = useState(false);
+  const base = `/workspaces/${workspaceId}/sources/${sourceId}/failed-messages`;
 
-  useEffect(() => {
-    const load = async () => {
-      setLoadFailed(false);
-      try {
-        const { data } = await api.get<FailedMessage[]>(
-          `/workspaces/${workspaceId}/sources/${sourceId}/failed-messages`
-        );
-        setMessages(data);
-      } catch {
-        setLoadFailed(true);
-      }
-    };
-    load();
-  }, [workspaceId, sourceId]);
+  const load = useCallback(async () => {
+    setLoadFailed(false);
+    try {
+      const { data } = await api.get<FailedMessage[]>(base);
+      setMessages(data);
+    } catch {
+      setLoadFailed(true);
+    }
+  }, [base]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Sent back, not fetched here: the next fetch retries it, through every gate
+  // the fetch already checks (#102).
+  const sendBack = async (target: string, path: string) => {
+    setSending(target);
+    setSendFailed(false);
+    try {
+      await api.post(path);
+      await load();
+      // The badges catch up on the list's next refresh if this one fails.
+      Promise.resolve(onChanged()).catch(() => {});
+    } catch {
+      setSendFailed(true);
+    } finally {
+      setSending(null);
+    }
+  };
+  const givenUp = (messages ?? []).filter((m) => m.given_up_at).length;
 
   if (loadFailed) return <p style={{ fontSize: "0.82rem", color: "#c0392b" }}>{t("sources.failedLoadError")}</p>;
   if (messages === null) return <p style={{ fontSize: "0.82rem", color: "#aaa" }}>{t("common.loading")}</p>;
   return (
     <div>
       <p style={{ fontSize: "0.8rem", color: "#888", margin: "0 0 0.6rem" }}>{t("sources.failedHint")}</p>
+      {givenUp > 0 && (
+        <button
+          style={{ ...btn(false, false, sending !== null), marginBottom: "0.6rem" }}
+          disabled={sending !== null}
+          onClick={() => sendBack("all", `${base}/send-back-given-up`)}
+        >
+          {sending === "all" ? t("common.loading") : t("sources.failedRetryAll", { count: givenUp })}
+        </button>
+      )}
+      {sendFailed && (
+        <p style={{ fontSize: "0.8rem", color: "#c0392b", margin: "0 0 0.6rem" }}>{t("sources.failedRetryError")}</p>
+      )}
       {messages.length === 0 ? (
         <p style={{ fontSize: "0.82rem", color: "#aaa" }}>{t("sources.failedNone")}</p>
       ) : messages.map((m) => (
@@ -288,6 +320,15 @@ function FailedMessages({ workspaceId, sourceId }: { workspaceId: string; source
               </span>
             )}
             <span style={{ color: "#888" }}>{t("sources.failedAttempts", { count: m.attempts })}</span>
+            {m.given_up_at && (
+              <button
+                style={{ ...btn(false, false, sending !== null), padding: "0.15rem 0.6rem", fontSize: "0.75rem" }}
+                disabled={sending !== null}
+                onClick={() => sendBack(m.id, `${base}/${m.id}/send-back`)}
+              >
+                {sending === m.id ? t("common.loading") : t("sources.failedRetry")}
+              </button>
+            )}
           </div>
           <div style={{ color: "#c0392b", marginTop: "0.15rem", wordBreak: "break-word" }}>{m.error}</div>
         </div>
@@ -387,7 +428,7 @@ function SourcePanel({ source, workspaceId, workspacePaused, connectionBlocked, 
           {t("sources.failedTab", { count: source.failed_retrying + source.failed_given_up })}
         </button>
       </div>
-      {tab === "failed" && <FailedMessages workspaceId={workspaceId} sourceId={source.id} />}
+      {tab === "failed" && <FailedMessages workspaceId={workspaceId} sourceId={source.id} onChanged={onSaved} />}
 
       {tab === "settings" && (
         <div style={{ display: "flex", flexDirection: "column", gap: "0.55rem" }}>

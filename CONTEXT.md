@@ -79,7 +79,7 @@ How far through a source's content the system has already got, stored per source
 _Avoid_: Cursor, offset, watermark, last seen
 
 **Failed message**:
-A message whose processing raised during a fetch or a backfill, recorded against its source so it is not lost when the fetch position moves past it. Each fetch of the source retries it first; after three failed attempts it is _given up_ — no longer retried, but kept and shown on the source with the last reason, until a person deals with it. A failure that would repeat for everything left in the run is not the message's fault and is not recorded. See ADR 0005.
+A message whose processing raised during a fetch or a backfill, recorded against its source so it is not lost when the fetch position moves past it. Each fetch of the source retries it first; after three failed attempts it is _given up_ — no longer retried, but kept and shown on the source with the last reason, until a person deals with it: by _sending it back_, which gives it a fresh three attempts from the next fetch, or by a backfill that stores it. A failure that would repeat for everything left in the run is not the message's fault and is not recorded. See ADR 0005.
 _Avoid_: Error, dead letter, poison message, skipped
 
 **Backlog**:

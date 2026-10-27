@@ -379,7 +379,11 @@
       "retrying": "Reintentando",
       "givenUp": "Dado por perdido"
     },
-    "failedLoadError": "No se pudieron cargar los mensajes fallidos. Inténtalo de nuevo en un momento."
+    "failedLoadError": "No se pudieron cargar los mensajes fallidos. Inténtalo de nuevo en un momento.",
+    "failedRetry": "Reintentar",
+    "failedRetryAll_one": "Reintentar el mensaje dado por perdido",
+    "failedRetryAll_other": "Reintentar los {{count}} dados por perdidos",
+    "failedRetryError": "No se pudo reintentar. Vuelve a probar en un momento."
   },
   "trading": {
     "title": "Trading en papel",
