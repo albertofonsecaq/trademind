@@ -91,3 +91,79 @@ class TestASourcesFailedMessages:
             await sources_api.list_failed_messages(workspace.id, source.id, stranger, db_session)
 
         assert refused.value.status_code == 403
+
+
+class TestSendingAGivenUpMessageBack:
+    """#102: a person deals with a given-up message by sending it back to be retried."""
+
+    async def test_one_is_retried_again_with_fresh_attempts(self, db_session):
+        workspace = await make_workspace(db_session)
+        user = await _member(db_session, workspace)
+        source = await make_source(db_session, workspace)
+        row = await _failed(db_session, source, 1, given_up=True, attempts=3)
+
+        sent = await sources_api.retry_failed_message(workspace.id, source.id, row.id, user, db_session)
+
+        assert (sent.given_up_at, sent.attempts) == (None, 0)
+        assert sent.error == "broken 1"
+        [listed] = await sources_api.list_failed_messages(workspace.id, source.id, user, db_session)
+        assert listed.given_up_at is None
+
+    async def test_one_still_being_retried_is_left_as_it_is(self, db_session):
+        workspace = await make_workspace(db_session)
+        user = await _member(db_session, workspace)
+        source = await make_source(db_session, workspace)
+        row = await _failed(db_session, source, 1, attempts=2)
+
+        sent = await sources_api.retry_failed_message(workspace.id, source.id, row.id, user, db_session)
+
+        assert sent.attempts == 2
+
+    async def test_all_of_a_sources_given_up_messages_go_back_together(self, db_session):
+        workspace = await make_workspace(db_session)
+        user = await _member(db_session, workspace)
+        source = await make_source(db_session, workspace)
+        other = await make_source(db_session, workspace)
+        await _failed(db_session, source, 1, given_up=True, attempts=3)
+        await _failed(db_session, source, 2, given_up=True, attempts=3)
+        await _failed(db_session, source, 3, attempts=2)
+        await _failed(db_session, other, 4, given_up=True, attempts=3)
+
+        sent = await sources_api.retry_given_up(workspace.id, source.id, user, db_session)
+
+        assert sent.sent_back == 2
+        listed = {m.stable_id: m for m in await sources_api.list_failed_messages(workspace.id, source.id, user, db_session)}
+        assert all(m.given_up_at is None for m in listed.values())
+        assert listed["telegram:chan:3"].attempts == 2
+        [elsewhere] = await sources_api.list_failed_messages(workspace.id, other.id, user, db_session)
+        assert elsewhere.given_up_at is not None
+
+    async def test_is_refused_to_someone_outside_the_workspace(self, db_session):
+        workspace = await make_workspace(db_session)
+        source = await make_source(db_session, workspace)
+        row = await _failed(db_session, source, 1, given_up=True, attempts=3)
+        stranger = await make_user(db_session)
+
+        for attempt in (
+            sources_api.retry_failed_message(workspace.id, source.id, row.id, stranger, db_session),
+            sources_api.retry_given_up(workspace.id, source.id, stranger, db_session),
+        ):
+            with pytest.raises(HTTPException) as refused:
+                await attempt
+            assert refused.value.status_code == 403
+
+    async def test_of_another_source_or_workspace_is_not_found(self, db_session):
+        workspace = await make_workspace(db_session)
+        user = await _member(db_session, workspace)
+        source = await make_source(db_session, workspace)
+        sibling = await make_source(db_session, workspace)
+        elsewhere = await make_source(db_session)
+        row = await _failed(db_session, sibling, 1, given_up=True, attempts=3)
+
+        for attempt in (
+            sources_api.retry_failed_message(workspace.id, source.id, row.id, user, db_session),
+            sources_api.retry_given_up(workspace.id, elsewhere.id, user, db_session),
+        ):
+            with pytest.raises(HTTPException) as refused:
+                await attempt
+            assert refused.value.status_code == 404

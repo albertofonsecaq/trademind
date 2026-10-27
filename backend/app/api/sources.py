@@ -212,6 +212,9 @@ class SourceListOut(SourceOut):
 
 
 class FailedMessageOut(BaseModel):
+    # The row's own id addresses it: a stable id may hold a "/" (a private
+    # Telegram channel is "{id}/{hash}"), which a path cannot carry.
+    id: uuid.UUID
     stable_id: str
     message_at: datetime | None
     error: str
@@ -221,6 +224,10 @@ class FailedMessageOut(BaseModel):
     given_up_at: datetime | None
 
     model_config = {"from_attributes": True}
+
+
+class SentBackOut(BaseModel):
+    sent_back: int
 
 
 class ResumeRequest(BaseModel):
@@ -316,6 +323,55 @@ async def list_sources(
     return listed
 
 
+async def _source_in_workspace(db: AsyncSession, workspace_id: uuid.UUID, source_id: uuid.UUID) -> None:
+    found = (await db.execute(
+        select(SourceConfig.id).where(SourceConfig.id == source_id, SourceConfig.workspace_id == workspace_id)
+    )).scalar_one_or_none()
+    if found is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+
+
+@router.post(
+    "/{workspace_id}/sources/{source_id}/failed-messages/{failed_message_id}/retry",
+    response_model=FailedMessageOut,
+)
+async def retry_failed_message(
+    workspace_id: uuid.UUID,
+    source_id: uuid.UUID,
+    failed_message_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Send a given-up message back to be retried by the next fetch (#102). Not
+    fetched here: the fetch already checks every gate — a paused source or
+    workspace, a lapsed bill, a rejected connection — and this would need its own.
+    """
+    await _assert_member(db, workspace_id, current_user.id)
+    await _source_in_workspace(db, workspace_id, source_id)
+    row = (await db.execute(
+        select(FailedMessage).where(
+            FailedMessage.id == failed_message_id, FailedMessage.source_config_id == source_id
+        )
+    )).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Failed message not found")
+    return await failed_message_service.send_back(db, row)
+
+
+@router.post("/{workspace_id}/sources/{source_id}/failed-messages/retry-given-up", response_model=SentBackOut)
+async def retry_given_up(
+    workspace_id: uuid.UUID,
+    source_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send every given-up message of a source back to be retried (#102)."""
+    await _assert_member(db, workspace_id, current_user.id)
+    await _source_in_workspace(db, workspace_id, source_id)
+    return SentBackOut(sent_back=await failed_message_service.send_back_given_up(db, source_id))
+
+
 @router.get("/{workspace_id}/sources/{source_id}/failed-messages", response_model=list[FailedMessageOut])
 async def list_failed_messages(
     workspace_id: uuid.UUID,
@@ -325,11 +381,7 @@ async def list_failed_messages(
 ):
     """Which of a source's messages failed, why, and whether they are still retried (#96)."""
     await _assert_member(db, workspace_id, current_user.id)
-    source = (await db.execute(
-        select(SourceConfig.id).where(SourceConfig.id == source_id, SourceConfig.workspace_id == workspace_id)
-    )).scalar_one_or_none()
-    if source is None:
-        raise HTTPException(status_code=404, detail="Source not found")
+    await _source_in_workspace(db, workspace_id, source_id)
     rows = await db.execute(
         select(FailedMessage)
         .where(FailedMessage.source_config_id == source_id)

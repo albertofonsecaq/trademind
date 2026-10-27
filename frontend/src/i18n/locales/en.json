@@ -379,7 +379,11 @@
       "retrying": "Retrying",
       "givenUp": "Given up"
     },
-    "failedLoadError": "Could not load the failed messages. Try again in a moment."
+    "failedLoadError": "Could not load the failed messages. Try again in a moment.",
+    "failedRetry": "Retry",
+    "failedRetryAll_one": "Retry the given-up message",
+    "failedRetryAll_other": "Retry all {{count}} given up",
+    "failedRetryError": "Could not send it back to be retried. Try again in a moment."
   },
   "trading": {
     "title": "Paper Trading",
