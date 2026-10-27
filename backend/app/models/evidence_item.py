@@ -32,8 +32,18 @@ class EvidenceItem(Base):
     source: Mapped["SourceConfig"] = relationship("SourceConfig", back_populates="evidence_items")
     trade_ideas: Mapped[list["TradeIdea"]] = relationship("TradeIdea", back_populates="evidence_item")
 
-    @validates("content")
-    def _without_nul(self, key: str, value: str) -> str:
-        # Postgres text cannot hold NUL: one byte of it failed the whole insert,
-        # and the fetch position moved past the message regardless (#94).
-        return value.replace("\x00", "") if value else value
+    @validates("content", "source_metadata")
+    def _without_nul(self, key: str, value):
+        # Postgres text and JSONB cannot hold NUL: one byte of it failed the whole
+        # insert, and the fetch position moved past the message regardless (#94).
+        return _strip_nul(value)
+
+
+def _strip_nul(value):
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {_strip_nul(k): _strip_nul(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_strip_nul(v) for v in value]
+    return value

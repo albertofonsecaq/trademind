@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from app.connectors.base import RawMessage
-from app.services import ingestion_pipeline, url_service, usage_service
+from app.services import ingestion_pipeline, url_service
 from tests.conftest import FakeSession
 
 _ARTICLE = "EURUSD broke above the weekly range on the ECB decision. " * 5
@@ -58,26 +58,10 @@ class TestACompressedPage:
         assert fetched["title"] == "ECB decision"
 
 
-@pytest.fixture
-def offline(monkeypatch):
-    """Every paid call the text path can make, answered locally."""
-    monkeypatch.setattr(usage_service, "AsyncSessionLocal", lambda: FakeSession())
-
-    async def _on_topic(text, topic_scope):
-        return True, "about a currency pair", {"input_tokens": 10, "output_tokens": 2}
-
-    async def _distill(db, item, msg, text, lang):
-        return None
-
-    monkeypatch.setattr(ingestion_pipeline.relevance_service, "is_on_topic", _on_topic)
-    monkeypatch.setattr(ingestion_pipeline, "_distill_and_embed", _distill)
-    monkeypatch.setattr(ingestion_pipeline, "_detect_lang", lambda text: "en")
-
-
 class TestContentWithANulByte:
     """Postgres text cannot hold NUL, and one in the content failed the whole insert."""
 
-    async def test_is_stored_without_it(self, offline):
+    async def test_is_stored_without_it(self, offline_pipeline):
         msg = RawMessage(
             stable_id="telegram:@chan:7",
             source_config_id=uuid.uuid4(),
@@ -94,3 +78,28 @@ class TestContentWithANulByte:
 
         assert item is not None
         assert item.content == "EURUSD long above 1.0850"
+
+    async def test_in_a_page_title_is_stored_without_it(self, offline_pipeline, monkeypatch):
+        # The title goes into source_metadata, and JSONB refuses NUL as text does.
+        url = "https://example.com/ecb-decision"
+
+        async def _extract(u):
+            return {"url": u, "title": "ECB\x00 decision", "text": _ARTICLE}
+
+        monkeypatch.setattr(ingestion_pipeline.url_service, "extract", _extract)
+        msg = RawMessage(
+            stable_id="telegram:@chan:42:url:0",
+            source_config_id=uuid.uuid4(),
+            workspace_id=uuid.uuid4(),
+            text=None,
+            author="someone",
+            channel="@chan",
+            timestamp=None,
+            source_type="telegram",
+            content_type="url",
+            metadata={"message_id": 42, "url": url},
+        )
+
+        item = await ingestion_pipeline.process_message(FakeSession(), msg, "forex")
+
+        assert item.source_metadata["title"] == "ECB decision"
