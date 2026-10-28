@@ -47,16 +47,16 @@ async def main() -> int:
                 print("No image evidence is missing its picture.")
                 return 0
             print(f"{'source_config_id':38} {'identifier':28} {'missing':>7}  range")
-            for sid, ident, n, lo, hi in rows:
-                span = f"{lo:%Y-%m-%d} → {hi:%Y-%m-%d}" if lo and hi else "unknown"
-                print(f"{str(sid):38} {(ident or '')[:28]:28} {n:>7}  {span}")
+            for row in rows:
+                span = f"{row.earliest:%Y-%m-%d} → {row.latest:%Y-%m-%d}" if row.earliest and row.latest else "unknown"
+                print(f"{str(row.source_config_id):38} {(row.identifier or '')[:28]:28} {row.count:>7}  {span}")
             if not args.source_id:
                 print("\nPass --source-id to recover one of these.")
             return 0
 
         if not args.dry_run and not args.yes:
             report = await recover_pictures(db, source_config_id=args.source_id, limit=args.limit, dry_run=True)
-            print(f"{report.without_picture} picture(s) would be fetched again from the platform and kept.")
+            print(f"{report.found} picture(s) would be fetched again from the platform and kept.")
             print("No model is called. This writes to the database this script is pointed at:")
             print("take a verified backup first, then re-run with --yes.")
             return 1
