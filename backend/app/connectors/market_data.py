@@ -26,9 +26,17 @@ _QUOTE_CURRENCIES = ("USDT", "USDC", "USD", "EUR", "BTC", "ETH")
 # Yahoo has no stablecoin pairs; a stablecoin tracks the dollar closely enough
 # to tell whether a target or a stop was hit first.
 _YAHOO_QUOTE = {"USDT": "USD", "USDC": "USD"}
-# Fiat currencies and metals quoted the same way are forex, not crypto: Yahoo
-# spells EURUSD as EURUSD=X and Polygon as C:EURUSD, so they are left alone.
-_NOT_CRYPTO_BASES = frozenset({"USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD", "XAU", "XAG"})
+# The currencies a forex pair is made of: two of them side by side, EURUSD, is
+# a pair Yahoo spells EURUSD=X and Polygon C:EURUSD (#114). The majors and the
+# crosses and emerging-market currencies sources quote them against.
+_FIAT = frozenset({
+    "USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD",
+    "SEK", "NOK", "DKK", "PLN", "CZK", "HUF", "TRY", "ZAR", "MXN",
+    "SGD", "HKD", "CNH", "CNY", "INR", "KRW", "BRL", "ILS", "THB",
+})
+# A fiat or metal base is never a coin, whatever it is quoted in. Metals are
+# left as written: Yahoo has no spot gold or silver (#115).
+_NOT_CRYPTO_BASES = _FIAT | {"XAU", "XAG"}
 # A US stock ticker is at most five letters, so six or more ending in a quote
 # currency is a pair. Five could be either (SEUSD), and is left alone.
 _MIN_PAIR_LENGTH = 6
@@ -40,11 +48,14 @@ def provider_symbol(symbol: str, provider: str) -> str:
 
     Sources write a crypto pair as BASE+QUOTE (BTCUSD), which is what
     distillation keeps; Yahoo knows it as BTC-USD and Polygon as X:BTCUSD.
-    Anything that is not such a pair, including a bare BTC (an ETF on Yahoo)
-    and forex or metals (EURUSD, XAUUSD), is fetched as written.
+    A forex pair (EURUSD) is EURUSD=X on Yahoo and C:EURUSD on Polygon (#114).
+    Anything else, including a bare BTC (an ETF on Yahoo) and metals (XAUUSD),
+    is fetched as written.
     """
     if len(symbol) < _MIN_PAIR_LENGTH or not symbol.isalpha() or not symbol.isupper():
         return symbol
+    if len(symbol) == 6 and symbol[:3] in _FIAT and symbol[3:] in _FIAT:
+        return f"C:{symbol}" if provider == "polygon" else f"{symbol}=X"
     quote = next((q for q in _QUOTE_CURRENCIES if symbol.endswith(q)), None)
     if quote is None:
         return symbol

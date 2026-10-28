@@ -193,12 +193,54 @@ class TestProviderSymbol:
         "BTC-USD",  # already in Yahoo's spelling
         "YM=F", "US2Y", "SPX",
         "SEUSD",    # five letters ending in a quote currency could be a stock
-        "EURUSD", "GBPUSD", "USDEUR",  # forex: Yahoo spells it EURUSD=X, Polygon C:EURUSD
-        "XAUUSD",   # a metal, not a coin
+        "XAUUSD", "XAGUSD",  # metals, not coins and not currencies — #115
+        "USDBTC",   # a dollar priced in a coin is not forex
     ])
     def test_anything_that_is_not_a_pair_is_fetched_as_written(self, symbol):
         assert provider_symbol(symbol, "yfinance") == symbol
         assert provider_symbol(symbol, "polygon") == symbol
+
+
+class TestProviderSymbolForForex:
+    """
+    A forex pair the way sources write it, in the spelling each provider
+    fetches it under — #114.
+
+    Yahoo answers `EURUSD` with a 404 and only knows `EURUSD=X`; Polygon wants
+    `C:EURUSD`. #85 spelled crypto pairs for each provider and left forex as
+    written, so every forex idea's outcome check stayed open for want of bars.
+    """
+
+    @pytest.mark.parametrize("symbol, yahoo, polygon", [
+        ("EURUSD", "EURUSD=X", "C:EURUSD"),
+        ("GBPUSD", "GBPUSD=X", "C:GBPUSD"),
+        ("USDJPY", "USDJPY=X", "C:USDJPY"),
+        ("GBPJPY", "GBPJPY=X", "C:GBPJPY"),
+        ("EURGBP", "EURGBP=X", "C:EURGBP"),
+        ("AUDCAD", "AUDCAD=X", "C:AUDCAD"),
+        ("NZDCHF", "NZDCHF=X", "C:NZDCHF"),
+        ("USDMXN", "USDMXN=X", "C:USDMXN"),
+        ("USDZAR", "USDZAR=X", "C:USDZAR"),
+        ("EURTRY", "EURTRY=X", "C:EURTRY"),
+    ])
+    def test_a_pair_of_two_currencies_is_spelled_for_each_provider(self, symbol, yahoo, polygon):
+        assert provider_symbol(symbol, "yfinance") == yahoo
+        assert provider_symbol(symbol, "polygon") == polygon
+
+    @pytest.mark.parametrize("symbol", ["EURUSD=X", "C:EURUSD", "EUR/USD"])
+    def test_one_already_spelled_some_other_way_is_left_alone(self, symbol):
+        assert provider_symbol(symbol, "yfinance") == symbol
+        assert provider_symbol(symbol, "polygon") == symbol
+
+    async def test_the_connector_fetches_it_under_yahoos_spelling(self, monkeypatch):
+        asked = []
+        monkeypatch.setattr(market_data.settings, "POLYGON_API_KEY", "")
+        monkeypatch.setattr(market_data, "_fetch_yfinance",
+                            lambda symbol, start, end: asked.append(symbol) or [])
+
+        await market_data.MarketDataConnector().get_bars("EURUSD", START)
+
+        assert asked == ["EURUSD=X"]
 
     async def test_the_connector_fetches_under_the_provider_symbol(self, monkeypatch):
         asked = []
