@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from datetime import date, timedelta
 from functools import lru_cache
 
@@ -34,8 +35,12 @@ _FIAT = frozenset({
     "SEK", "NOK", "DKK", "PLN", "CZK", "HUF", "TRY", "ZAR", "MXN",
     "SGD", "HKD", "CNH", "CNY", "INR", "KRW", "BRL", "ILS", "THB",
 })
+# Gold and silver in dollars (#115). Yahoo has no spot metals, so its COMEX
+# front-month futures stand in for them: usually a few dollars from spot, which
+# can decide a target or stop that close differently. Polygon has spot.
+_METAL_FUTURES = {"XAUUSD": "GC=F", "XAGUSD": "SI=F"}
 # Fiat currencies and metals quoted in a coin are not crypto pairs, and are left
-# alone; metals stay as written until #115 (Yahoo has no spot gold or silver).
+# alone.
 _NOT_CRYPTO_BASES = frozenset({"USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD", "XAU", "XAG"})
 # A US stock ticker is at most five letters, so six or more ending in a quote
 # currency is a pair. Five could be either (SEUSD), and is left alone.
@@ -55,13 +60,16 @@ def provider_symbol(symbol: str, provider: str) -> str:
     Sources write a crypto pair as BASE+QUOTE (BTCUSD), which is what
     distillation keeps; Yahoo knows it as BTC-USD and Polygon as X:BTCUSD.
     A forex pair (EURUSD) is EURUSD=X on Yahoo and C:EURUSD on Polygon (#114).
-    Anything else, including a bare BTC (an ETF on Yahoo) and metals (XAUUSD),
-    is fetched as written.
+    Gold and silver in dollars are their futures on Yahoo and spot on Polygon
+    (#115). Anything else, including a bare BTC (an ETF on Yahoo), is fetched
+    as written.
     """
     if len(symbol) < _MIN_PAIR_LENGTH or not symbol.isalpha() or not symbol.isupper():
         return symbol
     if _is_forex_pair(symbol):
         return f"C:{symbol}" if provider == "polygon" else f"{symbol}=X"
+    if symbol in _METAL_FUTURES:
+        return f"C:{symbol}" if provider == "polygon" else _METAL_FUTURES[symbol]
     quote = next((q for q in _QUOTE_CURRENCIES if symbol.endswith(q)), None)
     if quote is None:
         return symbol
@@ -71,6 +79,13 @@ def provider_symbol(symbol: str, provider: str) -> str:
     if provider == "polygon":
         return f"X:{symbol}"
     return f"{base}-{_YAHOO_QUOTE.get(quote, quote)}"
+
+
+@dataclass(frozen=True)
+class Instrument:
+    """What a symbol's prices actually come from, on the provider in use (#115)."""
+    priced_as: str              # the provider's own symbol: GC=F, C:XAUUSD, BTC-USD
+    stands_in_for_spot: bool    # futures standing in for a spot price nobody has
 
 
 def _is_unknown_symbol(e: Exception) -> bool:
@@ -211,6 +226,14 @@ class MarketDataConnector:
         # Cap to the requested window
         cutoff = start + timedelta(days=(days or settings.VALIDATION_WINDOW_DAYS))
         return [b for b in bars if b["date"] <= cutoff]
+
+    def instrument(self, symbol: str) -> Instrument:
+        """What `symbol` is priced as here, and whether that is a stand-in."""
+        provider = self.data_source_name()
+        return Instrument(
+            priced_as=provider_symbol(symbol, provider),
+            stands_in_for_spot=provider == "yfinance" and symbol in _METAL_FUTURES,
+        )
 
     def data_source_name(self) -> str:
         return "polygon" if self._use_polygon else "yfinance"

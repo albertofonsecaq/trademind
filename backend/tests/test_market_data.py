@@ -193,7 +193,6 @@ class TestProviderSymbol:
         "BTC-USD",  # already in Yahoo's spelling
         "YM=F", "US2Y", "SPX",
         "SEUSD",    # five letters ending in a quote currency could be a stock
-        "XAUUSD", "XAGUSD",  # metals, not coins and not currencies — #115
         "USDBTC",   # a dollar priced in a coin is not forex
     ])
     def test_anything_that_is_not_a_pair_is_fetched_as_written(self, symbol):
@@ -258,3 +257,27 @@ class TestProviderSymbolForForex:
 
         assert asked == ["EURUSD=X"]
 
+
+
+class TestProviderSymbolForMetals:
+    """
+    Gold and silver the way sources write them — #115.
+
+    Yahoo has no spot gold or silver: XAUUSD=X and XAGUSD=X answer nothing. It
+    has the COMEX front-month futures, GC=F and SI=F, which stand in for spot.
+    Polygon has spot itself.
+    """
+
+    @pytest.mark.parametrize("symbol, yahoo, polygon", [
+        ("XAUUSD", "GC=F", "C:XAUUSD"),
+        ("XAGUSD", "SI=F", "C:XAGUSD"),
+    ])
+    def test_are_spelled_for_each_provider(self, symbol, yahoo, polygon):
+        assert provider_symbol(symbol, "yfinance") == yahoo
+        assert provider_symbol(symbol, "polygon") == polygon
+
+    @pytest.mark.parametrize("symbol", ["XAUEUR", "XAUBTC", "XAU"])
+    def test_quoted_in_anything_but_dollars_are_left_as_written(self, symbol):
+        # The futures are priced in dollars; nothing stands in for gold in euros.
+        assert provider_symbol(symbol, "yfinance") == symbol
+        assert provider_symbol(symbol, "polygon") == symbol
