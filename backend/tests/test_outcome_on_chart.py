@@ -1,0 +1,118 @@
+"""
+A trade idea's chart shows how its outcome check resolved it — #112.
+
+The outcome badge says won or lost; the chart has to tell the same story: the
+day the target or stop was hit, the window the check looked at, and how far
+price went against and for the trade on the way. The window is the check's
+own, so changing the validation setting later cannot make the two disagree.
+
+Offline: the market data and the outcome check are answered locally.
+"""
+from datetime import date, datetime, timezone
+from decimal import Decimal
+from types import SimpleNamespace
+
+import pytest
+
+from app.connectors.market_data import PriceSource
+from app.services import trade_idea_chart
+
+PROPOSED = datetime(2026, 9, 15, 13, 30, tzinfo=timezone.utc)
+
+
+def _idea(**overrides):
+    fields = dict(
+        symbol="EURUSD", action="long", message_timestamp=PROPOSED,
+        entry=Decimal("1.0850"), target=Decimal("1.0950"), stop=Decimal("1.0800"),
+    )
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+def _check(**overrides):
+    fields = dict(
+        entry_price=Decimal("1.0850"), action="long",
+        outcome="won", outcome_date=date(2026, 9, 22), trade_date=date(2026, 9, 15), window_days=20,
+        max_adverse_excursion=Decimal("0.0030"), max_favorable_excursion=Decimal("0.0100"),
+    )
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+class FakeMarket:
+    def __init__(self):
+        self.asked: list[tuple] = []
+
+    def price_source(self, symbol):
+        return PriceSource(priced_as=symbol, stands_in_for_spot=False)
+
+    async def get_bars(self, symbol, start, days=None):
+        self.asked.append((symbol, start, days))
+        return []
+
+
+class TestTheWindow:
+    async def test_is_the_one_the_outcome_check_looked_at(self):
+        # Checked with a 20-day window: the chart covers those 20 days, whatever
+        # the setting says today.
+        market = FakeMarket()
+
+        chart = await trade_idea_chart.chart_of(_idea(), market, _check())
+
+        assert market.asked == [("EURUSD", date(2026, 8, 16), trade_idea_chart.DAYS_BEFORE + 20)]
+        assert (chart.outcome.window_start, chart.outcome.window_end) == (date(2026, 9, 15), date(2026, 10, 5))
+
+
+class TestHowFarPriceWent:
+    async def test_against_a_long_is_below_its_entry_and_for_it_above(self):
+        # Entry 1.0850, 30 pips against at worst, 100 for at best.
+        chart = await trade_idea_chart.chart_of(_idea(), FakeMarket(), _check())
+
+        assert (chart.outcome.adverse_price, chart.outcome.favorable_price) == (Decimal("1.0820"), Decimal("1.0950"))
+
+    async def test_against_a_short_is_above_its_entry_and_for_it_below(self):
+        idea = _idea(action="short", target=Decimal("1.0750"), stop=Decimal("1.0900"))
+
+        chart = await trade_idea_chart.chart_of(idea, FakeMarket(), _check(action="short"))
+
+        assert (chart.outcome.adverse_price, chart.outcome.favorable_price) == (Decimal("1.0880"), Decimal("1.0750"))
+
+    async def test_is_measured_from_the_entry_the_check_used(self):
+        # The excursions were measured from the check's entry; if the idea's has
+        # since been corrected, the check's is still what they are relative to.
+        chart = await trade_idea_chart.chart_of(_idea(entry=Decimal("1.0900")), FakeMarket(), _check())
+
+        assert (chart.outcome.adverse_price, chart.outcome.favorable_price) == (Decimal("1.0820"), Decimal("1.0950"))
+
+    async def test_is_unknown_when_the_check_did_not_measure_it(self):
+        check = _check(max_adverse_excursion=None, max_favorable_excursion=None)
+
+        chart = await trade_idea_chart.chart_of(_idea(), FakeMarket(), check)
+
+        assert (chart.outcome.adverse_price, chart.outcome.favorable_price) == (None, None)
+
+
+class TestAnIdeaWithoutAResolution:
+    async def test_never_checked_has_no_outcome(self):
+        chart = await trade_idea_chart.chart_of(_idea(), FakeMarket(), None)
+
+        assert chart.outcome is None
+
+    async def test_checked_inconclusively_has_that_outcome_and_nothing_to_mark(self):
+        # Inconclusive is an outcome — "for want of data" — but there is no day
+        # it resolved on and no excursion it measured.
+        check = _check(outcome="inconclusive", outcome_date=None,
+                       max_adverse_excursion=None, max_favorable_excursion=None)
+
+        chart = await trade_idea_chart.chart_of(_idea(), FakeMarket(), check)
+
+        assert chart.outcome.outcome == "inconclusive"
+        assert (chart.outcome.outcome_date, chart.outcome.adverse_price) == (None, None)
+
+    async def test_still_open_has_its_window_but_no_day_it_resolved(self):
+        check = _check(outcome="open", outcome_date=None)
+
+        chart = await trade_idea_chart.chart_of(_idea(), FakeMarket(), check)
+
+        assert (chart.outcome.outcome, chart.outcome.outcome_date) == ("open", None)
+        assert chart.outcome.window_end == date(2026, 10, 5)

@@ -5,6 +5,7 @@ import { NavBar } from "../components/NavBar";
 import { useAuth } from "../context/AuthContext";
 import api from "../api/client";
 import { EvidenceImage } from "../components/EvidenceImage";
+import { outcomeColor } from "../components/outcomeColors";
 
 // The charting library is most of a chart's weight, and only a chart opened needs it.
 const TradeIdeaChart = lazy(() =>
@@ -59,10 +60,6 @@ type DetailResponse = {
 
 const TIER_COLORS: Record<string, string> = {
   still_learning: "#e67e22", developing: "#1565c0", established: "#27ae60",
-};
-const OUTCOME_COLORS: Record<string, string> = {
-  won: "#27ae60", lost: "#c0392b", open: "#1565c0",
-  expired: "#888", inconclusive: "#aaa",
 };
 
 const badge = (color: string): React.CSSProperties => ({
@@ -147,7 +144,7 @@ function OutcomeBar({ summary, t }: { summary: OutcomeSummary; t: (k: string) =>
           <div
             key={key}
             title={`${t(`detail.${key}`)}: ${value}`}
-            style={{ flex: value, background: OUTCOME_COLORS[key] || "#aaa" }}
+            style={{ flex: value, background: outcomeColor(key) }}
           />
         ))}
       </div>
@@ -155,7 +152,7 @@ function OutcomeBar({ summary, t }: { summary: OutcomeSummary; t: (k: string) =>
       <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem" }}>
         {items.map(({ key, value }) => (
           <div key={key} style={{ display: "flex", alignItems: "center", gap: "0.3rem" }}>
-            <div style={{ width: "10px", height: "10px", borderRadius: "2px", background: OUTCOME_COLORS[key] || "#aaa" }} />
+            <div style={{ width: "10px", height: "10px", borderRadius: "2px", background: outcomeColor(key) }} />
             <span style={{ fontSize: "0.78rem", color: "#555" }}>
               {t(`detail.${key}`)}: <strong>{value}</strong>
             </span>
@@ -199,7 +196,7 @@ function CitedExampleCard({ ex, lang, t, workspaceId }: {
           {ex.source_type && <span style={badge("#888")}>{ex.source_type}</span>}
         </div>
         {ex.outcome && (
-          <span style={badge(OUTCOME_COLORS[ex.outcome] || "#888")}>
+          <span style={badge(outcomeColor(ex.outcome))}>
             {ex.outcome}
           </span>
         )}
@@ -266,10 +263,6 @@ function CitedExampleCard({ ex, lang, t, workspaceId }: {
 
 // ── My execution section ──────────────────────────────────────────────────────
 
-const OUTCOME_COLORS_EX: Record<string, string> = {
-  won: "#27ae60", lost: "#c0392b", open: "#1565c0",
-  expired: "#888", inconclusive: "#aaa",
-};
 
 type ExEntry = {
   id: string; symbol: string; action: string; entry: string; exit: string | null;
@@ -339,7 +332,7 @@ function MyExecution({ stats, cardWinRate, t, navigate }: {
 
       {/* Entry list */}
       {stats.entries.map((ex) => {
-        const outColor = OUTCOME_COLORS_EX[ex.outcome] || "#aaa";
+        const outColor = outcomeColor(ex.outcome);
         const outLabel = `execution.${ex.outcome === "inconclusive" ? "inconclusive" : ex.outcome}`;
         return (
           <div key={ex.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "0.5rem 0", borderBottom: "1px solid #f0f0f0", fontSize: "0.82rem", gap: "0.5rem" }}>

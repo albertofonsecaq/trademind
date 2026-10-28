@@ -583,6 +583,13 @@
     "target": "Target",
     "stop": "Stop",
     "proposed": "Proposed",
-    "standsIn": "Prices are {{pricedAs}} futures, standing in for spot: a level within a few dollars of price may have been reached differently on spot."
+    "standsIn": "Prices are {{pricedAs}} futures, standing in for spot: a level within a few dollars of price may have been reached differently on spot.",
+    "windowEnds": "Window ends",
+    "window": "Its outcome check looked at {{start}} to {{end}}.",
+    "inconclusive": "Its outcome is inconclusive: the check had too little to go on, so there is nothing to mark.",
+    "adverse": "Adverse",
+    "favorable": "Favorable",
+    "excursions": "Dotted lines mark its adverse and favorable excursion: the furthest price went against it and for it.",
+    "notChecked": "No outcome check yet: run validation to see how this idea resolved."
   }
 }
