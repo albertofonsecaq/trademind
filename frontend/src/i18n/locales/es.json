@@ -571,5 +571,17 @@
   "evidenceImage": {
     "alt": "El gráfico tal como se publicó",
     "enlarge": "Ver a tamaño completo"
+  },
+  "tradeChart": {
+    "show": "Ver en el gráfico de precios",
+    "hide": "Ocultar el gráfico de precios",
+    "loading": "Cargando precios…",
+    "failed": "No se pudieron cargar los precios.",
+    "noPrices": "No hay datos de precios de {{symbol}} en torno a esta fecha.",
+    "caption": "{{symbol}}, diario, desde un mes antes de la idea hasta el final de su ventana de resultado",
+    "entry": "Entrada",
+    "target": "Objetivo",
+    "stop": "Stop",
+    "proposed": "Propuesta"
   }
 }

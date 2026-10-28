@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.log_setup import configure_logging
 from app.core.llm_errors import install_llm_error_handlers
-from app.api import auth, users, workspaces, connections, sources, ask, strategy_cards, plan_items, validation, changelog, broker, billing, admin, analysis_runs, evidence
+from app.api import auth, users, workspaces, connections, sources, ask, strategy_cards, plan_items, validation, changelog, broker, billing, admin, analysis_runs, evidence, trade_ideas
 
 configure_logging(settings.LOG_LEVEL)
 
@@ -49,6 +49,7 @@ app.include_router(sources.router)
 app.include_router(ask.router)
 app.include_router(strategy_cards.router)
 app.include_router(evidence.router)
+app.include_router(trade_ideas.router)
 app.include_router(plan_items.router)
 app.include_router(validation.router)
 app.include_router(analysis_runs.router)

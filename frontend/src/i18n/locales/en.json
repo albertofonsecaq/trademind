@@ -571,5 +571,17 @@
   "evidenceImage": {
     "alt": "The chart as it was posted",
     "enlarge": "Show full size"
+  },
+  "tradeChart": {
+    "show": "Show on the price chart",
+    "hide": "Hide the price chart",
+    "loading": "Loading prices…",
+    "failed": "The prices could not be loaded.",
+    "noPrices": "No price data for {{symbol}} around this date.",
+    "caption": "{{symbol}}, daily, from a month before the idea to the end of its outcome window",
+    "entry": "Entry",
+    "target": "Target",
+    "stop": "Stop",
+    "proposed": "Proposed"
   }
 }
