@@ -258,7 +258,6 @@ class TestProviderSymbolForForex:
         assert asked == ["EURUSD=X"]
 
 
-
 class TestProviderSymbolForMetals:
     """
     Gold and silver the way sources write them — #115.

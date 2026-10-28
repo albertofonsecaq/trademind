@@ -216,7 +216,7 @@ async def check_idea_outcome(
             )
 
     # What the bars came from, or would have: a stand-in decides differently (#115).
-    priced_as = market.instrument(idea.symbol).priced_as if idea.symbol else None
+    priced_as = market.price_source(idea.symbol).priced_as if idea.symbol else None
 
     if existing:
         existing.outcome                  = outcome_data["outcome"]

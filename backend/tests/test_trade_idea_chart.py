@@ -18,7 +18,7 @@ from fastapi import HTTPException
 
 from app.api import strategy_cards as cards_api
 from app.api import trade_ideas as trade_ideas_api
-from app.connectors.market_data import Instrument
+from app.connectors.market_data import PriceSource
 from app.core.config import settings
 from app.models.evidence_item import EvidenceItem
 from app.models.trade_idea import TradeIdea
@@ -53,8 +53,8 @@ class FakeMarket:
         self.asked.append((symbol, start, days))
         return self.bars
 
-    def instrument(self, symbol):
-        return Instrument(priced_as=symbol, stands_in_for_spot=False)
+    def price_source(self, symbol):
+        return PriceSource(priced_as=symbol, stands_in_for_spot=False)
 
 
 class TestAnIdeasChart:

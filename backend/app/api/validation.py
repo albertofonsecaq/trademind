@@ -46,6 +46,7 @@ class OutcomeCheckOut(BaseModel):
     max_adverse_excursion: Decimal | None
     max_favorable_excursion: Decimal | None
     data_source: str
+    priced_as: str | None = None    # GC=F: decided on gold futures standing in for spot (#115)
     checked_at: datetime
     window_days: int
 

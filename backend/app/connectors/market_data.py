@@ -82,8 +82,11 @@ def provider_symbol(symbol: str, provider: str) -> str:
 
 
 @dataclass(frozen=True)
-class Instrument:
-    """What a symbol's prices actually come from, on the provider in use (#115)."""
+class PriceSource:
+    """
+    Where an idea's prices actually come from on the provider in use (#115):
+    the provider's own symbol, and whether it only stands in for the real thing.
+    """
     priced_as: str              # the provider's own symbol: GC=F, C:XAUUSD, BTC-USD
     stands_in_for_spot: bool    # futures standing in for a spot price nobody has
 
@@ -227,13 +230,12 @@ class MarketDataConnector:
         cutoff = start + timedelta(days=(days or settings.VALIDATION_WINDOW_DAYS))
         return [b for b in bars if b["date"] <= cutoff]
 
-    def instrument(self, symbol: str) -> Instrument:
+    def price_source(self, symbol: str) -> PriceSource:
         """What `symbol` is priced as here, and whether that is a stand-in."""
-        provider = self.data_source_name()
-        return Instrument(
-            priced_as=provider_symbol(symbol, provider),
-            stands_in_for_spot=provider == "yfinance" and symbol in _METAL_FUTURES,
-        )
+        priced_as = provider_symbol(symbol, self.data_source_name())
+        # Decided once, by provider_symbol: a stand-in is whatever it chose a
+        # futures contract for.
+        return PriceSource(priced_as=priced_as, stands_in_for_spot=priced_as in _METAL_FUTURES.values())
 
     def data_source_name(self) -> str:
         return "polygon" if self._use_polygon else "yfinance"

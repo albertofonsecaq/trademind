@@ -55,7 +55,7 @@ async def chart_of(idea, market) -> IdeaChart | None:
     if not can_be_charted(idea):
         return None
     proposed_on = idea.message_timestamp.date()
-    instrument = market.instrument(idea.symbol)
+    source = market.price_source(idea.symbol)
     bars = await market.get_bars(
         idea.symbol,
         proposed_on - timedelta(days=DAYS_BEFORE),
@@ -72,6 +72,6 @@ async def chart_of(idea, market) -> IdeaChart | None:
             Candle(day=b["date"], open=b["open"], high=b["high"], low=b["low"], close=b["close"])
             for b in bars
         ],
-        priced_as=instrument.priced_as,
-        stands_in_for_spot=instrument.stands_in_for_spot,
+        priced_as=source.priced_as,
+        stands_in_for_spot=source.stands_in_for_spot,
     )

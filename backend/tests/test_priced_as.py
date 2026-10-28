@@ -16,8 +16,9 @@ from types import SimpleNamespace
 import pytest
 
 from app.connectors import market_data
-from app.connectors.market_data import Instrument, MarketDataConnector
+from app.connectors.market_data import PriceSource, MarketDataConnector
 from app.models.outcome_check import OutcomeCheck
+from app.api.validation import OutcomeCheckOut
 from app.services import trade_idea_chart, validation_service
 from tests.conftest import FakeSession
 
@@ -33,16 +34,19 @@ def _gold_idea():
 
 
 class FakeMarket:
-    """Prices gold from its futures, as Yahoo does, with no bars to decide on."""
+    """Prices gold from its futures, as Yahoo does, with the bars a test gives it."""
+
+    def __init__(self, bars: list[dict] | None = None):
+        self.bars = bars or []
 
     def data_source_name(self):
         return "yfinance"
 
-    def instrument(self, symbol):
-        return Instrument(priced_as="GC=F", stands_in_for_spot=True)
+    def price_source(self, symbol):
+        return PriceSource(priced_as="GC=F", stands_in_for_spot=True)
 
     async def get_bars(self, symbol, start, days=None):
-        return []
+        return self.bars
 
 
 class TestTheConnector:
@@ -54,13 +58,13 @@ class TestTheConnector:
         return _provider
 
     def test_says_gold_on_yahoo_is_its_futures_standing_in(self, on):
-        assert on("").instrument("XAUUSD") == Instrument(priced_as="GC=F", stands_in_for_spot=True)
+        assert on("").price_source("XAUUSD") == PriceSource(priced_as="GC=F", stands_in_for_spot=True)
 
     def test_says_gold_on_polygon_is_spot(self, on):
-        assert on("key").instrument("XAUUSD") == Instrument(priced_as="C:XAUUSD", stands_in_for_spot=False)
+        assert on("key").price_source("XAUUSD") == PriceSource(priced_as="C:XAUUSD", stands_in_for_spot=False)
 
     def test_says_a_coin_is_itself_under_another_spelling(self, on):
-        assert on("").instrument("BTCUSD") == Instrument(priced_as="BTC-USD", stands_in_for_spot=False)
+        assert on("").price_source("BTCUSD") == PriceSource(priced_as="BTC-USD", stands_in_for_spot=False)
 
 
 class TestAnOutcomeCheck:
@@ -71,6 +75,26 @@ class TestAnOutcomeCheck:
 
         assert check.priced_as == "GC=F"
         assert check in session.added
+
+    async def test_on_gold_resolves_on_the_futures_bars(self):
+        # The day after it was proposed, gold futures traded through the target.
+        bars = [
+            {"date": date(2026, 9, 15), "open": 2652, "high": 2660, "low": 2640, "close": 2655, "volume": 0},
+            {"date": date(2026, 9, 16), "open": 2655, "high": 2710, "low": 2650, "close": 2705, "volume": 0},
+        ]
+
+        check = await validation_service.check_idea_outcome(FakeSession(), _gold_idea(), FakeMarket(bars), 30)
+
+        assert (check.outcome, check.outcome_date, check.priced_as) == ("won", date(2026, 9, 16), "GC=F")
+
+    def test_is_served_with_what_it_was_priced_as(self):
+        check = OutcomeCheck(
+            id=uuid.uuid4(), trade_idea_id=uuid.uuid4(), symbol="XAUUSD", action="long",
+            trade_date=date(2026, 9, 15), outcome="won", data_source="yfinance",
+            priced_as="GC=F", checked_at=PROPOSED, window_days=30,
+        )
+
+        assert OutcomeCheckOut.model_validate(check).priced_as == "GC=F"
 
 
 class TestAChart:
