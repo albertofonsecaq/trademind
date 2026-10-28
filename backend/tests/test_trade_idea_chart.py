@@ -59,7 +59,9 @@ class TestAnIdeasChart:
 
         await trade_idea_chart.chart_of(_idea(), market)
 
-        assert market.asked == [("EURUSD", date(2026, 8, 16), 30 + settings.VALIDATION_WINDOW_DAYS)]
+        assert market.asked == [
+            ("EURUSD", date(2026, 8, 16), trade_idea_chart.DAYS_BEFORE + settings.VALIDATION_WINDOW_DAYS)
+        ]
 
     async def test_carries_the_candles_and_the_levels_it_was_proposed_at(self):
         market = FakeMarket([_bar(date(2026, 9, 15), 1.0860), _bar(date(2026, 9, 16), 1.0900)])
@@ -78,8 +80,9 @@ class TestNoChart:
         {"symbol": None},
         {"action": "info"},
         {"action": "commentary"},
+        {"action": None},
         {"message_timestamp": None},
-    ], ids=["no symbol", "information", "commentary", "no date to place it on"])
+    ], ids=["no symbol", "information", "commentary", "no direction", "no date to place it on"])
     async def test_for_an_idea_that_is_not_a_trade_on_a_day(self, why):
         market = FakeMarket([_bar(date(2026, 9, 15))])
 

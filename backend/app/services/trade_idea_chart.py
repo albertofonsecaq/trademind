@@ -17,8 +17,10 @@ from app.core.config import settings
 # How much of what came before an idea the chart shows, for context.
 DAYS_BEFORE = 30
 
-# What a source said without proposing a trade: nothing to draw levels for.
-_NOT_A_TRADE = ("info", "commentary")
+# A trade has a direction; an idea that only informs or comments, or whose
+# direction distillation could not tell, has no levels to draw and is never
+# outcome-checked either.
+_DIRECTIONS = ("long", "short")
 
 
 @dataclass(frozen=True)
@@ -43,7 +45,7 @@ class IdeaChart:
 
 def can_be_charted(idea) -> bool:
     """A trade on a symbol, on a day: what a chart can place."""
-    return bool(idea.symbol) and idea.message_timestamp is not None and idea.action not in _NOT_A_TRADE
+    return bool(idea.symbol) and idea.message_timestamp is not None and idea.action in _DIRECTIONS
 
 
 async def chart_of(idea, market) -> IdeaChart | None:

@@ -19,6 +19,22 @@ type IdeaChart = {
 const LEVEL_COLORS = { entry: "#1565c0", target: "#27ae60", stop: "#c0392b" } as const;
 
 /**
+ * Decimals enough for about six significant digits at the chart's smallest
+ * price: 1.0850 and 1.0800 on EURUSD are a trade apart, and the library's
+ * default of two would print both as 1.08. Never fewer than two, never more
+ * than eight.
+ */
+function pricePrecision(chart: IdeaChart): number {
+  const prices = [
+    ...chart.candles.map((c) => c.low),
+    chart.entry, chart.target, chart.stop,
+  ].filter((p): p is number => p !== null && p > 0);
+  if (prices.length === 0) return 2;
+  const magnitude = Math.floor(Math.log10(Math.min(...prices)));
+  return Math.min(8, Math.max(2, 5 - magnitude));
+}
+
+/**
  * A trade idea in daily bars around the day it was proposed, with its entry,
  * target and stop drawn across it.
  */
@@ -58,9 +74,11 @@ function Candles({ chart }: { chart: IdeaChart }) {
       timeScale: { borderColor: "#e0e0e0" },
       rightPriceScale: { borderColor: "#e0e0e0" },
     });
+    const precision = pricePrecision(chart);
     const series = drawn.addSeries(CandlestickSeries, {
       upColor: "#26a69a", downColor: "#ef5350", borderVisible: false,
       wickUpColor: "#26a69a", wickDownColor: "#ef5350",
+      priceFormat: { type: "price", precision, minMove: 10 ** -precision },
     });
     series.setData(chart.candles.map((c) => ({ ...c, time: c.time as Time })));
 
