@@ -200,6 +200,16 @@ class TestProviderSymbol:
         assert provider_symbol(symbol, "yfinance") == symbol
         assert provider_symbol(symbol, "polygon") == symbol
 
+    async def test_the_connector_fetches_under_the_provider_symbol(self, monkeypatch):
+        asked = []
+        monkeypatch.setattr(market_data.settings, "POLYGON_API_KEY", "")
+        monkeypatch.setattr(market_data, "_fetch_yfinance",
+                            lambda symbol, start, end: asked.append(symbol) or [])
+
+        await market_data.MarketDataConnector().get_bars("BTCUSD", START)
+
+        assert asked == ["BTC-USD"]
+
 
 class TestProviderSymbolForForex:
     """
@@ -227,6 +237,12 @@ class TestProviderSymbolForForex:
         assert provider_symbol(symbol, "yfinance") == yahoo
         assert provider_symbol(symbol, "polygon") == polygon
 
+    @pytest.mark.parametrize("symbol, yahoo", [("TRYUSDT", "TRY-USD"), ("BRLBTC", "BRL-BTC")])
+    def test_a_minor_currency_quoted_in_a_coin_is_spelled_as_it_was(self, symbol, yahoo):
+        # Only a pair of two currencies changed; one quoted in a coin resolves as
+        # it did before #114, however unlikely it is to be fetched.
+        assert provider_symbol(symbol, "yfinance") == yahoo
+
     @pytest.mark.parametrize("symbol", ["EURUSD=X", "C:EURUSD", "EUR/USD"])
     def test_one_already_spelled_some_other_way_is_left_alone(self, symbol):
         assert provider_symbol(symbol, "yfinance") == symbol
@@ -242,12 +258,3 @@ class TestProviderSymbolForForex:
 
         assert asked == ["EURUSD=X"]
 
-    async def test_the_connector_fetches_under_the_provider_symbol(self, monkeypatch):
-        asked = []
-        monkeypatch.setattr(market_data.settings, "POLYGON_API_KEY", "")
-        monkeypatch.setattr(market_data, "_fetch_yfinance",
-                            lambda symbol, start, end: asked.append(symbol) or [])
-
-        await market_data.MarketDataConnector().get_bars("BTCUSD", START)
-
-        assert asked == ["BTC-USD"]
