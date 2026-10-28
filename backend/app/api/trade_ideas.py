@@ -35,6 +35,8 @@ class TradeIdeaChartOut(BaseModel):
     target: float | None
     stop: float | None
     candles: list[CandleOut]
+    priced_as: str
+    stands_in_for_spot: bool
 
 
 def get_market() -> MarketDataConnector:
@@ -74,4 +76,6 @@ async def get_trade_idea_chart(
             CandleOut(time=c.day.isoformat(), open=c.open, high=c.high, low=c.low, close=c.close)
             for c in chart.candles
         ],
+        priced_as=chart.priced_as,
+        stands_in_for_spot=chart.stands_in_for_spot,
     )

@@ -582,6 +582,7 @@
     "entry": "Entrada",
     "target": "Objetivo",
     "stop": "Stop",
-    "proposed": "Propuesta"
+    "proposed": "Propuesta",
+    "standsIn": "Los precios son futuros {{pricedAs}}, en lugar del precio al contado: un nivel a pocos dólares del precio puede haberse alcanzado de otra forma al contado."
   }
 }

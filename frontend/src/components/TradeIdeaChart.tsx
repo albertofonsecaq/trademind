@@ -14,6 +14,8 @@ type IdeaChart = {
   target: number | null;
   stop: number | null;
   candles: Candle[];
+  priced_as: string;
+  stands_in_for_spot: boolean;
 };
 
 const LEVEL_COLORS = { entry: "#1565c0", target: "#27ae60", stop: "#c0392b" } as const;
@@ -112,6 +114,11 @@ function Candles({ chart }: { chart: IdeaChart }) {
   return (
     <div style={{ marginBottom: "0.4rem" }}>
       <p style={{ ...note, margin: "0 0 0.3rem" }}>{t("tradeChart.caption", { symbol: chart.symbol })}</p>
+      {chart.stands_in_for_spot && (
+        <p style={{ ...note, margin: "0 0 0.3rem", color: "#e67e22" }}>
+          {t("tradeChart.standsIn", { pricedAs: chart.priced_as })}
+        </p>
+      )}
       <div ref={container} style={{ width: "100%", height: "300px" }} />
     </div>
   );

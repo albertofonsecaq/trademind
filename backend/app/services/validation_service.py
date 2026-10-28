@@ -215,6 +215,9 @@ async def check_idea_outcome(
                 window_days=window_days,
             )
 
+    # What the bars came from, or would have: a stand-in decides differently (#115).
+    priced_as = market.price_source(idea.symbol).priced_as if idea.symbol else None
+
     if existing:
         existing.outcome                  = outcome_data["outcome"]
         existing.outcome_date             = outcome_data["outcome_date"]
@@ -223,6 +226,7 @@ async def check_idea_outcome(
         existing.max_favorable_excursion  = outcome_data["max_favorable_excursion"]
         existing.checked_at               = now_utc()
         existing.data_source              = market.data_source_name()
+        existing.priced_as                = priced_as
         return existing
 
     check = OutcomeCheck(
@@ -240,6 +244,7 @@ async def check_idea_outcome(
         max_adverse_excursion   = outcome_data["max_adverse_excursion"],
         max_favorable_excursion = outcome_data["max_favorable_excursion"],
         data_source             = market.data_source_name(),
+        priced_as               = priced_as,
         window_days             = window_days,
     )
     db.add(check)

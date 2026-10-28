@@ -582,6 +582,7 @@
     "entry": "Entry",
     "target": "Target",
     "stop": "Stop",
-    "proposed": "Proposed"
+    "proposed": "Proposed",
+    "standsIn": "Prices are {{pricedAs}} futures, standing in for spot: a level within a few dollars of price may have been reached differently on spot."
   }
 }
