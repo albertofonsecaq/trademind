@@ -21,6 +21,7 @@ from app.api import trade_ideas as trade_ideas_api
 from app.connectors.market_data import PriceSource
 from app.core.config import settings
 from app.models.evidence_item import EvidenceItem
+from app.models.outcome_check import OutcomeCheck
 from app.models.trade_idea import TradeIdea
 from app.models.workspace_member import WorkspaceMember
 from app.services import trade_idea_chart
@@ -144,6 +145,35 @@ class TestTheChartEndpoint:
 
         assert (chart.symbol, chart.entry, chart.target, chart.stop) == ("EURUSD", 1.085, 1.095, 1.08)
         assert [(c.time, c.close) for c in chart.candles] == [("2026-09-15", 1.0860)]
+
+    async def test_carries_how_the_ideas_outcome_check_resolved_it(self, db_session):
+        workspace = await make_workspace(db_session)
+        user = await _member(db_session, workspace)
+        idea = await _stored_idea(db_session, workspace)
+        db_session.add(OutcomeCheck(
+            trade_idea_id=idea.id, workspace_id=workspace.id, symbol="EURUSD", action="long",
+            trade_date=date(2026, 9, 15), outcome="won", outcome_date=date(2026, 9, 22),
+            window_days=20, max_adverse_excursion=Decimal("0.0030"), max_favorable_excursion=Decimal("0.0100"),
+        ))
+        await db_session.flush()
+
+        chart = await trade_ideas_api.get_trade_idea_chart(workspace.id, idea.id, user, db_session, FakeMarket())
+
+        assert chart.outcome.outcome == "won"
+        assert chart.outcome.outcome_date == "2026-09-22"
+        assert (chart.outcome.window_start, chart.outcome.window_end) == ("2026-09-15", "2026-10-05")
+        assert (chart.outcome.worst_price, chart.outcome.best_price) == (1.082, 1.095)
+        assert chart.no_outcome_because is None
+
+    async def test_says_when_the_idea_was_never_checked(self, db_session):
+        workspace = await make_workspace(db_session)
+        user = await _member(db_session, workspace)
+        idea = await _stored_idea(db_session, workspace)
+
+        chart = await trade_ideas_api.get_trade_idea_chart(workspace.id, idea.id, user, db_session, FakeMarket())
+
+        assert chart.outcome is None
+        assert chart.no_outcome_because == "not_checked"
 
     async def test_an_idea_that_cannot_be_charted_is_not_found(self, db_session):
         workspace = await make_workspace(db_session)

@@ -5,6 +5,7 @@ import { NavBar } from "../components/NavBar";
 import { useAuth } from "../context/AuthContext";
 import api from "../api/client";
 import { EvidenceImage } from "../components/EvidenceImage";
+import { OUTCOME_COLORS } from "../components/outcomeColors";
 
 // The charting library is most of a chart's weight, and only a chart opened needs it.
 const TradeIdeaChart = lazy(() =>
@@ -59,10 +60,6 @@ type DetailResponse = {
 
 const TIER_COLORS: Record<string, string> = {
   still_learning: "#e67e22", developing: "#1565c0", established: "#27ae60",
-};
-const OUTCOME_COLORS: Record<string, string> = {
-  won: "#27ae60", lost: "#c0392b", open: "#1565c0",
-  expired: "#888", inconclusive: "#aaa",
 };
 
 const badge = (color: string): React.CSSProperties => ({
