@@ -10,13 +10,15 @@ invariant list.
 """
 from __future__ import annotations
 import uuid
-from sqlalchemy import select
+from sqlalchemy import func, insert, literal, select
+from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.workspace import Workspace
 from app.models.workspace_member import WorkspaceMember
 from app.models.source_config import SourceConfig
 from app.models.evidence_item import EvidenceItem
+from app.models.evidence_image import EvidenceImage
 from app.models.embedding_row import EmbeddingRow
 from app.models.trade_idea import TradeIdea
 from app.models.outcome_check import OutcomeCheck
@@ -120,6 +122,24 @@ async def clone_workspace(
         ))
     db.add_all(new_evidence)
     await db.flush()
+
+    # ── 4b. The pictures image evidence was read from (#108) ──────────────────
+    # Copied inside Postgres: the bytes are the bulk of the workspace and have
+    # no reason to pass through this process. A copy keeps its evidence's
+    # stable_id, which is unique per workspace, so that is how it is matched.
+    original, copy = aliased(EvidenceItem), aliased(EvidenceItem)
+    await db.execute(
+        insert(EvidenceImage).from_select(
+            ["id", "evidence_item_id", "workspace_id", "mime_type", "data", "created_at"],
+            select(
+                func.gen_random_uuid(), copy.id, literal(new_ws.id),
+                EvidenceImage.mime_type, EvidenceImage.data, EvidenceImage.created_at,
+            )
+            .join(original, original.id == EvidenceImage.evidence_item_id)
+            .join(copy, (copy.stable_id == original.stable_id) & (copy.workspace_id == new_ws.id))
+            .where(EvidenceImage.workspace_id == source_workspace_id),
+        )
+    )
 
     # ── 5. Embedding rows ──────────────────────────────────────────────────────
     er_result = await db.execute(

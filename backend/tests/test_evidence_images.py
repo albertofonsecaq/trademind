@@ -17,7 +17,9 @@ from app.models.evidence_image import EvidenceImage
 from app.models.evidence_item import EvidenceItem
 from app.models.trade_idea import TradeIdea
 from app.models.workspace_member import WorkspaceMember
-from app.services import ingestion_pipeline
+from sqlalchemy import select
+
+from app.services import ingestion_pipeline, reprocess_service, workspace_clone_service
 from tests.conftest import FakeSession, make_card, make_source, make_user, make_workspace
 
 # Any bytes do: nothing here decodes the picture, it is only kept and served.
@@ -200,3 +202,87 @@ class TestAStrategyCardsExamples:
         assert shown[pictured.id].evidence_id == pictured.evidence_item_id
         assert shown[pictured.id].has_image is True
         assert shown[unpictured.id].has_image is False
+
+
+# ── when a flagged image is read again ───────────────────────────────────────
+
+
+async def _flagged_image(session, source, *, picture: bytes | None):
+    """An image whose vision verdict could not be read, waiting for the replay."""
+    item = EvidenceItem(
+        id=uuid.uuid4(), workspace_id=source.workspace_id, source_config_id=source.id,
+        stable_id="telegram:chan:7:image", source_type="telegram", type="image",
+        content="No trading content detected.", is_on_topic=None, needs_reprocessing=True,
+    )
+    session.add(item)
+    await session.flush()
+    if picture is not None:
+        session.add(EvidenceImage(
+            evidence_item_id=item.id, workspace_id=source.workspace_id, mime_type="image/png", data=picture,
+        ))
+        await session.flush()
+    return item
+
+
+async def _picture_of(session, item) -> EvidenceImage | None:
+    return (await session.execute(
+        select(EvidenceImage).where(EvidenceImage.evidence_item_id == item.id)
+    )).scalar_one_or_none()
+
+
+def _refetched(source) -> RawMessage:
+    msg = _image_message()
+    msg.stable_id = "telegram:chan:7:image"
+    msg.source_config_id, msg.workspace_id = source.id, source.workspace_id
+    return msg
+
+
+@pytest.mark.db
+class TestReplayingAFlaggedImage:
+    async def test_found_on_topic_keeps_the_picture_it_was_fetched_with(self, db_session, channel, vision):
+        # Flagged before #108, so it was stored with no picture; the replay
+        # downloads the image again anyway, and now keeps it.
+        source = await make_source(db_session)
+        item = await _flagged_image(db_session, source, picture=None)
+        channel.messages.append(_refetched(source))
+
+        await reprocess_service.reprocess_flagged(db_session, source_config_id=source.id)
+
+        picture = await _picture_of(db_session, item)
+        assert (picture.data, picture.mime_type) == (CHART, "image/png")
+
+    async def test_found_off_topic_no_longer_keeps_its_picture(self, db_session, channel, vision):
+        vision["is_on_topic"] = False
+        source = await make_source(db_session)
+        item = await _flagged_image(db_session, source, picture=CHART)
+        channel.messages.append(_refetched(source))
+
+        await reprocess_service.reprocess_flagged(db_session, source_config_id=source.id)
+
+        assert await _picture_of(db_session, item) is None
+
+
+# ── when a workspace is cloned ───────────────────────────────────────────────
+
+
+@pytest.mark.db
+class TestACloneOfTheWorkspace:
+    async def test_shows_the_same_pictures(self, db_session):
+        workspace = await make_workspace(db_session)
+        original = await _evidence(db_session, workspace)
+        await _evidence(db_session, workspace, picture=None)
+        receiver = await make_user(db_session)
+
+        clone = await workspace_clone_service.clone_workspace(
+            db_session, source_workspace_id=workspace.id, target_user_id=receiver.id, new_name=None,
+        )
+        await db_session.flush()
+
+        copied = (await db_session.execute(
+            select(EvidenceImage).where(EvidenceImage.workspace_id == clone.id)
+        )).scalars().all()
+        [picture] = copied
+        copied_item = await db_session.get(EvidenceItem, picture.evidence_item_id)
+        assert copied_item.workspace_id == clone.id
+        assert copied_item.stable_id == original.stable_id
+        assert (picture.data, picture.mime_type) == (CHART, "image/png")

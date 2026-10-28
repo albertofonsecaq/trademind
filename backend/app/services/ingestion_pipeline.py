@@ -262,20 +262,36 @@ async def _process_image(db: AsyncSession, msg: RawMessage, topic_scope: str) ->
     db.add(item)
     await db.flush()
 
-    # The picture is what a member looks at (#108). A clear off-topic rejection
-    # is never shown, so its picture is not kept; an unreadable verdict may yet
-    # be replayed on-topic, so its picture is.
-    if is_on_topic is not False:
-        db.add(EvidenceImage(
-            evidence_item_id=item.id, workspace_id=item.workspace_id,
-            mime_type=mime, data=image_bytes,
-        ))
+    await keep_picture(db, item, image_bytes, mime)
 
     if not is_on_topic:
         return item
 
     await _distill_and_embed(db, item, msg, content, item.original_language)
     return item
+
+
+async def keep_picture(db: AsyncSession, item: EvidenceItem, image_bytes: bytes, mime: str) -> None:
+    """
+    Keep or let go of the picture image evidence was read from, by its verdict (#108).
+
+    The picture is what a member looks at. A clear off-topic rejection is never
+    shown, so its picture is not kept; an unreadable verdict may yet be replayed
+    on-topic, so its picture is. Ingestion and the replay both come through
+    here, so a verdict that changes on replay changes what is kept.
+    """
+    kept = (await db.execute(
+        select(EvidenceImage).where(EvidenceImage.evidence_item_id == item.id)
+    )).scalar_one_or_none()
+    if item.is_on_topic is False:
+        if kept is not None:
+            await db.delete(kept)
+        return
+    if kept is None:
+        db.add(EvidenceImage(
+            evidence_item_id=item.id, workspace_id=item.workspace_id,
+            mime_type=mime, data=image_bytes,
+        ))
 
 
 async def _process_url(db: AsyncSession, msg: RawMessage, topic_scope: str) -> EvidenceItem | None:

@@ -17,7 +17,7 @@ class EvidenceImage(Base):
     was dropped after that, so a chart could be described but never shown. It
     is kept in the database rather than on disk so the verified dump that backs
     up the evidence backs up its picture too. A table of its own keeps the
-    bytes out of every query that reads evidence rows.
+    bytes out of every query that reads evidence rows. See ADR 0006.
     """
     __tablename__ = "evidence_images"
 

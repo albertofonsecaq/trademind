@@ -40,7 +40,7 @@ type CitedExample = {
   author: string | null; channel: string | null;
   message_timestamp: string | null; source_type: string | null;
   source_metadata: Record<string, unknown> | null; outcome: string | null;
-  evidence_id: string | null; has_image: boolean;
+  evidence_id: string; has_image: boolean;
 };
 type OutcomeSummary = {
   won: number; lost: number; open: number; expired: number;
@@ -165,7 +165,7 @@ function OutcomeBar({ summary, t }: { summary: OutcomeSummary; t: (k: string) =>
 // ── CitedExampleCard ──────────────────────────────────────────────────────────
 
 function CitedExampleCard({ ex, lang, t, workspaceId }: {
-  ex: CitedExample; lang: string; t: (k: string) => string; workspaceId: string;
+  ex: CitedExample; lang: string; t: (k: string) => string; workspaceId: string | null | undefined;
 }) {
   const [showOriginal, setShowOriginal] = useState(false);
 
@@ -200,7 +200,7 @@ function CitedExampleCard({ ex, lang, t, workspaceId }: {
       </div>
 
       {/* The chart it was read from */}
-      {ex.has_image && ex.evidence_id && (
+      {ex.has_image && workspaceId && (
         <EvidenceImage workspaceId={workspaceId} evidenceId={ex.evidence_id} />
       )}
 
@@ -556,7 +556,7 @@ export function StrategyCardDetail() {
             <p style={{ color: "#aaa", fontSize: "0.875rem" }}>{t("detail.noExamples")}</p>
           ) : (
             examples.map((ex) => (
-              <CitedExampleCard key={ex.id} ex={ex} lang={lang} t={t} workspaceId={workspaceId!} />
+              <CitedExampleCard key={ex.id} ex={ex} lang={lang} t={t} workspaceId={workspaceId} />
             ))
           )}
         </div>

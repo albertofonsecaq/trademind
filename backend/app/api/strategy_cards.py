@@ -155,8 +155,8 @@ class CitedExample(BaseModel):
     source_type: str | None
     source_metadata: dict | None    # includes video_url (YouTube) or message_id (Telegram)
     outcome: str | None             # from outcome_check if available
-    evidence_id: uuid.UUID | None = None
-    has_image: bool = False         # the picture it was read from is kept (#108)
+    evidence_id: uuid.UUID
+    has_image: bool                 # the picture it was read from is kept (#108)
 
 
 class OutcomeSummary(BaseModel):

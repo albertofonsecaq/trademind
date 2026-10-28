@@ -177,10 +177,10 @@ async def _replay_one(db, msg, workspace_id, report, *, detect_lang, distill) ->
         report.errors += 1
         return
 
+    from app.services.ingestion_pipeline import keep_picture
     import base64
-    result, usage = await vision_service.extract_image(
-        base64.b64decode(b64), meta.get("image_mime", "image/jpeg")
-    )
+    image_bytes, mime = base64.b64decode(b64), meta.get("image_mime", "image/jpeg")
+    result, usage = await vision_service.extract_image(image_bytes, mime)
 
     item = await _stored(db, workspace_id, msg.stable_id)
     if item is None:
@@ -209,6 +209,8 @@ async def _replay_one(db, msg, workspace_id, report, *, detect_lang, distill) ->
     )
 
     await db.flush()
+    # Whatever the verdict now is, the picture follows it (#108).
+    await keep_picture(db, item, image_bytes, mime)
 
     if item.needs_reprocessing:
         report.still_unreadable += 1
