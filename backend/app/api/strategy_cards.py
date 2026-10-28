@@ -23,6 +23,7 @@ from app.models.trade_idea import TradeIdea
 from app.models.evidence_item import EvidenceItem
 from app.models.evidence_image import EvidenceImage
 from app.models.outcome_check import OutcomeCheck
+from app.services.trade_idea_chart import can_be_charted
 
 router = APIRouter(prefix="/workspaces", tags=["strategy-cards"])
 
@@ -157,6 +158,7 @@ class CitedExample(BaseModel):
     outcome: str | None             # from outcome_check if available
     evidence_id: uuid.UUID
     has_image: bool                 # the picture it was read from is kept (#108)
+    has_chart: bool                 # it can be drawn against prices (#109)
 
 
 class OutcomeSummary(BaseModel):
@@ -232,6 +234,7 @@ async def get_strategy_card_detail(
                 outcome=outcome.outcome if outcome else None,
                 evidence_id=idea.evidence_item_id,
                 has_image=image_id is not None,
+                has_chart=can_be_charted(idea),
             ))
 
     # Outcome summary across ALL supporting_evidence (not just the sample)

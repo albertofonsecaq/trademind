@@ -1,10 +1,15 @@
-import { useState, useEffect } from "react";
+import { lazy, Suspense, useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { NavBar } from "../components/NavBar";
 import { useAuth } from "../context/AuthContext";
 import api from "../api/client";
 import { EvidenceImage } from "../components/EvidenceImage";
+
+// The charting library is most of a chart's weight, and only a chart opened needs it.
+const TradeIdeaChart = lazy(() =>
+  import("../components/TradeIdeaChart").then((m) => ({ default: m.TradeIdeaChart }))
+);
 
 // ── types ────────────────────────────────────────────────────────────────────
 
@@ -40,7 +45,7 @@ type CitedExample = {
   author: string | null; channel: string | null;
   message_timestamp: string | null; source_type: string | null;
   source_metadata: Record<string, unknown> | null; outcome: string | null;
-  evidence_id: string; has_image: boolean;
+  evidence_id: string; has_image: boolean; has_chart: boolean;
 };
 type OutcomeSummary = {
   won: number; lost: number; open: number; expired: number;
@@ -168,6 +173,7 @@ function CitedExampleCard({ ex, lang, t, workspaceId }: {
   ex: CitedExample; lang: string; t: (k: string) => string; workspaceId: string | null | undefined;
 }) {
   const [showOriginal, setShowOriginal] = useState(false);
+  const [showChart, setShowChart] = useState(false);
 
   const summary = lang === "es" ? ex.summary_es : ex.summary_en;
   const sourceLabel = [ex.channel, ex.author].filter(Boolean).join(" · ");
@@ -223,6 +229,23 @@ function CitedExampleCard({ ex, lang, t, workspaceId }: {
             <p style={{ margin: "0.3rem 0 0", fontSize: "0.82rem", color: "#666", fontStyle: "italic", lineHeight: 1.5, paddingLeft: "0.5rem", borderLeft: "2px solid #e0e0e0" }}>
               {ex.original_text}
             </p>
+          )}
+        </div>
+      )}
+
+      {/* Against what price did around it */}
+      {ex.has_chart && workspaceId && (
+        <div style={{ marginBottom: "0.35rem" }}>
+          <button
+            onClick={() => setShowChart((v) => !v)}
+            style={{ fontSize: "0.75rem", color: "#1565c0", background: "none", border: "none", padding: 0, cursor: "pointer" }}
+          >
+            {showChart ? t("tradeChart.hide") : t("tradeChart.show")}
+          </button>
+          {showChart && (
+            <Suspense fallback={<p style={{ fontSize: "0.78rem", color: "#888" }}>{t("tradeChart.loading")}</p>}>
+              <TradeIdeaChart workspaceId={workspaceId} ideaId={ex.id} />
+            </Suspense>
           )}
         </div>
       )}
