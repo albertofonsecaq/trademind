@@ -115,7 +115,7 @@ _Avoid_: Job, task, batch, refresh
 ### Asking
 
 **Ask record**:
-One question a user asked of their workspace's knowledge base and the answer the system synthesized for it, with the sources that answer cited. Private to the user who asked it, like a plan item: another member of the same workspace never sees it. Kept so that a question already answered can be read again instead of asked again, which is why reading one costs nothing — the stored answer is served as it was, never re-synthesized. All of one user's records in one workspace are their **ask history**, which is the collection and never the name of a single record.
+One question a user asked of their workspace's knowledge base and the answer the system synthesized for it, with the sources that answer cited. Private to the user who asked it, like a plan item: another member of the same workspace never sees it. Kept so that a question already answered can be read again instead of asked again, which is why reading one costs nothing — the stored answer and its cited sources are served as they were kept, never re-synthesized. Beside each source, what its evidence has to show now — a picture kept since — is looked up when the record is read, so an old answer shows it too. All of one user's records in one workspace are their **ask history**, which is the collection and never the name of a single record.
 _Avoid_: Chat, conversation, message, thread
 
 ### Validation

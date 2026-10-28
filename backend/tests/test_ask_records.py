@@ -357,15 +357,19 @@ def _stored(user, workspace) -> AskRecord:
         answer="EURUSD broke out twice at this level [1]",
         sources=_SOURCES,
         language="en",
+        created_at=now_utc(),
     )
 
 
 class TestReopeningOneSpendsNothing:
-    async def test_the_stored_answer_and_its_sources_come_back_as_they_were(self, forbid_spending):
+    async def test_the_stored_answer_and_its_sources_come_back_as_they_were_kept(self, forbid_spending):
         """
         Reopening is a read. Every paid call is wired to fail the test, so
         anything that reached a provider — or recorded spend — fails here
         rather than on someone's bill.
+
+        Every field a source was kept with comes back unchanged; beside them,
+        and only beside them, is what its evidence has to show now (#110).
         """
         user, workspace = _user(), _workspace()
         record = _stored(user, workspace)
@@ -376,7 +380,9 @@ class TestReopeningOneSpendsNothing:
         )
 
         assert found.answer == "EURUSD broke out twice at this level [1]"
-        assert found.sources == _SOURCES
+        [served], [kept] = found.sources, _SOURCES
+        assert {k: served[k] for k in kept} == kept                 # every kept field, unchanged
+        assert set(served) - set(kept) == {"evidence_id", "has_image"}  # and only the lookup beside them
         assert db.added == [] and db.commits == 0
         assert not db.touched("usage_events")
 
@@ -755,3 +761,22 @@ class TestCountIsNotReadAsARecordId:
         by_id = paths.index("/workspaces/{workspace_id}/ask-records/{record_id}")
 
         assert count < by_id
+
+
+class TestLookingUpWhatSourcesShow:
+    async def test_happens_before_the_answer_is_kept(self, ask, monkeypatch):
+        """
+        Whether each source has a picture is looked up before the commit (#110):
+        a lookup that fails after it would leave an answer kept, and paid for,
+        that the caller never received — which is what an ask record must not be.
+        """
+        async def _fails(db, workspace_id, sources):
+            raise RuntimeError("the evidence lookup failed")
+
+        monkeypatch.setattr(ask_api, "_beside_their_evidence", _fails)
+
+        with pytest.raises(RuntimeError):
+            await ask.run()
+
+        assert ask.db.commits == 0               # no answer kept that was never received
+        assert len(ask.usage_events) == 1        # but the synthesis it paid for is recorded (#27)

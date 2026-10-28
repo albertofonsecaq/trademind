@@ -5,6 +5,7 @@ import { HelpLink } from "../components/HelpLink";
 import { useAuth } from "../context/AuthContext";
 import axios from "axios";
 import api from "../api/client";
+import { EvidenceImage } from "../components/EvidenceImage";
 
 type Source = {
   index: number;
@@ -13,6 +14,9 @@ type Source = {
   timestamp: string | null;
   stable_id: string | null;
   symbol: string | null;
+  /** Looked up when the answer is served: which evidence it is, and whether it has a picture (#110). */
+  evidence_id: string | null;
+  has_image: boolean;
 };
 
 /** One row of the ask history: enough to recognise a question, not the answer. */
@@ -79,10 +83,14 @@ const asTurns = (record: AskRecord): Turn[] => [
  * One turn, drawn.
  *
  * A stored answer and one that has just arrived both come through here, which
- * is the point: reopening an ask record shows what was shown at the time, not a
- * second rendering of it that drifts away from the first.
+ * is the point: reopening an ask record shows the answer and sources as they
+ * were kept, not a second rendering of them that drifts away from the first.
+ * What each source's evidence has to show — its picture (#110) — is looked up
+ * when the answer is served, so an old answer shows one kept since.
  */
-function Bubble({ turn, sourcesLabel }: { turn: Turn; sourcesLabel: string }) {
+function Bubble({ turn, sourcesLabel, workspaceId }: {
+  turn: Turn; sourcesLabel: string; workspaceId: string | null | undefined;
+}) {
   const asked = turn.role === "user";
   return (
     <div style={{ alignSelf: asked ? "flex-end" : "flex-start", maxWidth: "85%" }}>
@@ -112,6 +120,11 @@ function Bubble({ turn, sourcesLabel }: { turn: Turn; sourcesLabel: string }) {
               {s.author && <span> / {s.author}</span>}
               {s.symbol && <span> · <strong>{s.symbol}</strong></span>}
               {s.timestamp && <span style={{ color: "#999" }}> · {s.timestamp.slice(0, 10)}</span>}
+              {s.has_image && s.evidence_id && workspaceId && (
+                <div style={{ marginTop: "0.3rem" }}>
+                  <EvidenceImage workspaceId={workspaceId} evidenceId={s.evidence_id} />
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -453,7 +466,7 @@ export function Ask() {
             )}
 
             {visibleTurns.map((turn, i) => (
-              <Bubble key={i} turn={turn} sourcesLabel={t("ask.sources")} />
+              <Bubble key={i} turn={turn} sourcesLabel={t("ask.sources")} workspaceId={workspaceId} />
             ))}
 
             {loading && (
