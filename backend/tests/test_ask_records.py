@@ -357,6 +357,7 @@ def _stored(user, workspace) -> AskRecord:
         answer="EURUSD broke out twice at this level [1]",
         sources=_SOURCES,
         language="en",
+        created_at=now_utc(),
     )
 
 
@@ -376,7 +377,9 @@ class TestReopeningOneSpendsNothing:
         )
 
         assert found.answer == "EURUSD broke out twice at this level [1]"
-        assert found.sources == _SOURCES
+        # As kept, beside whether each source has a picture, looked up (#110).
+        kept = [{k: v for k, v in s.items() if k not in ("evidence_id", "has_image")} for s in found.sources]
+        assert kept == _SOURCES
         assert db.added == [] and db.commits == 0
         assert not db.touched("usage_events")
 
