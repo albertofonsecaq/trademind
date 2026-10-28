@@ -105,6 +105,28 @@ class TestAFreshAnswer:
         assert record.sources == _cited("telegram:fx-desk:1:image")
 
 
+    async def test_citing_another_workspaces_evidence_shows_none_of_it(self, db_session, answers_citing):
+        mine, theirs = await make_workspace(db_session), await make_workspace(db_session)
+        user = await _member(db_session, mine)
+        await _evidence(db_session, theirs, "telegram:fx-desk:1:image", picture=True)
+        answers_citing(_cited("telegram:fx-desk:1:image"))
+
+        response = await ask_api.ask(mine.id, ask_api.AskRequest(query="EURUSD?"), user, db_session)
+
+        [source] = response.sources
+        assert (source["evidence_id"], source["has_image"]) == (None, False)
+
+    async def test_citing_one_piece_of_evidence_twice_shows_it_on_both(self, db_session, answers_citing):
+        workspace = await make_workspace(db_session)
+        user = await _member(db_session, workspace)
+        chart = await _evidence(db_session, workspace, "telegram:fx-desk:1:image", picture=True)
+        answers_citing(_cited("telegram:fx-desk:1:image", "telegram:fx-desk:1:image"))
+
+        response = await ask_api.ask(workspace.id, ask_api.AskRequest(query="EURUSD?"), user, db_session)
+
+        assert [(s["index"], s["evidence_id"]) for s in response.sources] == [(1, str(chart.id)), (2, str(chart.id))]
+
+
 class TestAnAnswerReadBack:
     async def test_asked_before_pictures_were_kept_shows_them_now(self, db_session):
         workspace = await make_workspace(db_session)

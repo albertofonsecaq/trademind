@@ -83,8 +83,10 @@ const asTurns = (record: AskRecord): Turn[] => [
  * One turn, drawn.
  *
  * A stored answer and one that has just arrived both come through here, which
- * is the point: reopening an ask record shows what was shown at the time, not a
- * second rendering of it that drifts away from the first.
+ * is the point: reopening an ask record shows the answer and sources as they
+ * were kept, not a second rendering of them that drifts away from the first.
+ * What each source's evidence has to show — its picture (#110) — is looked up
+ * when the answer is served, so an old answer shows one kept since.
  */
 function Bubble({ turn, sourcesLabel, workspaceId }: {
   turn: Turn; sourcesLabel: string; workspaceId: string | null | undefined;

@@ -77,7 +77,7 @@ class AskRecordOut(AskRecordSummary):
     language: str
 
 
-async def _with_pictures(db: AsyncSession, workspace_id: uuid.UUID, sources: list[dict]) -> list[dict]:
+async def _beside_their_evidence(db: AsyncSession, workspace_id: uuid.UUID, sources: list[dict]) -> list[dict]:
     """
     The cited sources, each saying which evidence it is and whether that has a
     picture to show (#110).
@@ -96,11 +96,11 @@ async def _with_pictures(db: AsyncSession, workspace_id: uuid.UUID, sources: lis
             .where(EvidenceItem.workspace_id == workspace_id, EvidenceItem.stable_id.in_(stable_ids))
         )
         found = {stable_id: (str(item_id), image_id is not None) for stable_id, item_id, image_id in rows}
-    return [
-        {**s, "evidence_id": found.get(s.get("stable_id"), (None, False))[0],
-         "has_image": found.get(s.get("stable_id"), (None, False))[1]}
-        for s in sources
-    ]
+    served = []
+    for source in sources:
+        evidence_id, has_image = found.get(source.get("stable_id"), (None, False))
+        served.append({**source, "evidence_id": evidence_id, "has_image": has_image})
+    return served
 
 
 async def _get_workspace_and_assert_member(
@@ -250,6 +250,10 @@ async def ask(
             sub.current_period_overage_usd += cost * Decimal(str(sub.overage_rate_multiplier))
 
     try:
+        # Before the commit: a lookup that failed after it would leave an answer
+        # kept that the caller never received. Inside the try, because the
+        # synthesis it follows is owed a usage event however this ends (#27).
+        served_sources = await _beside_their_evidence(db, workspace_id, sources)
         await db.commit()
     finally:
         # In its own transaction, after this one, and in a `finally` because the
@@ -272,8 +276,7 @@ async def ask(
         )
 
     return AskResponse(
-        answer=answer, sources=await _with_pictures(db, workspace_id, sources),
-        id=record.id, created_at=record.created_at,
+        answer=answer, sources=served_sources, id=record.id, created_at=record.created_at,
     )
 
 
@@ -449,5 +452,5 @@ async def read_ask_record(
     return AskRecordOut(
         id=record.id, question=record.question, created_at=record.created_at,
         answer=record.answer, language=record.language,
-        sources=await _with_pictures(db, workspace_id, record.sources),
+        sources=await _beside_their_evidence(db, workspace_id, record.sources),
     )
