@@ -585,10 +585,11 @@
     "proposed": "Propuesta",
     "standsIn": "Los precios son futuros {{pricedAs}}, en lugar del precio al contado: un nivel a pocos dólares del precio puede haberse alcanzado de otra forma al contado.",
     "windowEnds": "Fin de la ventana",
-    "worst": "Peor",
-    "best": "Mejor",
-    "window": "Su comprobación de resultado abarcó del {{start}} al {{end}}; las líneas punteadas marcan lo más lejos que fue el precio en contra y a favor.",
-    "not_checked": "Aún no hay comprobación de resultado: ejecuta la validación para ver cómo se resolvió esta idea.",
-    "inconclusive": "Su comprobación de resultado no fue concluyente: tenía demasiado poco en qué basarse, así que no hay resolución que dibujar."
+    "window": "Su comprobación de resultado abarcó del {{start}} al {{end}}.",
+    "inconclusive": "Su resultado no es concluyente: la comprobación tenía demasiado poco en qué basarse, así que no hay nada que marcar.",
+    "adverse": "Adversa",
+    "favorable": "Favorable",
+    "excursions": "Las líneas punteadas marcan su excursión adversa y favorable: lo más lejos que fue el precio en contra y a favor.",
+    "notChecked": "Aún no hay comprobación de resultado: ejecuta la validación para ver cómo se resolvió esta idea."
   }
 }

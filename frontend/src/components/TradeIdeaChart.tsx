@@ -2,18 +2,18 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CandlestickSeries, createChart, createSeriesMarkers, type SeriesMarker, type Time } from "lightweight-charts";
 import api from "../api/client";
-import { OUTCOME_COLORS } from "./outcomeColors";
+import { outcomeColor } from "./outcomeColors";
 
 type Candle = { time: string; open: number; high: number; low: number; close: number };
 
-/** How the idea's outcome check resolved it, on the days it looked at (#112). */
+/** The idea's outcome check, on the days it looked at (#112). */
 type ChartedOutcome = {
-  outcome: string;
+  outcome: "won" | "lost" | "open" | "expired" | "inconclusive";
   outcome_date: string | null;
   window_start: string;
   window_end: string;
-  worst_price: number | null;
-  best_price: number | null;
+  adverse_price: number | null;
+  favorable_price: number | null;
 };
 
 /** A trade idea's chart as the API serves it (#109). */
@@ -27,12 +27,12 @@ type IdeaChart = {
   candles: Candle[];
   priced_as: string;
   stands_in_for_spot: boolean;
-  outcome: ChartedOutcome | null;
-  no_outcome_because: "not_checked" | "inconclusive" | null;
+  outcome: ChartedOutcome | null;     // null: never outcome-checked
 };
 
 const LEVEL_COLORS = { entry: "#1565c0", target: "#27ae60", stop: "#c0392b" } as const;
-const EXCURSION_COLOR = "#e67e22";
+const EXCURSION_COLOR = "#8e44ad";
+const WINDOW_COLOR = "#888";
 
 /** The first day with a bar on or after `day`: a weekend or a holiday has none of its own. */
 function barOnOrAfter(candles: Candle[], day: string): Candle | undefined {
@@ -126,33 +126,49 @@ function Candles({ chart }: { chart: IdeaChart }) {
     }
 
     const outcome = chart.outcome;
-    if (outcome) {
+    if (outcome && outcome.outcome !== "inconclusive") {
+      const color = outcomeColor(outcome.outcome);
       // The day the target or stop was hit, in the badge's colour.
       const resolved = outcome.outcome_date ? barOnOrAfter(chart.candles, outcome.outcome_date) : undefined;
       if (resolved) {
         markers.push({
-          time: resolved.time as Time,
-          position: "aboveBar",
-          shape: "circle",
-          color: OUTCOME_COLORS[outcome.outcome] || "#888",
-          text: t(`detail.${outcome.outcome}`),
+          time: resolved.time as Time, position: "aboveBar", shape: "circle",
+          color, text: t(`detail.${outcome.outcome}`),
         });
       }
-      // Where the days the check looked at end: the last bar inside them.
-      const inside = chart.candles.filter((c) => c.time <= outcome.window_end);
-      const windowEnd = inside[inside.length - 1];
-      if (windowEnd && windowEnd !== resolved) {
+      const last = chart.candles[chart.candles.length - 1];
+      if (outcome.outcome === "open" && last && last.time < outcome.window_end) {
+        // Still inside its window: say so on the newest bar, not where the
+        // window will end some day there is no bar for yet.
         markers.push({
-          time: windowEnd.time as Time,
-          position: "belowBar",
-          shape: "square",
-          color: OUTCOME_COLORS[outcome.outcome] || "#888",
-          // An expired trade resolved here, by running out of days.
-          text: outcome.outcome === "expired" ? t("detail.expired") : t("tradeChart.windowEnds"),
+          time: last.time as Time, position: "aboveBar", shape: "circle",
+          color, text: t("detail.open"),
         });
+      } else if (!resolved) {
+        // An expired trade resolved where its window ended, by running out of
+        // days; one still open, where it ends in the bars there are.
+        const inside = chart.candles.filter((c) => c.time <= outcome.window_end);
+        const windowEnd = inside[inside.length - 1];
+        if (windowEnd) {
+          markers.push({
+            time: windowEnd.time as Time, position: "aboveBar", shape: "square",
+            color, text: t(`detail.${outcome.outcome}`),
+          });
+        }
+      } else {
+        // Resolved: the window's end is context, not a second outcome.
+        const inside = chart.candles.filter((c) => c.time <= outcome.window_end);
+        const windowEnd = inside[inside.length - 1];
+        if (windowEnd && windowEnd !== resolved) {
+          markers.push({
+            time: windowEnd.time as Time, position: "belowBar", shape: "square",
+            color: WINDOW_COLOR, text: t("tradeChart.windowEnds"),
+          });
+        }
       }
-      for (const [price, key] of [[outcome.worst_price, "worst"], [outcome.best_price, "best"]] as const) {
-        if (price === null) continue;
+      // An excursion of nothing would only redraw the entry line.
+      for (const [price, key] of [[outcome.adverse_price, "adverse"], [outcome.favorable_price, "favorable"]] as const) {
+        if (price === null || price === chart.entry) continue;
         series.createPriceLine({
           price, color: EXCURSION_COLOR, lineWidth: 1, lineStyle: 1,
           axisLabelVisible: false, title: t(`tradeChart.${key}`),
@@ -167,19 +183,22 @@ function Candles({ chart }: { chart: IdeaChart }) {
     return () => drawn.remove();
   }, [chart, t]);
 
+  const outcome = chart.outcome;
+  const excursions = outcome && [outcome.adverse_price, outcome.favorable_price]
+    .some((p) => p !== null && p !== chart.entry);
   return (
     <div style={{ marginBottom: "0.4rem" }}>
-      <p style={{ ...note, margin: "0 0 0.3rem" }}>{t("tradeChart.caption", { symbol: chart.symbol })}</p>
-      {chart.outcome && (
-        <p style={{ ...note, margin: "0 0 0.3rem" }}>
-          {t("tradeChart.window", { start: chart.outcome.window_start, end: chart.outcome.window_end })}
+      <p style={caption}>{t("tradeChart.caption", { symbol: chart.symbol })}</p>
+      {!outcome && <p style={caption}>{t("tradeChart.notChecked")}</p>}
+      {outcome?.outcome === "inconclusive" && <p style={caption}>{t("tradeChart.inconclusive")}</p>}
+      {outcome && outcome.outcome !== "inconclusive" && (
+        <p style={caption}>
+          {t("tradeChart.window", { start: outcome.window_start, end: outcome.window_end })}
+          {excursions && ` ${t("tradeChart.excursions")}`}
         </p>
       )}
-      {chart.no_outcome_because && (
-        <p style={{ ...note, margin: "0 0 0.3rem" }}>{t(`tradeChart.${chart.no_outcome_because}`)}</p>
-      )}
       {chart.stands_in_for_spot && (
-        <p style={{ ...note, margin: "0 0 0.3rem", color: "#e67e22" }}>
+        <p style={{ ...caption, color: "#e67e22" }}>
           {t("tradeChart.standsIn", { pricedAs: chart.priced_as })}
         </p>
       )}
@@ -189,3 +208,4 @@ function Candles({ chart }: { chart: IdeaChart }) {
 }
 
 const note = { fontSize: "0.78rem", color: "#888", margin: "0.3rem 0" };
+const caption = { ...note, margin: "0 0 0.3rem" };

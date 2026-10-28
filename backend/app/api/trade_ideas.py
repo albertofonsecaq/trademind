@@ -15,7 +15,7 @@ from app.core.dependencies import get_current_user
 from app.models.outcome_check import OutcomeCheck
 from app.models.trade_idea import TradeIdea
 from app.models.user import User
-from app.services.trade_idea_chart import chart_of
+from app.services.trade_idea_chart import ChartedOutcome, chart_of
 
 router = APIRouter(prefix="/workspaces", tags=["trade-ideas"])
 
@@ -29,12 +29,12 @@ class CandleOut(BaseModel):
 
 
 class ChartedOutcomeOut(BaseModel):
-    outcome: str
+    outcome: str                # won | lost | open | expired | inconclusive
     outcome_date: str | None    # YYYY-MM-DD
     window_start: str
     window_end: str
-    worst_price: float | None
-    best_price: float | None
+    adverse_price: float | None
+    favorable_price: float | None
 
 
 class TradeIdeaChartOut(BaseModel):
@@ -47,8 +47,7 @@ class TradeIdeaChartOut(BaseModel):
     candles: list[CandleOut]
     priced_as: str
     stands_in_for_spot: bool
-    outcome: ChartedOutcomeOut | None
-    no_outcome_because: str | None      # not_checked | inconclusive
+    outcome: ChartedOutcomeOut | None   # None: never outcome-checked
 
 
 def get_market() -> MarketDataConnector:
@@ -94,16 +93,15 @@ async def get_trade_idea_chart(
         priced_as=chart.priced_as,
         stands_in_for_spot=chart.stands_in_for_spot,
         outcome=_outcome_out(chart.outcome) if chart.outcome else None,
-        no_outcome_because=chart.no_outcome_because,
     )
 
 
-def _outcome_out(outcome) -> ChartedOutcomeOut:
+def _outcome_out(outcome: ChartedOutcome) -> ChartedOutcomeOut:
     return ChartedOutcomeOut(
         outcome=outcome.outcome,
         outcome_date=outcome.outcome_date.isoformat() if outcome.outcome_date else None,
         window_start=outcome.window_start.isoformat(),
         window_end=outcome.window_end.isoformat(),
-        worst_price=_number(outcome.worst_price),
-        best_price=_number(outcome.best_price),
+        adverse_price=_number(outcome.adverse_price),
+        favorable_price=_number(outcome.favorable_price),
     )
