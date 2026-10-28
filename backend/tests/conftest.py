@@ -602,6 +602,46 @@ async def reread(session, row):
     return (await session.execute(select(model).where(model.id == row.id))).scalar_one()
 
 
+# ── a source, replayed ───────────────────────────────────────────────────────
+
+
+class FakeChannel:
+    """
+    A source as the replay asks it: one message at a time, by stable id.
+
+    Replaying flagged videos and replaying flagged images both need one, so it
+    lives here (#97, #108).
+    """
+
+    def __init__(self):
+        self.messages: list[RawMessage] = []
+        self.raises: dict[str, Exception] = {}
+        self.fetched: list[str] = []
+        self.ranges: list[tuple] = []
+
+    async def fetch_one(self, stable_id):
+        self.fetched.append(stable_id)
+        if stable_id in self.raises:
+            raise self.raises[stable_id]
+        return next((m for m in self.messages if m.stable_id == stable_id), None)
+
+    async def fetch_range(self, date_start, date_end):
+        # Walking a range downloaded every photo and video in it to find a few (#97).
+        self.ranges.append((date_start, date_end))
+        for msg in self.messages:
+            yield msg
+
+
+@pytest.fixture
+def channel(monkeypatch):
+    channel = FakeChannel()
+    from app.services import ingestion_pipeline
+
+    monkeypatch.setattr(ingestion_pipeline, "_build_connector", lambda source: channel)
+    return channel
+
+
+
 # ── the ingestion pipeline, offline ──────────────────────────────────────────
 
 

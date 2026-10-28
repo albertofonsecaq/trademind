@@ -26,6 +26,7 @@ from app.connectors.base import FetchPosition, RawMessage
 from app.core.llm_errors import is_fatal_for_run
 from app.services.connection_health import credentials_rejected, mark_rejected
 from app.models.evidence_item import EvidenceItem
+from app.models.evidence_image import EvidenceImage
 from app.models.trade_idea import TradeIdea
 from app.models.embedding_row import EmbeddingRow
 from app.models.source_config import SourceConfig
@@ -261,11 +262,36 @@ async def _process_image(db: AsyncSession, msg: RawMessage, topic_scope: str) ->
     db.add(item)
     await db.flush()
 
+    await keep_picture(db, item, image_bytes, mime)
+
     if not is_on_topic:
         return item
 
     await _distill_and_embed(db, item, msg, content, item.original_language)
     return item
+
+
+async def keep_picture(db: AsyncSession, item: EvidenceItem, image_bytes: bytes, mime: str) -> None:
+    """
+    Keep or let go of the picture image evidence was read from, by its verdict (#108).
+
+    The picture is what a member looks at. A clear off-topic rejection is never
+    shown, so its picture is not kept; an unreadable verdict may yet be replayed
+    on-topic, so its picture is. Ingestion and the replay both come through
+    here, so a verdict that changes on replay changes what is kept.
+    """
+    kept = (await db.execute(
+        select(EvidenceImage).where(EvidenceImage.evidence_item_id == item.id)
+    )).scalar_one_or_none()
+    if item.is_on_topic is False:
+        if kept is not None:
+            await db.delete(kept)
+        return
+    if kept is None:
+        db.add(EvidenceImage(
+            evidence_item_id=item.id, workspace_id=item.workspace_id,
+            mime_type=mime, data=image_bytes,
+        ))
 
 
 async def _process_url(db: AsyncSession, msg: RawMessage, topic_scope: str) -> EvidenceItem | None:

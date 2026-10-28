@@ -25,35 +25,6 @@ from tests.conftest import make_source, reread, rpc_error
 _AT = datetime(2026, 10, 25, 21, 0, tzinfo=timezone.utc)
 
 
-class FakeChannel:
-    """The source as the replay asks it: one message at a time, by stable id."""
-
-    def __init__(self):
-        self.messages: list[RawMessage] = []
-        self.raises: dict[str, Exception] = {}
-        self.fetched: list[str] = []
-        self.ranges: list[tuple] = []
-
-    async def fetch_one(self, stable_id):
-        self.fetched.append(stable_id)
-        if stable_id in self.raises:
-            raise self.raises[stable_id]
-        return next((m for m in self.messages if m.stable_id == stable_id), None)
-
-    async def fetch_range(self, date_start, date_end):
-        # Walking a range downloaded every photo and video in it to find a few (#97).
-        self.ranges.append((date_start, date_end))
-        for msg in self.messages:
-            yield msg
-
-
-@pytest.fixture
-def channel(monkeypatch):
-    channel = FakeChannel()
-    monkeypatch.setattr(ingestion_pipeline, "_build_connector", lambda source: channel)
-    return channel
-
-
 @pytest.fixture
 def frames(monkeypatch, offline_pipeline):
     """Key frames and vision, answered locally: frames per video path, and every call made."""
