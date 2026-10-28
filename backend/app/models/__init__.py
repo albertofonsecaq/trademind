@@ -7,6 +7,7 @@ from app.models.platform_connection import PlatformConnection
 from app.models.source_config import SourceConfig
 from app.models.backfill_job import BackfillJob
 from app.models.evidence_item import EvidenceItem
+from app.models.evidence_image import EvidenceImage
 from app.models.trade_idea import TradeIdea
 from app.models.embedding_row import EmbeddingRow
 from app.models.strategy_card import StrategyCard
@@ -23,7 +24,7 @@ from app.models.failed_message import FailedMessage
 __all__ = [
     "User", "Workspace", "WorkspaceMember", "Subscription", "UsageEvent",
     "PlatformConnection", "SourceConfig", "BackfillJob",
-    "EvidenceItem", "TradeIdea", "EmbeddingRow",
+    "EvidenceItem", "EvidenceImage", "TradeIdea", "EmbeddingRow",
     "StrategyCard", "PlanItem", "OutcomeCheck",
     "BrokerOrder", "JournalEntry", "JournalOutcome",
     "AdminAuditLog", "AskRecord", "AnalysisRun", "FailedMessage",

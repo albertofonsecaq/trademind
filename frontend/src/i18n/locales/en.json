@@ -567,5 +567,9 @@
     "alreadyAuthorizedHint": "Not receiving a code? If you connected before, your session may already be active.",
     "checkExistingSession": "Use existing session",
     "notAuthorizedYet": "Session is not authorized yet. Please request a new code."
+  },
+  "evidenceImage": {
+    "alt": "The chart as it was posted",
+    "enlarge": "Show full size"
   }
 }

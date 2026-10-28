@@ -26,6 +26,7 @@ from app.connectors.base import FetchPosition, RawMessage
 from app.core.llm_errors import is_fatal_for_run
 from app.services.connection_health import credentials_rejected, mark_rejected
 from app.models.evidence_item import EvidenceItem
+from app.models.evidence_image import EvidenceImage
 from app.models.trade_idea import TradeIdea
 from app.models.embedding_row import EmbeddingRow
 from app.models.source_config import SourceConfig
@@ -260,6 +261,15 @@ async def _process_image(db: AsyncSession, msg: RawMessage, topic_scope: str) ->
 
     db.add(item)
     await db.flush()
+
+    # The picture is what a member looks at (#108). A clear off-topic rejection
+    # is never shown, so its picture is not kept; an unreadable verdict may yet
+    # be replayed on-topic, so its picture is.
+    if is_on_topic is not False:
+        db.add(EvidenceImage(
+            evidence_item_id=item.id, workspace_id=item.workspace_id,
+            mime_type=mime, data=image_bytes,
+        ))
 
     if not is_on_topic:
         return item

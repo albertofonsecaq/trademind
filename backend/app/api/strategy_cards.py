@@ -21,6 +21,7 @@ from app.models.workspace_member import WorkspaceMember
 from app.models.strategy_card import StrategyCard
 from app.models.trade_idea import TradeIdea
 from app.models.evidence_item import EvidenceItem
+from app.models.evidence_image import EvidenceImage
 from app.models.outcome_check import OutcomeCheck
 
 router = APIRouter(prefix="/workspaces", tags=["strategy-cards"])
@@ -154,6 +155,8 @@ class CitedExample(BaseModel):
     source_type: str | None
     source_metadata: dict | None    # includes video_url (YouTube) or message_id (Telegram)
     outcome: str | None             # from outcome_check if available
+    evidence_id: uuid.UUID | None = None
+    has_image: bool = False         # the picture it was read from is kept (#108)
 
 
 class OutcomeSummary(BaseModel):
@@ -203,13 +206,15 @@ async def get_strategy_card_detail(
     examples: list[CitedExample] = []
     if sample_ids:
         rows = await db.execute(
-            select(TradeIdea, EvidenceItem, OutcomeCheck)
+            # The picture's id only: whether there is one, not its bytes.
+            select(TradeIdea, EvidenceItem, OutcomeCheck, EvidenceImage.id)
             .join(EvidenceItem, EvidenceItem.id == TradeIdea.evidence_item_id)
             .outerjoin(OutcomeCheck, OutcomeCheck.trade_idea_id == TradeIdea.id)
+            .outerjoin(EvidenceImage, EvidenceImage.evidence_item_id == EvidenceItem.id)
             .where(TradeIdea.id.in_(sample_ids))
             .order_by(TradeIdea.message_timestamp.desc())
         )
-        for idea, evidence, outcome in rows.all():
+        for idea, evidence, outcome, image_id in rows.all():
             examples.append(CitedExample(
                 id=idea.id,
                 symbol=idea.symbol,
@@ -225,6 +230,8 @@ async def get_strategy_card_detail(
                 source_type=evidence.source_type if evidence else None,
                 source_metadata=evidence.source_metadata if evidence else None,
                 outcome=outcome.outcome if outcome else None,
+                evidence_id=idea.evidence_item_id,
+                has_image=image_id is not None,
             ))
 
     # Outcome summary across ALL supporting_evidence (not just the sample)

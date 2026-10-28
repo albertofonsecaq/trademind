@@ -43,7 +43,7 @@ class TestTheRoleTheApplicationConnectsAs:
             db_session, "SELECT rolsuper FROM pg_roles WHERE rolname = current_user"
         ) is False
 
-    @pytest.mark.parametrize("table", ["evidence_items", "usage_events", "alembic_version"])
+    @pytest.mark.parametrize("table", ["evidence_items", "evidence_images", "usage_events", "alembic_version"])
     async def test_it_does_not_own_the_tables_it_reads(self, db_session, table):
         """
         Not an owner and not a superuser is precisely what makes DROP TABLE and
@@ -117,7 +117,7 @@ class TestWhatTheApplicationStillNeeds:
     """The guard is worthless if it also stops the product working."""
 
     @pytest.mark.parametrize("privilege", ["SELECT", "INSERT", "UPDATE", "DELETE"])
-    @pytest.mark.parametrize("table", ["evidence_items", "trade_ideas", "usage_events"])
+    @pytest.mark.parametrize("table", ["evidence_items", "evidence_images", "trade_ideas", "usage_events"])
     async def test_it_can_read_and_write_the_tables(self, db_session, table, privilege):
         assert await _scalar(
             db_session,

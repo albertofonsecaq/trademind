@@ -567,5 +567,9 @@
     "alreadyAuthorizedHint": "¿No recibes el código? Si conectaste antes, tu sesión puede estar activa.",
     "checkExistingSession": "Usar sesión existente",
     "notAuthorizedYet": "La sesión aún no está autorizada. Solicita un nuevo código."
+  },
+  "evidenceImage": {
+    "alt": "El gráfico tal como se publicó",
+    "enlarge": "Ver a tamaño completo"
   }
 }
