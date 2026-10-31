@@ -17,6 +17,8 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
+from youtube_transcript_api import NoTranscriptFound, RequestBlocked, YouTubeTranscriptApi
+
 from app.connectors.base import RawMessage
 from app.core.config import settings
 from app.services import transcription_service
@@ -74,21 +76,33 @@ def _chunk_end(chunk: list[dict]) -> float:
     return float(last.get("start", 0)) + float(last.get("duration", 0))
 
 
+class CaptionsRefused(Exception):
+    """
+    YouTube refused to hand over captions (a 429, or our address blocked).
+
+    Not the same as a video without captions: every video after this one
+    would be refused too, and it says nothing about the video (#124, #125).
+    """
+
+
 def _get_captions_sync(video_id: str) -> list[dict] | None:
-    """Try to get captions. Returns None if unavailable."""
+    """The video's captions, or None if it has none; CaptionsRefused if YouTube refuses."""
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        transcript_list = YouTubeTranscriptApi().list(video_id)
         # Prefer manually created, then auto-generated; prefer EN/ES
         try:
             t = transcript_list.find_manually_created_transcript(["en", "es"])
-        except Exception:
+        except NoTranscriptFound:
             try:
                 t = transcript_list.find_generated_transcript(["en", "es"])
-            except Exception:
+            except NoTranscriptFound:
                 # Fall back to any available transcript
-                t = next(iter(transcript_list))
-        return t.fetch()
+                t = next(iter(transcript_list), None)
+                if t is None:
+                    return None
+        return t.fetch().to_raw_data()
+    except RequestBlocked as e:         # the library's IpBlocked, for a 429, is one
+        raise CaptionsRefused(f"YouTube refused captions for {video_id}: {type(e).__name__}") from e
     except Exception as e:
         log.debug("No captions for %s: %s", video_id, e)
         return None
@@ -105,7 +119,12 @@ async def _segments_for_video(video_id: str) -> tuple[list[dict] | None, str]:
     Return (segments, whisper_cost_usd_str).
     whisper_cost is "0" when captions were used (no cost).
     """
-    segments = await fetch_captions(video_id)
+    try:
+        segments = await fetch_captions(video_id)
+    except CaptionsRefused as e:
+        # Handled as having no captions, as before #124; #125 waits it out instead.
+        log.warning("%s", e)
+        segments = None
     if segments:
         return segments, "0"
 
