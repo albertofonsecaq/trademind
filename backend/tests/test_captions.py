@@ -11,12 +11,16 @@ transcript available" for each of its 79 videos (#125 acts on it).
 Only the library's network call is replaced: the transcript list it hands back
 is the library's own, so the choosing is the library's real choosing.
 """
+import logging
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from youtube_transcript_api import (
     FetchedTranscript, FetchedTranscriptSnippet, IpBlocked, RequestBlocked,
     TranscriptList, TranscriptsDisabled, VideoUnavailable,
 )
 
+from app.core.config import settings
 from app.services import youtube_transcript
 from app.services.youtube_transcript import CaptionsRefused, fetch_captions
 
@@ -45,10 +49,11 @@ class _Captions:
 @pytest.fixture
 def youtube(monkeypatch):
     """What YouTube lists for the video, or the error it answers with."""
-    state = {"listed": [], "error": None}
+    state = {"listed": [], "error": None, "asked": 0}
 
     class _Api:
         def list(self, video_id):
+            state["asked"] += 1
             if state["error"]:
                 raise state["error"]
             return TranscriptList(
@@ -59,6 +64,11 @@ def youtube(monkeypatch):
             )
 
     monkeypatch.setattr(youtube_transcript, "YouTubeTranscriptApi", _Api)
+    # Each test starts with YouTube not refusing, at a moment it controls.
+    monkeypatch.setattr(youtube_transcript, "_refused_until", None)
+    clock = {"now": datetime(2026, 10, 31, 9, 0, tzinfo=timezone.utc)}
+    monkeypatch.setattr(youtube_transcript, "now_utc", lambda: clock["now"])
+    state["clock"] = clock
     return state
 
 
@@ -111,3 +121,43 @@ class TestYouTubeRefusingIsNotNoCaptions:
         youtube["listed"] = [_Refused("en", generated=False)]
         with pytest.raises(CaptionsRefused):
             await fetch_captions(VIDEO)
+
+
+class TestARefusalIsWaitedOut:
+    """#125: once YouTube refuses, it is not asked again until the cool-down passes."""
+
+    @pytest.fixture
+    async def refused(self, youtube, monkeypatch):
+        monkeypatch.setattr(settings, "YOUTUBE_REFUSAL_COOLDOWN_MINUTES", 60)
+        youtube["error"] = IpBlocked(VIDEO)
+        with pytest.raises(CaptionsRefused):
+            await fetch_captions(VIDEO)
+        youtube["error"] = None
+        youtube["listed"] = [_Captions("en", generated=False)]
+        return youtube
+
+    async def test_no_request_is_made_during_the_cool_down(self, refused):
+        refused["clock"]["now"] += timedelta(minutes=59)
+        with pytest.raises(CaptionsRefused):
+            await fetch_captions("another")
+        assert refused["asked"] == 1
+
+    async def test_the_refusal_says_when_it_ends(self, refused):
+        with pytest.raises(CaptionsRefused) as raised:
+            await fetch_captions("another")
+        assert raised.value.until == datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)
+
+    async def test_youtube_is_asked_again_once_it_has_passed(self, refused):
+        refused["clock"]["now"] += timedelta(minutes=60)
+        assert await fetch_captions(VIDEO) == [{"text": "en manual", "start": 1.5, "duration": 2.0}]
+        assert refused["asked"] == 2
+
+    async def test_one_warning_says_so_for_the_whole_block(self, youtube, monkeypatch, caplog):
+        monkeypatch.setattr(settings, "YOUTUBE_REFUSAL_COOLDOWN_MINUTES", 60)
+        youtube["error"] = IpBlocked(VIDEO)
+        with caplog.at_level(logging.WARNING, logger=youtube_transcript.__name__):
+            for video in ("a", "b", "c"):
+                with pytest.raises(CaptionsRefused):
+                    await fetch_captions(video)
+        [warning] = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert "10:00" in warning.getMessage()

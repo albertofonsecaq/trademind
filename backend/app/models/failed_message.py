@@ -37,5 +37,7 @@ class FailedMessage(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     first_failed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now())
     last_failed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now())
+    # Not retried before this: the platform refused, and said for how long (#125).
+    retry_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Set when retrying stops; the row stays, for a person.
     given_up_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -629,7 +629,7 @@ async def _run_backfill_bg(job_id: uuid.UUID):
     import logging
     log = logging.getLogger(__name__)
     from sqlalchemy.orm import selectinload
-    from app.services.ingestion_pipeline import process_message, _build_connector, _content_type_allowed
+    from app.services.ingestion_pipeline import process_message, _build_connector, _content_type_allowed, _log_failure
 
     async with AsyncSessionLocal() as db:
         job_result = await db.execute(select(BackfillJob).where(BackfillJob.id == job_id))
@@ -708,9 +708,7 @@ async def _run_backfill_bg(job_id: uuid.UUID):
                     failed += 1
                     if first_failure is None:
                         first_failure = safe_failure_summary(e)
-                    log.error(
-                        "Backfill pipeline error on %s: %s", msg.stable_id, e, exc_info=True
-                    )
+                    _log_failure("Backfill pipeline error on %s", msg.stable_id, e)
                     if is_fatal_for_run(e):
                         # Every remaining message hits the same wall, so walking
                         # the rest of the range buys nothing but wall-clock time

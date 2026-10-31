@@ -13,6 +13,7 @@ way a YouTube source does — and skips a video the workspace already holds,
 before anything is paid to transcribe it again.
 """
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 
@@ -191,6 +192,26 @@ _VIDEO = "dQw4w9WgXcQ"
 _WATCH = f"https://www.youtube.com/watch?v={_VIDEO}"
 
 
+_UNTIL = datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)
+
+
+def _the_video(refused) -> RawMessage:
+    """A video a YouTube source was refused captions for, as its connector hands it on (#125)."""
+    return RawMessage(
+        stable_id=f"youtube:{_VIDEO}",
+        source_config_id=uuid.uuid4(),
+        workspace_id=uuid.uuid4(),
+        text=None,
+        author="A trader",
+        channel="UCchan",
+        timestamp=datetime(2026, 10, 29, 9, 0, tzinfo=timezone.utc),
+        source_type="youtube",
+        content_type="youtube_video",
+        metadata={"title": "a lesson", "video_id": _VIDEO},
+        refused=refused,
+    )
+
+
 def _captions(minutes: int) -> list[dict]:
     return [
         {"text": f"minute {i}: EURUSD holds the range", "start": i * 60.0, "duration": 60.0}
@@ -241,6 +262,32 @@ class TestAYouTubeLinkBecomesTranscriptEvidence:
 
         assert await ingestion_pipeline.process_message(db, _link(_WATCH), "forex") is None
         assert db.held == []
+
+
+class TestYouTubeRefusingCaptions:
+    """#125: a refusal is raised out of the message, to be recorded and waited out."""
+
+    @pytest.fixture
+    def refusing(self, videos, monkeypatch):
+        async def _refused(video_id):
+            videos["asked"].append(("captions", video_id))
+            raise youtube_transcript.CaptionsRefused("refused", until=_UNTIL)
+
+        monkeypatch.setattr(youtube_transcript, "fetch_captions", _refused)
+        return videos
+
+    async def test_a_link_to_a_video_raises_it_for_the_link_alone(self, refusing):
+        with pytest.raises(youtube_transcript.CaptionsRefused):
+            await ingestion_pipeline.process_message(FakeWorkspace(), _link(_WATCH), "forex")
+        assert ("whisper", _WATCH) not in refusing["asked"]
+
+    async def test_a_message_its_connector_was_refused_for_raises_it_unasked(self, refusing):
+        refused = youtube_transcript.CaptionsRefused("refused", until=_UNTIL)
+
+        with pytest.raises(youtube_transcript.CaptionsRefused) as raised:
+            await ingestion_pipeline.process_message(FakeWorkspace(), _the_video(refused), "forex")
+        assert raised.value is refused
+        assert refusing["asked"] == []
 
 
 class TestAVideoTheWorkspaceAlreadyHoldsIsSkipped:

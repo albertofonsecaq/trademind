@@ -93,26 +93,28 @@ def youtube(monkeypatch):
         return WINDOW
 
     async def _chunks(video):
-        for n in range(3):
-            # As video_transcript_messages does: Whisper's cost rides on the first chunk.
-            cost = "0.42" if n == 0 else "0"
-            yield RawMessage(
-                pre_pipeline_cost_usd=cost,
-                pre_pipeline_task_type="transcription" if n == 0 else None,
-                pre_pipeline_model="whisper" if n == 0 else None,
-                stable_id=f"youtube:{video['video_id']}:chunk_{n}",
-                source_config_id=c.source_config_id,
-                workspace_id=c.workspace_id,
-                text=f"chunk {n}",
-                author=None,
-                channel="@chan",
-                timestamp=c._parse_timestamp(video["published_at"]),
-                source_type="youtube",
-                content_type="video_transcript",
-            )
+        return [_chunk(video, n) for n in range(3)]
+
+    def _chunk(video, n):
+        # As video_transcript_messages does: Whisper's cost rides on the first chunk.
+        cost = "0.42" if n == 0 else "0"
+        return RawMessage(
+            pre_pipeline_cost_usd=cost,
+            pre_pipeline_task_type="transcription" if n == 0 else None,
+            pre_pipeline_model="whisper" if n == 0 else None,
+            stable_id=f"youtube:{video['video_id']}:chunk_{n}",
+            source_config_id=c.source_config_id,
+            workspace_id=c.workspace_id,
+            text=f"chunk {n}",
+            author=None,
+            channel="@chan",
+            timestamp=c._parse_timestamp(video["published_at"]),
+            source_type="youtube",
+            content_type="video_transcript",
+        )
 
     monkeypatch.setattr(c, "_get_videos", _videos)
-    monkeypatch.setattr(c, "_yield_video_chunks", _chunks)
+    monkeypatch.setattr(c, "_transcript", _chunks)
     return c
 
 
