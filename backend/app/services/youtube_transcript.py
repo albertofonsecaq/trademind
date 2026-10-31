@@ -92,6 +92,20 @@ class CaptionsRefused(PlatformRefused):
 _refused_until: datetime | None = None
 
 
+class NoTranscript(Exception):
+    """
+    The video has no captions and Whisper gave nothing: an ordinary failure,
+    recorded and retried like any other (#126, ADR 0005), not a silent skip.
+    """
+
+    def __init__(self, video_id: str):
+        whisper = (
+            "Whisper produced nothing" if settings.OPENAI_API_KEY
+            else "Whisper is not configured (OPENAI_API_KEY is empty)"
+        )
+        super().__init__(f"Video {video_id} has no captions, and {whisper}")
+
+
 def _refusal(until: datetime) -> CaptionsRefused:
     return CaptionsRefused(f"YouTube is refusing caption requests until {until:%H:%M} UTC", until=until)
 
@@ -148,7 +162,7 @@ async def fetch_captions(video_id: str) -> list[dict] | None:
         raise _refusal(_refused_until) from e
 
 
-async def _segments_for_video(video_id: str) -> tuple[list[dict] | None, str]:
+async def _segments_for_video(video_id: str) -> tuple[list[dict], str]:
     """
     Return (segments, whisper_cost_usd_str).
     whisper_cost is "0" when captions were used (no cost).
@@ -166,8 +180,7 @@ async def _segments_for_video(video_id: str) -> tuple[list[dict] | None, str]:
         segs, cost = result
         return segs, str(cost)
 
-    log.info("No transcript available for %s — skipping", video_id)
-    return None, "0"
+    raise NoTranscript(video_id)
 
 
 async def video_transcript_messages(
@@ -183,8 +196,9 @@ async def video_transcript_messages(
 ) -> list[RawMessage]:
     """
     The video's transcript as `video_transcript` messages, one per chunk, or []
-    when it has neither captions nor a Whisper result. CaptionsRefused when
-    YouTube is refusing caption requests: the video is waited for (#125).
+    when its transcript has no text. NoTranscript when it has neither captions
+    nor a Whisper result (#126); CaptionsRefused when YouTube is refusing
+    caption requests: the video is waited for (#125).
 
     The caller says whose evidence this is; `metadata` is merged under the
     chunk's own fields. Whisper cost rides on the first message only — the
@@ -193,7 +207,7 @@ async def video_transcript_messages(
     """
     segments, owed = await _segments_for_video(video_id)
     chunks = _chunk_segments(
-        segments or [],
+        segments,
         max_seconds=settings.YOUTUBE_CHUNK_SECONDS,
     )
 

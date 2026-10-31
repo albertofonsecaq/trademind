@@ -141,6 +141,19 @@ class TestAMessageThatFails:
         source = (await db_session.execute(select(SourceConfig).where(SourceConfig.id == setup.source.id))).scalar_one()
         assert source.last_fetched_id == "telegram:chan:3"
 
+    async def test_that_is_the_last_of_the_fetch_still_moves_the_position_past_it(self, setup, db_session):
+        # #126: when every video of a YouTube source failed, the position never
+        # moved, and each poll fetched and failed the same videos again.
+        setup.channel.new = [1, 2]
+        setup.failing["telegram:chan:1"] = RuntimeError("no transcript")
+        setup.failing["telegram:chan:2"] = RuntimeError("no transcript")
+
+        await setup.fetch()
+
+        source = (await db_session.execute(select(SourceConfig).where(SourceConfig.id == setup.source.id))).scalar_one()
+        assert source.last_fetched_id == "telegram:chan:2"
+        assert source.last_fetched_item_at == _AT
+
     async def test_is_retried_first_on_the_next_fetch_and_forgotten_once_it_works(self, setup):
         setup.channel.new = [2]
         setup.failing["telegram:chan:2"] = RuntimeError("relevance check timed out")

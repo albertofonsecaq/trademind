@@ -9,7 +9,6 @@ from typing import AsyncIterator
 import uuid
 
 from app.core.clock import as_utc
-from app.core.platform_refusal import PlatformRefused
 
 
 # Reading a value *in* as aware UTC is the same operation wherever it happens,
@@ -68,9 +67,10 @@ class RawMessage:
     pre_pipeline_cost_usd: str = "0"        # Decimal as string to avoid dataclass/Decimal issues
     pre_pipeline_task_type: str | None = None
     pre_pipeline_model: str | None = None
-    # The platform refused this message's content (#125, ADR 0007): the pipeline
-    # records it as a failed message waiting for the refusal to end, unasked.
-    refused: PlatformRefused | None = None
+    # Why the connector could not fetch this message's content — a video YouTube
+    # refused captions for (#125), or one with no transcript (#126). The
+    # pipeline records the message as failed with it, without processing it.
+    fetch_failure: Exception | None = None
 
 
 class BaseConnector(ABC):

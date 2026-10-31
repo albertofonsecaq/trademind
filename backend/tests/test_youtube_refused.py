@@ -30,7 +30,7 @@ WINDOW = [
 @pytest.fixture
 def youtube(monkeypatch):
     """The channel window, and which of its videos YouTube refuses captions for."""
-    state = {"refused": set(), "asked": []}
+    state = {"refused": set(), "no_transcript": set(), "asked": []}
     c = YouTubeConnector(source_config_id=uuid.uuid4(), workspace_id=uuid.uuid4(), channel_identifier="UCchan")
 
     async def _videos():
@@ -40,6 +40,8 @@ def youtube(monkeypatch):
         state["asked"].append(video_id)
         if video_id in state["refused"]:
             raise youtube_transcript.CaptionsRefused("refused", until=_UNTIL)
+        if video_id in state["no_transcript"]:
+            raise youtube_transcript.NoTranscript(video_id)
         return [RawMessage(stable_id=f"youtube:{video_id}:full", text="transcript", content_type="video_transcript", **fields)]
 
     monkeypatch.setattr(c, "_get_videos", _videos)
@@ -69,7 +71,7 @@ class TestARefusedVideo:
 
         [video] = [m for m in await _fetched(youtube["connector"]) if m.content_type == "youtube_video"]
 
-        assert video.refused.until == _UNTIL
+        assert video.fetch_failure.until == _UNTIL
         assert video.metadata["video_id"] == "v2"
         assert video.metadata["title"] == "second"
         assert (video.author, video.source_type) == ("A trader", "youtube")
@@ -103,3 +105,21 @@ class TestFetchingARefusedVideoAgain:
 
     async def test_a_video_no_longer_in_the_window_is_gone(self, youtube):
         assert await youtube["connector"].fetch_again("youtube:v9") is None
+
+
+class TestAVideoWithNoTranscript:
+    """#126: it used to yield nothing, so it vanished and the next poll asked again."""
+
+    async def test_comes_out_as_the_video_itself_carrying_why(self, youtube):
+        youtube["no_transcript"] = {"v2"}
+
+        got = await _fetched(youtube["connector"])
+
+        assert [m.stable_id for m in got] == ["youtube:v1:full", "youtube:v2", "youtube:v3:full"]
+        assert isinstance(got[1].fetch_failure, youtube_transcript.NoTranscript)
+
+    async def test_fetched_again_it_is_still_a_failure(self, youtube):
+        youtube["no_transcript"] = {"v2"}
+
+        with pytest.raises(youtube_transcript.NoTranscript):
+            await youtube["connector"].fetch_again("youtube:v2")

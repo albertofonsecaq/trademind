@@ -96,9 +96,22 @@ class TestWhisperWhenThereAreNoCaptions:
         assert msgs[0].pre_pipeline_model == settings.WHISPER_MODEL
         assert [m.pre_pipeline_task_type for m in msgs[1:]] == [None, None]
 
-    async def test_no_captions_and_no_whisper_is_nothing(self, youtube):
-        assert await _messages() == []
+    async def test_no_captions_and_no_whisper_is_a_failure_that_says_why(self, youtube, monkeypatch):
+        # #126: returning nothing let the video vanish, and the next poll asked again.
+        monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-test")
+
+        with pytest.raises(youtube_transcript.NoTranscript) as raised:
+            await _messages()
         assert youtube["whisper_calls"] == 1
+        assert "no captions" in str(raised.value)
+        assert "Whisper" in str(raised.value)
+
+    async def test_without_an_openai_key_it_says_whisper_is_not_configured(self, youtube, monkeypatch):
+        monkeypatch.setattr(settings, "OPENAI_API_KEY", "")
+
+        with pytest.raises(youtube_transcript.NoTranscript) as raised:
+            await _messages()
+        assert "Whisper is not configured" in str(raised.value)
 
     async def test_youtube_refusing_captions_is_waited_out_not_paid_for(self, youtube, monkeypatch, caplog):
         # #125: Whisper would be paid for a video YouTube will hand over later,
