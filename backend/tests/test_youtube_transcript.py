@@ -99,6 +99,18 @@ class TestWhisperWhenThereAreNoCaptions:
         assert await _messages() == []
         assert youtube["whisper_calls"] == 1
 
+    async def test_youtube_refusing_captions_still_falls_back_to_whisper(self, youtube, monkeypatch):
+        # As before #124, until #125 waits a refusal out instead.
+        async def _refused(video_id):
+            raise youtube_transcript.CaptionsRefused(video_id)
+
+        monkeypatch.setattr(youtube_transcript, "fetch_captions", _refused)
+        youtube["whisper"] = (_segments(1), Decimal("0.006"))
+
+        msgs = await _messages()
+        assert youtube["whisper_calls"] == 1
+        assert [m.stable_id for m in msgs] == ["youtube:dQw4w9WgXcQ:full"]
+
 
 class TestTheCallerSaysWhoseEvidenceItIs:
     async def test_source_attribution_and_metadata_come_from_the_caller(self, youtube):

@@ -123,7 +123,7 @@ async def _segments_for_video(video_id: str) -> tuple[list[dict] | None, str]:
         segments = await fetch_captions(video_id)
     except CaptionsRefused as e:
         # Handled as having no captions, as before #124; #125 waits it out instead.
-        log.warning("%s", e)
+        log.debug("%s", e)
         segments = None
     if segments:
         return segments, "0"

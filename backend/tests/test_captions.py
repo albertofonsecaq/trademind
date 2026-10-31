@@ -32,7 +32,7 @@ class _Captions:
 
     def fetch(self) -> FetchedTranscript:
         return FetchedTranscript(
-            snippets=[FetchedTranscriptSnippet(text=f"{self.label} line", start=1.5, duration=2.0)],
+            snippets=[FetchedTranscriptSnippet(text=self.label, start=1.5, duration=2.0)],
             video_id=VIDEO, language=self.language_code,
             language_code=self.language_code, is_generated=self.is_generated,
         )
@@ -63,9 +63,10 @@ def youtube(monkeypatch):
 
 
 async def _taken(youtube, *listed) -> str:
+    """The label of the captions fetch_captions took, out of those listed."""
     youtube["listed"] = list(listed)
     segments = await fetch_captions(VIDEO)
-    return segments[0]["text"].removesuffix(" line")
+    return segments[0]["text"]
 
 
 class TestWhichCaptionsAreTaken:
@@ -82,7 +83,7 @@ class TestWhichCaptionsAreTaken:
 
     async def test_they_come_back_as_text_start_and_duration(self, youtube):
         youtube["listed"] = [_Captions("en", generated=False)]
-        assert await fetch_captions(VIDEO) == [{"text": "en manual line", "start": 1.5, "duration": 2.0}]
+        assert await fetch_captions(VIDEO) == [{"text": "en manual", "start": 1.5, "duration": 2.0}]
 
 
 class TestNoCaptions:
@@ -96,7 +97,6 @@ class TestNoCaptions:
 
 
 class TestYouTubeRefusingIsNotNoCaptions:
-    # The library raises IpBlocked for a 429.
     @pytest.mark.parametrize("error", [IpBlocked(VIDEO), RequestBlocked(VIDEO)])
     async def test_a_refusal_is_said_as_one(self, youtube, error):
         youtube["error"] = error
