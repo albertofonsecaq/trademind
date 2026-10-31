@@ -41,7 +41,7 @@ def youtube(monkeypatch):
         if video_id in state["refused"]:
             raise youtube_transcript.CaptionsRefused("refused", until=_UNTIL)
         if video_id in state["no_transcript"]:
-            raise youtube_transcript.NoTranscript(video_id)
+            raise youtube_transcript.NoTranscript(video_id, "Whisper produced nothing")
         return [RawMessage(stable_id=f"youtube:{video_id}:full", text="transcript", content_type="video_transcript", **fields)]
 
     monkeypatch.setattr(c, "_get_videos", _videos)
@@ -108,7 +108,7 @@ class TestFetchingARefusedVideoAgain:
 
 
 class TestAVideoWithNoTranscript:
-    """#126: it used to yield nothing, so it vanished and the next poll asked again."""
+    """#126: handed on carrying why, so it is recorded and the fetch moves past it."""
 
     async def test_comes_out_as_the_video_itself_carrying_why(self, youtube):
         youtube["no_transcript"] = {"v2"}

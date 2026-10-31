@@ -7,8 +7,10 @@ retried until `until`, while everything else carries on.
 """
 from datetime import datetime
 
+from app.core.content_unavailable import ContentUnavailable
 
-class PlatformRefused(Exception):
+
+class PlatformRefused(ContentUnavailable):
     """The platform refused, and will not be asked again before `until`."""
 
     def __init__(self, message: str, *, until: datetime):

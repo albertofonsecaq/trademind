@@ -9,6 +9,7 @@ from typing import AsyncIterator
 import uuid
 
 from app.core.clock import as_utc
+from app.core.content_unavailable import ContentUnavailable
 
 
 # Reading a value *in* as aware UTC is the same operation wherever it happens,
@@ -70,7 +71,7 @@ class RawMessage:
     # Why the connector could not fetch this message's content — a video YouTube
     # refused captions for (#125), or one with no transcript (#126). The
     # pipeline records the message as failed with it, without processing it.
-    fetch_failure: Exception | None = None
+    fetch_failure: ContentUnavailable | None = None
 
 
 class BaseConnector(ABC):

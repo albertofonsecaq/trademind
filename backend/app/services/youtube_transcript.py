@@ -22,6 +22,7 @@ from youtube_transcript_api import NoTranscriptFound, RequestBlocked, YouTubeTra
 from app.connectors.base import RawMessage
 from app.core.clock import now_utc
 from app.core.config import settings
+from app.core.content_unavailable import ContentUnavailable
 from app.core.platform_refusal import PlatformRefused
 from app.services import transcription_service
 from app.services.usage_service import log_usage_event
@@ -92,18 +93,20 @@ class CaptionsRefused(PlatformRefused):
 _refused_until: datetime | None = None
 
 
-class NoTranscript(Exception):
+class NoTranscript(ContentUnavailable):
     """
-    The video has no captions and Whisper gave nothing: an ordinary failure,
-    recorded and retried like any other (#126, ADR 0005), not a silent skip.
+    The video has no captions and Whisper gave nothing: an ordinary failed
+    message (#126, ADR 0005), retried an hour later and then a day after it,
+    because YouTube often adds automatic captions hours after an upload.
     """
 
-    def __init__(self, video_id: str):
-        whisper = (
-            "Whisper produced nothing" if settings.OPENAI_API_KEY
-            else "Whisper is not configured (OPENAI_API_KEY is empty)"
-        )
-        super().__init__(f"Video {video_id} has no captions, and {whisper}")
+    _GAPS = {1: timedelta(hours=1), 2: timedelta(hours=23)}
+
+    def __init__(self, video_id: str, why: str):
+        super().__init__(f"Video {video_id} has no captions, and {why}")
+
+    def wait_after(self, attempts: int) -> timedelta | None:
+        return self._GAPS.get(attempts)
 
 
 def _refusal(until: datetime) -> CaptionsRefused:
@@ -175,12 +178,15 @@ async def _segments_for_video(video_id: str) -> tuple[list[dict], str]:
 
     # Whisper fallback
     video_url = f"https://www.youtube.com/watch?v={video_id}"
-    result = await transcription_service.transcribe_youtube_video(video_url)
+    try:
+        result = await transcription_service.transcribe_youtube_video(video_url)
+    except transcription_service.WhisperGaveNothing as e:
+        raise NoTranscript(video_id, str(e)) from e
     if result:
         segs, cost = result
         return segs, str(cost)
 
-    raise NoTranscript(video_id)
+    raise NoTranscript(video_id, "Whisper produced nothing")
 
 
 async def video_transcript_messages(
@@ -195,10 +201,10 @@ async def video_transcript_messages(
     metadata: dict | None = None,
 ) -> list[RawMessage]:
     """
-    The video's transcript as `video_transcript` messages, one per chunk, or []
-    when its transcript has no text. NoTranscript when it has neither captions
-    nor a Whisper result (#126); CaptionsRefused when YouTube is refusing
-    caption requests: the video is waited for (#125).
+    The video's transcript as `video_transcript` messages, one per chunk.
+    NoTranscript when it has no captions and no Whisper result, or neither has
+    any text (#126); CaptionsRefused when YouTube is refusing caption
+    requests: the video is waited for (#125).
 
     The caller says whose evidence this is; `metadata` is merged under the
     chunk's own fields. Whisper cost rides on the first message only — the
@@ -258,4 +264,7 @@ async def video_transcript_messages(
             provider_model=settings.WHISPER_MODEL,
             cost_usd=Decimal(owed),
         )
+    if not messages:
+        # Captions or a Whisper result with no words in it: no transcript either.
+        raise NoTranscript(video_id, "its transcript has no text")
     return messages

@@ -20,6 +20,7 @@ from sqlalchemy import select
 
 from app.connectors.base import RawMessage
 from app.core.platform_refusal import PlatformRefused
+from app.services.youtube_transcript import NoTranscript
 from app.models.failed_message import FailedMessage
 from app.models.source_config import SourceConfig
 from app.services import failed_message_service, ingestion_pipeline
@@ -453,3 +454,58 @@ class TestAMessageThatComesBackInParts:
         [row] = await setup.recorded()
         assert (row.stable_id, row.attempts, row.error) == ("telegram:chan:2:chunk_1", 1, "relevance check timed out")
         assert (outcome.ingested, outcome.failed) == (2, 1)
+
+
+@pytest.mark.db
+class TestAVideoWithNoTranscript:
+    """#126: retried with growing gaps, so captions YouTube adds hours after upload are not missed."""
+
+    async def test_is_retried_an_hour_later_then_a_day_later_then_given_up(self, setup, clock):
+        start = clock["at"]
+        setup.channel.new = [2]
+        setup.failing["telegram:chan:2"] = NoTranscript("v2", "Whisper produced nothing")
+        await setup.fetch()
+        setup.channel.new = []
+
+        [row] = await setup.recorded()
+        assert (row.attempts, row.retry_after) == (1, start + timedelta(hours=1))
+
+        clock["at"] = start + timedelta(minutes=59)
+        await setup.fetch()
+        assert setup.channel.fetched_again == []
+
+        clock["at"] = start + timedelta(hours=1)
+        await setup.fetch()
+        [row] = await setup.recorded()
+        assert (row.attempts, row.retry_after) == (2, start + timedelta(hours=24))
+
+        clock["at"] = start + timedelta(hours=24)
+        await setup.fetch()
+        [row] = await setup.recorded()
+        assert row.attempts == 3
+        assert row.given_up_at is not None
+        assert len(setup.channel.fetched_again) == 2
+
+
+@pytest.mark.db
+class TestStoringAPartOfAMessage:
+    async def test_forgets_the_failure_recorded_for_the_whole_of_it(self, setup, db_session):
+        # A backfill stores a video's chunks; its failure was recorded as the video (#126).
+        setup.channel.new = [2]
+        setup.failing["telegram:chan:2"] = RuntimeError("no transcript")
+        await setup.fetch()
+
+        await failed_message_service.forget(db_session, setup.source.id, "telegram:chan:2:chunk_0")
+        await db_session.commit()
+
+        assert await setup.recorded() == []
+
+    async def test_does_not_forget_a_message_whose_id_it_only_starts_like(self, setup, db_session):
+        setup.channel.new = [4]
+        setup.failing["telegram:chan:4"] = RuntimeError("no transcript")
+        await setup.fetch()
+
+        await failed_message_service.forget(db_session, setup.source.id, "telegram:chan:42:chunk_0")
+        await db_session.commit()
+
+        assert len(await setup.recorded()) == 1

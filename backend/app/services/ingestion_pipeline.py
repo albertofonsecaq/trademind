@@ -707,9 +707,8 @@ async def run_fetch_pipeline(
                         db, source_id, position, initial_position, touch_fetched_at=False
                     )
                     raise
-                # The position still moves past it; this is what remembers it.
-                # It used to skip the move with a `continue`, so a fetch whose
-                # last message failed never got past it (#126).
+                # The position still moves past it, even as the last message of
+                # the fetch; this is what remembers it (#126).
                 await failed_message_service.record_failure(db, msg, e)
             else:
                 await db.commit()

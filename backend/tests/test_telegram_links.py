@@ -199,7 +199,7 @@ _UNTIL = datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)
 
 
 def _the_video(fetch_failure) -> RawMessage:
-    """A video a YouTube source was refused captions for, as its connector hands it on (#125)."""
+    """A video a YouTube source could not get the transcript of, as its connector hands it on (#125, #126)."""
     return RawMessage(
         stable_id=f"youtube:{_VIDEO}",
         source_config_id=uuid.uuid4(),
@@ -261,7 +261,7 @@ class TestAYouTubeLinkBecomesTranscriptEvidence:
         assert transcription[0].cost_usd == Decimal("0.072")
 
     async def test_no_captions_and_no_whisper_is_raised_to_be_recorded_for_the_link(self, videos):
-        # #126: it used to vanish here, with nothing recorded and no error.
+        # #126: raised, so the link is recorded as a failed message.
         db = FakeWorkspace()
 
         with pytest.raises(youtube_transcript.NoTranscript):

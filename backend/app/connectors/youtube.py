@@ -16,6 +16,7 @@ from typing import AsyncIterator
 from app.connectors.base import BaseConnector, FetchPosition, RawMessage, to_aware_utc
 from app.core.clock import now_utc
 from app.core.config import settings
+from app.core.content_unavailable import ContentUnavailable
 from app.services import youtube_transcript
 
 log = logging.getLogger(__name__)
@@ -90,8 +91,8 @@ def _get_channel_videos_sync(
     return videos
 
 
-def awaiting_transcript_id(video_id: str | None) -> str:
-    """The stable id of a video waiting for its transcript (#125)."""
+def whole_video_id(video_id: str | None) -> str:
+    """The stable id of a video as a whole, which its transcript's chunk ids extend (#125)."""
     return f"youtube:{video_id}"
 
 
@@ -147,7 +148,7 @@ class YouTubeConnector(BaseConnector):
             video["video_id"], **self._transcript_fields(video)
         )
 
-    def _video_in_place_of_its_transcript(self, video: dict, failure: Exception) -> RawMessage:
+    def _unfetched_video(self, video: dict, failure: ContentUnavailable) -> RawMessage:
         """
         A video whose transcript could not be had — YouTube refused its captions
         (#125), or it has none (#126) — handed on in its transcript's place: the
@@ -157,7 +158,7 @@ class YouTubeConnector(BaseConnector):
         fields = self._transcript_fields(video)
         fields["metadata"] = {**fields["metadata"], "video_id": video["video_id"]}
         return RawMessage(
-            stable_id=awaiting_transcript_id(video["video_id"]), text=None,
+            stable_id=whole_video_id(video["video_id"]), text=None,
             content_type="youtube_video", fetch_failure=failure, **fields,
         )
 
@@ -166,8 +167,8 @@ class YouTubeConnector(BaseConnector):
     ) -> AsyncIterator[RawMessage]:
         try:
             messages = await self._transcript(video)
-        except (youtube_transcript.CaptionsRefused, youtube_transcript.NoTranscript) as e:
-            yield self._video_in_place_of_its_transcript(video, e)
+        except ContentUnavailable as failure:
+            yield self._unfetched_video(video, failure)
             return
         for msg in messages:
             yield msg
@@ -282,7 +283,7 @@ class YouTubeConnector(BaseConnector):
         A failed message again. A video that waited out a refusal comes back as
         its whole transcript, chunked; a chunk, as fetch_one has it (#125).
         """
-        if stable_id != awaiting_transcript_id(self._video_id_from(stable_id)):
+        if stable_id != whole_video_id(self._video_id_from(stable_id)):
             return await super().fetch_again(stable_id)
         video_id = self._video_id_from(stable_id)
         video = next((v for v in await self._get_videos() if v["video_id"] == video_id), None)
