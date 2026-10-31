@@ -82,6 +82,10 @@ _Avoid_: Cursor, offset, watermark, last seen
 A message whose processing raised during a fetch or a backfill, recorded against its source so it is not lost when the fetch position moves past it. Each fetch of the source retries it first; after three failed attempts it is _given up_ — no longer retried, but kept and shown on the source with the last reason, until a person deals with it: by _sending it back_, which gives it a fresh three attempts from the next fetch, or by a backfill that stores it. A failure that would repeat for everything left in the run is not the message's fault and is not recorded. A platform _refusing_ us for a while (YouTube's 429) is different: the message is recorded without counting an attempt, and waits until the refusal ends before it is retried. See ADR 0005 and ADR 0007.
 _Avoid_: Error, dead letter, poison message, skipped
 
+**Refusal**:
+A platform turning our requests away for a while, which says nothing about the message asked for: YouTube answering caption requests with 429, or blocking our address. A refusal is waited out — what it held up becomes a failed message that counts no attempt and is not retried before the refusal ends, and the platform is not asked again until a _cool-down_ passes. It never stops a fetch. A 403 or any other error is not a refusal. See ADR 0007.
+_Avoid_: Block, rate limit, ban, 429
+
 **Backlog**:
 The content a paused source has published since it was last fetched — what catching up would ingest. Measured from the fetch position, not from the pause.
 _Avoid_: Queue, pending items, lag

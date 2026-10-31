@@ -69,6 +69,7 @@ class TestARefusedVideo:
 
         [video] = [m for m in await _fetched(youtube["connector"]) if m.content_type == "youtube_video"]
 
+        assert video.refused.until == _UNTIL
         assert video.metadata["video_id"] == "v2"
         assert video.metadata["title"] == "second"
         assert (video.author, video.source_type) == ("A trader", "youtube")
@@ -79,8 +80,26 @@ class TestARefusedVideo:
 
         assert [m.stable_id for m in got] == ["youtube:v3:full"]
 
-    async def test_is_fetched_again_as_the_video_without_asking_for_its_transcript(self, youtube):
-        video = await youtube["connector"].fetch_one("youtube:v2")
 
-        assert (video.stable_id, video.content_type) == ("youtube:v2", "youtube_video")
-        assert youtube["asked"] == []
+class TestFetchingARefusedVideoAgain:
+    async def test_once_youtube_hands_its_captions_over_it_is_its_transcript(self, youtube):
+        got = await youtube["connector"].fetch_again("youtube:v2")
+
+        assert [(m.stable_id, m.content_type) for m in got] == [("youtube:v2:full", "video_transcript")]
+        assert got[0].metadata["title"] == "second"
+
+    async def test_while_youtube_still_refuses_the_refusal_is_raised(self, youtube):
+        youtube["refused"] = {"v2"}
+
+        with pytest.raises(youtube_transcript.CaptionsRefused):
+            await youtube["connector"].fetch_again("youtube:v2")
+
+    async def test_one_part_of_a_video_asked_for_during_a_block_is_refused_not_gone(self, youtube):
+        # Read as gone, it would be given up at once: a video lost to a block.
+        youtube["refused"] = {"v2"}
+
+        with pytest.raises(youtube_transcript.CaptionsRefused):
+            await youtube["connector"].fetch_one("youtube:v2:full")
+
+    async def test_a_video_no_longer_in_the_window_is_gone(self, youtube):
+        assert await youtube["connector"].fetch_again("youtube:v9") is None

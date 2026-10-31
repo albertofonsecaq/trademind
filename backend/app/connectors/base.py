@@ -9,6 +9,7 @@ from typing import AsyncIterator
 import uuid
 
 from app.core.clock import as_utc
+from app.core.platform_refusal import PlatformRefused
 
 
 # Reading a value *in* as aware UTC is the same operation wherever it happens,
@@ -67,6 +68,9 @@ class RawMessage:
     pre_pipeline_cost_usd: str = "0"        # Decimal as string to avoid dataclass/Decimal issues
     pre_pipeline_task_type: str | None = None
     pre_pipeline_model: str | None = None
+    # The platform refused this message's content (#125, ADR 0007): the pipeline
+    # records it as a failed message waiting for the refusal to end, unasked.
+    refused: PlatformRefused | None = None
 
 
 class BaseConnector(ABC):
@@ -103,6 +107,16 @@ class BaseConnector(ABC):
         "could not ask": a failure to ask raises, and counts as an attempt.
         """
         ...
+
+    async def fetch_again(self, stable_id: str) -> list[RawMessage] | None:
+        """
+        Everything a failed message stands for, fetched again: itself, as
+        fetch_one has it, unless the platform hands it over in parts — a video
+        refused captions comes back as its transcript's chunks (#125). None,
+        as for fetch_one, when the platform no longer has it.
+        """
+        msg = await self.fetch_one(stable_id)
+        return None if msg is None else [msg]
 
     @abstractmethod
     async def latest_stable_id(self) -> str | None:

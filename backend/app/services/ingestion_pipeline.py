@@ -520,6 +520,10 @@ async def process_message(
     Does NOT commit — caller is responsible.
     """
     try:
+        if msg.refused is not None:
+            # Its connector was refused its content: recorded by the caller as a
+            # failed message waiting for the refusal to end (#125, ADR 0007).
+            raise msg.refused
         return await _route(db, msg, topic_scope)
     finally:
         # The connector downloaded it before the pipeline saw it: a duplicate
@@ -571,10 +575,6 @@ async def _route(db: AsyncSession, msg: RawMessage, topic_scope: str) -> Evidenc
         return await _process_url(db, msg, topic_scope)
     if ct == "video":
         return await _process_video(db, msg, topic_scope)
-    if ct == "youtube_video":
-        # A video its YouTube source was refused captions for, asked for again
-        # here like a link to it, so a refusal now is recorded against it (#125).
-        return await _process_youtube_link(db, msg, msg.metadata["video_id"], topic_scope)
 
     log.warning("Unknown content_type '%s' for %s — skipping", ct, msg.stable_id)
     return None
@@ -759,14 +759,15 @@ async def _retry_failed_messages(
     ingested = failed = 0
     refused: PlatformRefused | None = None
     for row in await failed_message_service.to_retry(db, source_id):
-        if refused is not None:
-            # The platform refused one of them: the rest would be refused too,
-            # so they wait for the same end without being asked (ADR 0007).
+        if refused is not None and row.retry_after is not None:
+            # The platform refused again: the others that were waiting for it
+            # wait for the same end, without being asked (ADR 0007). A failure
+            # of any other kind is retried as usual.
             failed += 1
             await failed_message_service.count_attempt(db, row, refused)
             continue
         try:
-            msg = await connector.fetch_one(row.stable_id)
+            msgs = await connector.fetch_again(row.stable_id)
         except Exception as e:
             # A rejected session or an exhausted account is the run's problem,
             # not this message's. Anything else is one failed attempt at it:
@@ -775,33 +776,45 @@ async def _retry_failed_messages(
                 raise
             _log_failure("Could not fetch %s again", row.stable_id, e)
             failed += 1
-            if isinstance(e, PlatformRefused):
-                refused = e
+            refused = _refusal_in(e) or refused
             await failed_message_service.count_attempt(db, row, e)
             continue
-        if msg is None:
+        if msgs is None:
             await failed_message_service.give_up(db, row, failed_message_service.GONE_FROM_SOURCE)
             continue
-        try:
-            async with db.begin_nested():
-                item = await process_message(db, msg, topic_scope)
-        except IntegrityError:
-            # Stored by something else between the duplicate check and the insert.
-            await failed_message_service.resolve(db, row)
-        except Exception as e:
-            _log_failure("Retry failed for %s", msg.stable_id, e)
-            if is_fatal_for_run(e):
-                raise
-            failed += 1
-            if isinstance(e, PlatformRefused):
-                refused = e
-            await failed_message_service.count_attempt(db, row, e)
-        else:
-            # None is a duplicate or an item judged not worth keeping: done either way.
-            if item:
-                ingested += 1
+        row_failed = False
+        for msg in msgs:
+            try:
+                async with db.begin_nested():
+                    item = await process_message(db, msg, topic_scope)
+            except IntegrityError:
+                # Stored by something else between the duplicate check and the insert.
+                continue
+            except Exception as e:
+                _log_failure("Retry failed for %s", msg.stable_id, e)
+                if is_fatal_for_run(e):
+                    raise
+                failed += 1
+                refused = _refusal_in(e) or refused
+                if msg.stable_id == row.stable_id:
+                    row_failed = True
+                    await failed_message_service.count_attempt(db, row, e)
+                else:
+                    # One part of what it came back as: remembered on its own,
+                    # as it would have been fetched as part of a fetch (#125).
+                    await failed_message_service.record_failure(db, msg, e)
+            else:
+                await db.commit()
+                # None is a duplicate or an item judged not worth keeping: done either way.
+                if item:
+                    ingested += 1
+        if not row_failed:
             await failed_message_service.resolve(db, row)
     return ingested, failed
+
+
+def _refusal_in(exc: BaseException) -> PlatformRefused | None:
+    return exc if isinstance(exc, PlatformRefused) else None
 
 
 def _log_failure(what: str, stable_id: str, exc: BaseException) -> None:

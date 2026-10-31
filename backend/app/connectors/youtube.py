@@ -90,6 +90,11 @@ def _get_channel_videos_sync(
     return videos
 
 
+def awaiting_captions_id(video_id: str | None) -> str:
+    """The stable id of a video waiting for YouTube to hand its captions over (#125)."""
+    return f"youtube:{video_id}"
+
+
 class YouTubeConnector(BaseConnector):
     def __init__(
         self,
@@ -124,8 +129,8 @@ class YouTubeConnector(BaseConnector):
         except Exception:
             return now_utc()
 
-    def _credit(self, video: dict) -> dict:
-        """Whose a video's transcript is, and what it carries along."""
+    def _transcript_fields(self, video: dict) -> dict:
+        """Whose a video's transcript is, and what it carries along: RawMessage's fields."""
         return dict(
             source_config_id=self.source_config_id,
             workspace_id=self.workspace_id,
@@ -136,27 +141,32 @@ class YouTubeConnector(BaseConnector):
             metadata={"title": video["title"], "thumbnail_url": video.get("thumbnail_url")},
         )
 
-    def _the_video(self, video: dict) -> RawMessage:
+    async def _transcript(self, video: dict) -> list[RawMessage]:
+        """The video's transcript chunks; CaptionsRefused while YouTube refuses them."""
+        return await youtube_transcript.video_transcript_messages(
+            video["video_id"], **self._transcript_fields(video)
+        )
+
+    def _video_awaiting_captions(self, video: dict, refused: youtube_transcript.CaptionsRefused) -> RawMessage:
         """
-        The video itself, for the pipeline to ask its transcript for: what a
-        refused video becomes, so the refusal is recorded against it and waited
-        out instead of the video being lost (#125, ADR 0007).
+        A video YouTube refused captions for, in its transcript's place: the
+        pipeline records it as a failed message that waits the refusal out,
+        and fetch_again hands back its transcript once YouTube does (#125).
         """
-        credit = self._credit(video)
-        credit["metadata"] = {**credit["metadata"], "video_id": video["video_id"]}
+        fields = self._transcript_fields(video)
+        fields["metadata"] = {**fields["metadata"], "video_id": video["video_id"]}
         return RawMessage(
-            stable_id=f"youtube:{video['video_id']}", text=None, content_type="youtube_video", **credit
+            stable_id=awaiting_captions_id(video["video_id"]), text=None,
+            content_type="youtube_video", refused=refused, **fields,
         )
 
     async def _yield_video_chunks(
         self, video: dict
     ) -> AsyncIterator[RawMessage]:
         try:
-            messages = await youtube_transcript.video_transcript_messages(
-                video["video_id"], **self._credit(video)
-            )
-        except youtube_transcript.CaptionsRefused:
-            yield self._the_video(video)
+            messages = await self._transcript(video)
+        except youtube_transcript.CaptionsRefused as refused:
+            yield self._video_awaiting_captions(video, refused)
             return
         for msg in messages:
             yield msg
@@ -246,12 +256,10 @@ class YouTubeConnector(BaseConnector):
         video = next((v for v in await self._get_videos() if v["video_id"] == video_id), None)
         if video is None:
             return None
-        if stable_id == f"youtube:{video_id}":
-            # A refused video: the pipeline asks for its transcript (#125).
-            return self._the_video(video)
         found = None
         paid: RawMessage | None = None
-        async for msg in self._yield_video_chunks(video):
+        # A refusal goes up as it is: read as gone, the chunk would be given up (#125).
+        for msg in await self._transcript(video):
             if msg.stable_id == stable_id:
                 found = msg
             if Decimal(msg.pre_pipeline_cost_usd) > 0:
@@ -266,6 +274,17 @@ class YouTubeConnector(BaseConnector):
             pre_pipeline_task_type=paid.pre_pipeline_task_type,
             pre_pipeline_model=paid.pre_pipeline_model,
         )
+
+    async def fetch_again(self, stable_id: str) -> list[RawMessage] | None:
+        """
+        A failed message again. A video that waited out a refusal comes back as
+        its whole transcript, chunked; a chunk, as fetch_one has it (#125).
+        """
+        if stable_id != awaiting_captions_id(self._video_id_from(stable_id)):
+            return await super().fetch_again(stable_id)
+        video_id = self._video_id_from(stable_id)
+        video = next((v for v in await self._get_videos() if v["video_id"] == video_id), None)
+        return None if video is None else await self._transcript(video)
 
     async def latest_stable_id(self) -> str | None:
         """

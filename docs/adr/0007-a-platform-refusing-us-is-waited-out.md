@@ -37,7 +37,9 @@ It is not the message's fault, and it is not the run's end.
   gives a message up.
 - **Retries wait.** The refusal says when it ends, and a failed message is not
   retried before then. If a retry is refused, the source's other failed
-  messages wait for the same end without being asked for.
+  messages that were waiting out a refusal wait for the same end without being
+  asked for. Failures of any other kind are retried as usual and keep their
+  own reason.
 - **The platform is left alone.** Once it refuses, nothing more is asked of it
   until a cool-down passes: about an hour, configurable. Content met in the
   meantime is recorded the same way, without a request. The refusal is said
@@ -55,9 +57,9 @@ included, is still read as "no captions".
 - A block costs a delay, not content: once YouTube stops refusing, the next
   fetch after the cool-down picks the refused videos back up.
 - A refused video from a YouTube source is recorded as the video itself, not
-  as its transcript's chunks, since there is no transcript yet. Its transcript
-  is asked for when it is retried, by the same path as a YouTube link from
-  Telegram.
+  as its transcript's chunks, since there is no transcript yet. Retried, it
+  comes back as its transcript, and a chunk that then fails is recorded as its
+  own failed message, as it would have been in an ordinary fetch.
 - The cool-down lives in the running process. A restart forgets it and asks
   YouTube once more; a refusal then starts it again. The wait recorded on each
   failed message is kept in the database and survives a restart.
@@ -66,9 +68,10 @@ included, is still read as "no captions".
 - A platform that refuses forever leaves its messages waiting forever, visible
   on the source but never given up. A person sees them; nothing clears them on
   its own.
-- This partly amends ADR 0005. A failure that would repeat for everything left
-  in the run still stops the run when it is ours (credit, credentials). When it
-  is a platform refusing us for a while, it is waited out instead.
+- This amends ADR 0005 without superseding it. A failure that would repeat for
+  everything left in the run still stops the run when it is ours (credit,
+  credentials). When it is a platform refusing us for a while, it is waited out
+  instead.
 
 ## Alternatives considered
 

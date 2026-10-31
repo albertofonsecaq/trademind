@@ -96,12 +96,12 @@ def _refusal(until: datetime) -> CaptionsRefused:
     return CaptionsRefused(f"YouTube is refusing caption requests until {until:%H:%M} UTC", until=until)
 
 
-class _Refused(Exception):
+class _LibraryRefused(Exception):
     """The library's refusal, out of the executor thread."""
 
 
 def _get_captions_sync(video_id: str) -> list[dict] | None:
-    """The video's captions, or None if it has none; _Refused if YouTube refuses."""
+    """The video's captions, or None if it has none; _LibraryRefused if YouTube refuses."""
     try:
         transcript_list = YouTubeTranscriptApi().list(video_id)
         # Prefer manually created, then auto-generated; prefer EN/ES
@@ -117,7 +117,7 @@ def _get_captions_sync(video_id: str) -> list[dict] | None:
                     return None
         return t.fetch().to_raw_data()
     except RequestBlocked as e:         # the library's IpBlocked, for a 429, is one
-        raise _Refused(type(e).__name__) from e
+        raise _LibraryRefused(type(e).__name__) from e
     except Exception as e:
         log.debug("No captions for %s: %s", video_id, e)
         return None
@@ -139,7 +139,7 @@ async def fetch_captions(video_id: str) -> list[dict] | None:
         return await asyncio.get_event_loop().run_in_executor(
             None, _get_captions_sync, video_id
         )
-    except _Refused as e:
+    except _LibraryRefused as e:
         _refused_until = now + timedelta(minutes=settings.YOUTUBE_REFUSAL_COOLDOWN_MINUTES)
         log.warning(
             "YouTube refused captions for %s (%s): no caption requests until %s UTC",

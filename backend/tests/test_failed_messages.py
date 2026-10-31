@@ -10,6 +10,7 @@ a message is given up — kept, and shown, for a person.
 A failure that would repeat for everything left in the run is not the message's
 fault: it is neither recorded nor counted.
 """
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import anthropic
@@ -42,6 +43,9 @@ class FakeChannel:
         self.gone: set[int] = set()
         self.unreachable: dict[int, Exception] = {}
         self.fetched_again: list[str] = []
+        # A message that comes back in parts when fetched again: a video
+        # refused captions, whose transcript is chunked (#125).
+        self.parts: dict[int, list[str]] = {}
 
     def message(self, msg_id: int) -> RawMessage:
         return RawMessage(
@@ -66,6 +70,13 @@ class FakeChannel:
         if msg_id in self.unreachable:
             raise self.unreachable[msg_id]
         return None if msg_id in self.gone else self.message(msg_id)
+
+    async def fetch_again(self, stable_id: str) -> list[RawMessage] | None:
+        msg = await self.fetch_one(stable_id)
+        if msg is None:
+            return None
+        parts = self.parts.get(int(stable_id.split(":")[2]))
+        return [replace(msg, stable_id=p) for p in parts] if parts else [msg]
 
     def repaired_position(self):
         return None
@@ -292,6 +303,10 @@ def _refused() -> PlatformRefused:
     return PlatformRefused("YouTube is refusing caption requests until 10:00 UTC", until=_UNTIL)
 
 
+def _refused_until(until: datetime) -> PlatformRefused:
+    return PlatformRefused(f"YouTube is refusing caption requests until {until:%H:%M} UTC", until=until)
+
+
 @pytest.fixture
 def clock(monkeypatch):
     """The moment failed messages are retried at, which a refusal is waited out against."""
@@ -359,19 +374,37 @@ class TestAPlatformRefusingIsWaitedOut:
         assert len(setup.channel.fetched_again) == 4
         assert (row.attempts, row.given_up_at) == (0, None)
 
-    async def test_a_refusal_while_retrying_leaves_the_rest_waiting_unasked(self, setup, clock):
+    async def test_a_refusal_while_retrying_leaves_the_other_refused_waiting_unasked(self, setup, clock):
         setup.channel.new = [1, 2]
-        setup.failing["telegram:chan:1"] = RuntimeError("relevance check timed out")
-        setup.failing["telegram:chan:2"] = RuntimeError("relevance check timed out")
+        setup.failing["telegram:chan:1"] = _refused()
+        setup.failing["telegram:chan:2"] = _refused()
         await setup.fetch()
         setup.channel.new = []
-        setup.channel.unreachable[1] = _refused()
+        setup.channel.unreachable[1] = _refused_until(_UNTIL + timedelta(hours=1))
 
+        clock["at"] = _UNTIL
         await setup.fetch()
 
         assert setup.channel.fetched_again == ["telegram:chan:1"]
         rows = await setup.recorded()
-        assert [(r.attempts, r.retry_after) for r in rows] == [(1, _UNTIL), (1, _UNTIL)]
+        assert [(r.attempts, r.retry_after) for r in rows] == [(0, _UNTIL + timedelta(hours=1))] * 2
+
+    async def test_a_refusal_while_retrying_does_not_hold_up_an_ordinary_failure(self, setup, clock):
+        setup.channel.new = [1, 2]
+        setup.failing["telegram:chan:1"] = _refused()
+        setup.failing["telegram:chan:2"] = RuntimeError("relevance check timed out")
+        await setup.fetch()
+        setup.channel.new = []
+        setup.channel.unreachable[1] = _refused_until(_UNTIL + timedelta(hours=1))
+        del setup.failing["telegram:chan:2"]
+
+        clock["at"] = _UNTIL
+        outcome = await setup.fetch()
+
+        assert setup.channel.fetched_again == ["telegram:chan:1", "telegram:chan:2"]
+        assert outcome.ingested == 1
+        [row] = await setup.recorded()
+        assert row.stable_id == "telegram:chan:1"
 
     async def test_an_ordinary_failure_after_a_refusal_counts_and_is_retried_at_once(self, setup, clock):
         setup.channel.new = [2]
@@ -385,3 +418,25 @@ class TestAPlatformRefusingIsWaitedOut:
 
         [row] = await setup.recorded()
         assert (row.attempts, row.retry_after) == (1, None)
+
+
+@pytest.mark.db
+class TestAMessageThatComesBackInParts:
+    """#125: a refused video fetched again is its transcript's chunks, each its own message."""
+
+    async def test_a_part_that_fails_is_remembered_on_its_own_and_the_rest_is_stored(self, setup, clock):
+        setup.channel.new = [2]
+        setup.failing["telegram:chan:2"] = _refused()
+        await setup.fetch()
+        setup.channel.new = []
+        del setup.failing["telegram:chan:2"]
+        setup.channel.parts[2] = ["telegram:chan:2:chunk_0", "telegram:chan:2:chunk_1", "telegram:chan:2:chunk_2"]
+        setup.failing["telegram:chan:2:chunk_1"] = RuntimeError("relevance check timed out")
+
+        clock["at"] = _UNTIL
+        outcome = await setup.fetch()
+
+        assert setup.processed == ["telegram:chan:2:chunk_0", "telegram:chan:2:chunk_2"]
+        [row] = await setup.recorded()
+        assert (row.stable_id, row.attempts, row.error) == ("telegram:chan:2:chunk_1", 1, "relevance check timed out")
+        assert (outcome.ingested, outcome.failed) == (2, 1)
