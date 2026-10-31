@@ -10,7 +10,7 @@ a message is given up — kept, and shown, for a person.
 A failure that would repeat for everything left in the run is not the message's
 fault: it is neither recorded nor counted.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import anthropic
 import httpx
@@ -18,6 +18,7 @@ import pytest
 from sqlalchemy import select
 
 from app.connectors.base import RawMessage
+from app.core.platform_refusal import PlatformRefused
 from app.models.failed_message import FailedMessage
 from app.models.source_config import SourceConfig
 from app.services import failed_message_service, ingestion_pipeline
@@ -282,3 +283,105 @@ class TestAFailureThatEndsTheRun:
         [row] = await setup.recorded()
         assert row.attempts == 1
         assert row.error == "relevance check timed out"
+
+
+_UNTIL = datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)
+
+
+def _refused() -> PlatformRefused:
+    return PlatformRefused("YouTube is refusing caption requests until 10:00 UTC", until=_UNTIL)
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """The moment failed messages are retried at, which a refusal is waited out against."""
+    now = {"at": _UNTIL - timedelta(minutes=30)}
+    monkeypatch.setattr(failed_message_service, "now_utc", lambda: now["at"])
+    return now
+
+
+@pytest.mark.db
+class TestAPlatformRefusingIsWaitedOut:
+    """#125, ADR 0007: a refusal is the platform's, not the message's, and not the run's."""
+
+    async def test_the_message_is_recorded_without_an_attempt_and_the_fetch_carries_on(self, setup, clock, db_session):
+        setup.channel.new = [1, 2, 3]
+        setup.failing["telegram:chan:2"] = _refused()
+
+        outcome = await setup.fetch()
+
+        [row] = await setup.recorded()
+        assert row.stable_id == "telegram:chan:2"
+        assert row.attempts == 0
+        assert row.retry_after == _UNTIL
+        assert row.error == "YouTube is refusing caption requests until 10:00 UTC"
+        assert setup.processed == ["telegram:chan:1", "telegram:chan:3"]
+        assert (outcome.ingested, outcome.failed) == (2, 1)
+        source = (await db_session.execute(select(SourceConfig).where(SourceConfig.id == setup.source.id))).scalar_one()
+        assert source.last_fetched_id == "telegram:chan:3"
+
+    async def test_it_is_not_asked_for_again_before_the_refusal_ends(self, setup, clock):
+        setup.channel.new = [2]
+        setup.failing["telegram:chan:2"] = _refused()
+        await setup.fetch()
+        setup.channel.new = []
+
+        clock["at"] = _UNTIL - timedelta(seconds=1)
+        await setup.fetch()
+
+        assert setup.channel.fetched_again == []
+
+    async def test_it_is_retried_once_the_refusal_has_ended(self, setup, clock):
+        setup.channel.new = [2]
+        setup.failing["telegram:chan:2"] = _refused()
+        await setup.fetch()
+        setup.channel.new = []
+        del setup.failing["telegram:chan:2"]
+
+        clock["at"] = _UNTIL
+        outcome = await setup.fetch()
+
+        assert setup.channel.fetched_again == ["telegram:chan:2"]
+        assert outcome.ingested == 1
+        assert await setup.recorded() == []
+
+    async def test_refused_again_and_again_it_is_never_given_up(self, setup, clock):
+        setup.channel.new = [2]
+        setup.failing["telegram:chan:2"] = _refused()
+        await setup.fetch()
+        setup.channel.new = []
+
+        for _ in range(4):
+            clock["at"] += timedelta(hours=1)
+            await setup.fetch()
+
+        [row] = await setup.recorded()
+        assert len(setup.channel.fetched_again) == 4
+        assert (row.attempts, row.given_up_at) == (0, None)
+
+    async def test_a_refusal_while_retrying_leaves_the_rest_waiting_unasked(self, setup, clock):
+        setup.channel.new = [1, 2]
+        setup.failing["telegram:chan:1"] = RuntimeError("relevance check timed out")
+        setup.failing["telegram:chan:2"] = RuntimeError("relevance check timed out")
+        await setup.fetch()
+        setup.channel.new = []
+        setup.channel.unreachable[1] = _refused()
+
+        await setup.fetch()
+
+        assert setup.channel.fetched_again == ["telegram:chan:1"]
+        rows = await setup.recorded()
+        assert [(r.attempts, r.retry_after) for r in rows] == [(1, _UNTIL), (1, _UNTIL)]
+
+    async def test_an_ordinary_failure_after_a_refusal_counts_and_is_retried_at_once(self, setup, clock):
+        setup.channel.new = [2]
+        setup.failing["telegram:chan:2"] = _refused()
+        await setup.fetch()
+        setup.channel.new = []
+        setup.failing["telegram:chan:2"] = RuntimeError("relevance check timed out")
+
+        clock["at"] = _UNTIL
+        await setup.fetch()
+
+        [row] = await setup.recorded()
+        assert (row.attempts, row.retry_after) == (1, None)

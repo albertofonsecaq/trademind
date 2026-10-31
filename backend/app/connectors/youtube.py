@@ -124,11 +124,9 @@ class YouTubeConnector(BaseConnector):
         except Exception:
             return now_utc()
 
-    async def _yield_video_chunks(
-        self, video: dict
-    ) -> AsyncIterator[RawMessage]:
-        messages = await youtube_transcript.video_transcript_messages(
-            video["video_id"],
+    def _credit(self, video: dict) -> dict:
+        """Whose a video's transcript is, and what it carries along."""
+        return dict(
             source_config_id=self.source_config_id,
             workspace_id=self.workspace_id,
             author=video.get("channel_title"),
@@ -137,6 +135,29 @@ class YouTubeConnector(BaseConnector):
             source_type="youtube",
             metadata={"title": video["title"], "thumbnail_url": video.get("thumbnail_url")},
         )
+
+    def _the_video(self, video: dict) -> RawMessage:
+        """
+        The video itself, for the pipeline to ask its transcript for: what a
+        refused video becomes, so the refusal is recorded against it and waited
+        out instead of the video being lost (#125, ADR 0007).
+        """
+        credit = self._credit(video)
+        credit["metadata"] = {**credit["metadata"], "video_id": video["video_id"]}
+        return RawMessage(
+            stable_id=f"youtube:{video['video_id']}", text=None, content_type="youtube_video", **credit
+        )
+
+    async def _yield_video_chunks(
+        self, video: dict
+    ) -> AsyncIterator[RawMessage]:
+        try:
+            messages = await youtube_transcript.video_transcript_messages(
+                video["video_id"], **self._credit(video)
+            )
+        except youtube_transcript.CaptionsRefused:
+            yield self._the_video(video)
+            return
         for msg in messages:
             yield msg
 
@@ -225,6 +246,9 @@ class YouTubeConnector(BaseConnector):
         video = next((v for v in await self._get_videos() if v["video_id"] == video_id), None)
         if video is None:
             return None
+        if stable_id == f"youtube:{video_id}":
+            # A refused video: the pipeline asks for its transcript (#125).
+            return self._the_video(video)
         found = None
         paid: RawMessage | None = None
         async for msg in self._yield_video_chunks(video):

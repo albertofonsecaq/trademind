@@ -7,6 +7,7 @@ that shares a video link (#70) needs the same thing for one video: captions
 first, Whisper when there are none, chunked, the Whisper cost carried once, and
 the same stable ids — so the two paths recognise each other's videos.
 """
+import logging
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -99,17 +100,22 @@ class TestWhisperWhenThereAreNoCaptions:
         assert await _messages() == []
         assert youtube["whisper_calls"] == 1
 
-    async def test_youtube_refusing_captions_still_falls_back_to_whisper(self, youtube, monkeypatch):
-        # As before #124, until #125 waits a refusal out instead.
+    async def test_youtube_refusing_captions_is_waited_out_not_paid_for(self, youtube, monkeypatch, caplog):
+        # #125: Whisper would be paid for a video YouTube will hand over later,
+        # and "No transcript available" would say something untrue about it.
+        until = datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)
+
         async def _refused(video_id):
-            raise youtube_transcript.CaptionsRefused(video_id)
+            raise youtube_transcript.CaptionsRefused("refused", until=until)
 
         monkeypatch.setattr(youtube_transcript, "fetch_captions", _refused)
         youtube["whisper"] = (_segments(1), Decimal("0.006"))
 
-        msgs = await _messages()
-        assert youtube["whisper_calls"] == 1
-        assert [m.stable_id for m in msgs] == ["youtube:dQw4w9WgXcQ:full"]
+        with caplog.at_level(logging.INFO, logger=youtube_transcript.__name__):
+            with pytest.raises(youtube_transcript.CaptionsRefused):
+                await _messages()
+        assert youtube["whisper_calls"] == 0
+        assert "No transcript available" not in caplog.text
 
 
 class TestTheCallerSaysWhoseEvidenceItIs:

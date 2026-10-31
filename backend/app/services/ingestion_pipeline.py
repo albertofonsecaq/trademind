@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.clock import now_utc
 from app.connectors.base import FetchPosition, RawMessage
 from app.core.llm_errors import is_fatal_for_run
+from app.core.platform_refusal import PlatformRefused
 from app.services.connection_health import credentials_rejected, mark_rejected
 from app.models.evidence_item import EvidenceItem
 from app.models.evidence_image import EvidenceImage
@@ -570,6 +571,10 @@ async def _route(db: AsyncSession, msg: RawMessage, topic_scope: str) -> Evidenc
         return await _process_url(db, msg, topic_scope)
     if ct == "video":
         return await _process_video(db, msg, topic_scope)
+    if ct == "youtube_video":
+        # A video its YouTube source was refused captions for, asked for again
+        # here like a link to it, so a refusal now is recorded against it (#125).
+        return await _process_youtube_link(db, msg, msg.metadata["video_id"], topic_scope)
 
     log.warning("Unknown content_type '%s' for %s — skipping", ct, msg.stable_id)
     return None
@@ -611,7 +616,10 @@ def _build_connector(source: SourceConfig):
 
 def _content_type_allowed(msg: RawMessage, filters: dict) -> bool:
     """Check whether the message content_type is enabled in the source's filters."""
-    mapping = {"text": "text", "video_transcript": "video", "image": "image", "url": "url", "video": "video"}
+    mapping = {
+        "text": "text", "video_transcript": "video", "youtube_video": "video",
+        "image": "image", "url": "url", "video": "video",
+    }
     return filters.get(mapping.get(msg.content_type, "text"), True)
 
 
@@ -685,7 +693,7 @@ async def run_fetch_pipeline(
                 log.info("Skipping already-ingested %s", msg.stable_id)
             except Exception as e:
                 failed += 1
-                log.error("Pipeline error for %s: %s", msg.stable_id, e, exc_info=True)
+                _log_failure("Pipeline error for %s", msg.stable_id, e)
                 if is_fatal_for_run(e):
                     # Nothing after this can succeed either, so stop rather than
                     # spend the rest of the tick proving it. Raising is how the
@@ -749,7 +757,14 @@ async def _retry_failed_messages(
     for everything left raises, without counting against the message.
     """
     ingested = failed = 0
+    refused: PlatformRefused | None = None
     for row in await failed_message_service.to_retry(db, source_id):
+        if refused is not None:
+            # The platform refused one of them: the rest would be refused too,
+            # so they wait for the same end without being asked (ADR 0007).
+            failed += 1
+            await failed_message_service.count_attempt(db, row, refused)
+            continue
         try:
             msg = await connector.fetch_one(row.stable_id)
         except Exception as e:
@@ -758,8 +773,10 @@ async def _retry_failed_messages(
             # it must not keep the source from fetching what is new.
             if credentials_rejected(e) or is_fatal_for_run(e):
                 raise
-            log.error("Could not fetch %s again: %s", row.stable_id, e, exc_info=True)
+            _log_failure("Could not fetch %s again", row.stable_id, e)
             failed += 1
+            if isinstance(e, PlatformRefused):
+                refused = e
             await failed_message_service.count_attempt(db, row, e)
             continue
         if msg is None:
@@ -772,10 +789,12 @@ async def _retry_failed_messages(
             # Stored by something else between the duplicate check and the insert.
             await failed_message_service.resolve(db, row)
         except Exception as e:
-            log.error("Retry failed for %s: %s", msg.stable_id, e, exc_info=True)
+            _log_failure("Retry failed for %s", msg.stable_id, e)
             if is_fatal_for_run(e):
                 raise
             failed += 1
+            if isinstance(e, PlatformRefused):
+                refused = e
             await failed_message_service.count_attempt(db, row, e)
         else:
             # None is a duplicate or an item judged not worth keeping: done either way.
@@ -783,6 +802,18 @@ async def _retry_failed_messages(
                 ingested += 1
             await failed_message_service.resolve(db, row)
     return ingested, failed
+
+
+def _log_failure(what: str, stable_id: str, exc: BaseException) -> None:
+    """
+    A message's failure in the log. A platform's refusal was already said once,
+    where it began, so it is not repeated with a traceback for every message
+    it holds up (#125).
+    """
+    if isinstance(exc, PlatformRefused):
+        log.debug(what + ": %s", stable_id, exc)
+    else:
+        log.error(what + ": %s", stable_id, exc, exc_info=True)
 
 
 async def _store_position(

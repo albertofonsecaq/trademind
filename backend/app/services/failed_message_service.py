@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.connectors.base import RawMessage
 from app.core.clock import now_utc
 from app.core.llm_errors import safe_failure_summary
+from app.core.platform_refusal import PlatformRefused
 from app.models.failed_message import MAX_ATTEMPTS, FailedMessage
 
 # A database error carries its whole statement and parameters — 6 KB of junk
@@ -30,16 +31,23 @@ GONE_FROM_SOURCE = (
 
 
 async def record_failure(db: AsyncSession, msg: RawMessage, exc: BaseException) -> FailedMessage:
-    """Record a failed attempt at this message: a first one, or another one."""
+    """
+    Record a failed attempt at this message: a first one, or another one.
+
+    A platform's refusal is recorded without counting as an attempt: it was not
+    the message's doing, and it is waited out rather than given up (ADR 0007).
+    """
     row = await _find(db, msg.source_config_id, msg.stable_id)
     if row is None:
+        refused = isinstance(exc, PlatformRefused)
         row = FailedMessage(
             workspace_id=msg.workspace_id,
             source_config_id=msg.source_config_id,
             stable_id=msg.stable_id,
             message_at=msg.timestamp,
             error=_summary(exc),
-            attempts=1,
+            attempts=0 if refused else 1,
+            retry_after=exc.until if refused else None,
         )
         try:
             # A savepoint: a poll and a backfill of the same source can both get
@@ -55,10 +63,19 @@ async def record_failure(db: AsyncSession, msg: RawMessage, exc: BaseException) 
 
 
 async def count_attempt(db: AsyncSession, row: FailedMessage, exc: BaseException) -> FailedMessage:
-    """Another failed attempt at a recorded message; the third gives it up."""
-    row.attempts += 1
+    """
+    Another failed attempt at a recorded message; the third gives it up.
+
+    A platform's refusal does not count: the message waits until it ends.
+    """
     row.error = _summary(exc)
     row.last_failed_at = now_utc()
+    if isinstance(exc, PlatformRefused):
+        row.retry_after = exc.until
+        await db.commit()
+        return row
+    row.retry_after = None
+    row.attempts += 1
     if row.attempts >= MAX_ATTEMPTS:
         row.given_up_at = now_utc()
     await db.commit()
@@ -116,10 +133,14 @@ async def forget(db: AsyncSession, source_config_id: uuid.UUID, stable_id: str) 
 
 
 async def to_retry(db: AsyncSession, source_config_id: uuid.UUID) -> list[FailedMessage]:
-    """A source's failures still being retried, oldest first."""
+    """A source's failures still being retried and not waiting out a refusal, oldest first."""
     rows = await db.execute(
         select(FailedMessage)
-        .where(FailedMessage.source_config_id == source_config_id, FailedMessage.given_up_at.is_(None))
+        .where(
+            FailedMessage.source_config_id == source_config_id,
+            FailedMessage.given_up_at.is_(None),
+            or_(FailedMessage.retry_after.is_(None), FailedMessage.retry_after <= now_utc()),
+        )
         .order_by(FailedMessage.first_failed_at, FailedMessage.stable_id)
     )
     return list(rows.scalars())
