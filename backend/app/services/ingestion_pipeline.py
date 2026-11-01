@@ -520,10 +520,10 @@ async def process_message(
     Does NOT commit — caller is responsible.
     """
     try:
-        if msg.refused is not None:
-            # Its connector was refused its content: recorded by the caller as a
-            # failed message waiting for the refusal to end (#125, ADR 0007).
-            raise msg.refused
+        if msg.fetch_failure is not None:
+            # Its connector could not fetch its content: recorded by the caller
+            # as a failed message, which a refusal makes wait (#125, #126).
+            raise msg.fetch_failure
         return await _route(db, msg, topic_scope)
     finally:
         # The connector downloaded it before the pipeline saw it: a duplicate
@@ -707,9 +707,9 @@ async def run_fetch_pipeline(
                         db, source_id, position, initial_position, touch_fetched_at=False
                     )
                     raise
-                # The position still moves past it; this is what remembers it.
+                # The position still moves past it, even as the last message of
+                # the fetch; this is what remembers it (#126).
                 await failed_message_service.record_failure(db, msg, e)
-                continue
             else:
                 await db.commit()
             position = FetchPosition(stable_id=msg.stable_id, item_at=msg.timestamp)

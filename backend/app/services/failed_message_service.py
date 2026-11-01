@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.connectors.base import RawMessage
 from app.core.clock import now_utc
 from app.core.llm_errors import safe_failure_summary
+from app.core.content_unavailable import ContentUnavailable
 from app.core.platform_refusal import PlatformRefused
 from app.models.failed_message import MAX_ATTEMPTS, FailedMessage
 
@@ -47,7 +48,7 @@ async def record_failure(db: AsyncSession, msg: RawMessage, exc: BaseException) 
             message_at=msg.timestamp,
             error=_summary(exc),
             attempts=0 if refused else 1,
-            retry_after=exc.until if refused else None,
+            retry_after=exc.until if refused else _retry_after(exc, 1),
         )
         try:
             # A savepoint: a poll and a backfill of the same source can both get
@@ -74,8 +75,8 @@ async def count_attempt(db: AsyncSession, row: FailedMessage, exc: BaseException
         row.retry_after = exc.until
         await db.commit()
         return row
-    row.retry_after = None
     row.attempts += 1
+    row.retry_after = _retry_after(exc, row.attempts)
     if row.attempts >= MAX_ATTEMPTS:
         row.given_up_at = now_utc()
     await db.commit()
@@ -123,11 +124,15 @@ async def resolve(db: AsyncSession, row: FailedMessage) -> None:
 
 
 async def forget(db: AsyncSession, source_config_id: uuid.UUID, stable_id: str) -> None:
-    """A message just stored needs no record, whatever its state. The caller commits."""
+    """
+    A message just stored needs no record, whatever its state, and neither does
+    the whole it is a part of: a video recorded as failed is stored as its
+    transcript's chunks, whose ids extend its own (#126). The caller commits.
+    """
     await db.execute(
         delete(FailedMessage).where(
             FailedMessage.source_config_id == source_config_id,
-            FailedMessage.stable_id == stable_id,
+            FailedMessage.stable_id.in_(_itself_and_its_wholes(stable_id)),
         )
     )
 
@@ -153,6 +158,18 @@ async def _find(db: AsyncSession, source_config_id: uuid.UUID, stable_id: str) -
             FailedMessage.stable_id == stable_id,
         )
     )).scalar_one_or_none()
+
+
+def _itself_and_its_wholes(stable_id: str) -> list[str]:
+    """"youtube:v:chunk_0" → it, "youtube:v" and "youtube": every id it extends."""
+    parts = stable_id.split(":")
+    return [":".join(parts[:n]) for n in range(len(parts), 0, -1)]
+
+
+def _retry_after(exc: BaseException, attempts: int):
+    """When a failure that has now had this many attempts may be retried: None, at once."""
+    gap = exc.wait_after(attempts) if isinstance(exc, ContentUnavailable) else None
+    return now_utc() + gap if gap else None
 
 
 def _summary(exc: BaseException) -> str:

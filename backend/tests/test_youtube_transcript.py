@@ -96,9 +96,52 @@ class TestWhisperWhenThereAreNoCaptions:
         assert msgs[0].pre_pipeline_model == settings.WHISPER_MODEL
         assert [m.pre_pipeline_task_type for m in msgs[1:]] == [None, None]
 
-    async def test_no_captions_and_no_whisper_is_nothing(self, youtube):
-        assert await _messages() == []
+    async def test_no_captions_and_no_whisper_is_a_failure_that_says_why(self, youtube):
+        # #126: a video with no transcript is a failed message, not nothing.
+        with pytest.raises(youtube_transcript.NoTranscript) as raised:
+            await _messages()
         assert youtube["whisper_calls"] == 1
+        assert str(raised.value) == "Video dQw4w9WgXcQ has no captions, and Whisper produced nothing"
+
+    async def test_whisper_says_why_it_gave_nothing(self, youtube, monkeypatch):
+        async def _whisper(video_url):
+            raise transcription_service.WhisperGaveNothing("Whisper is not configured (OPENAI_API_KEY is empty)")
+
+        monkeypatch.setattr(transcription_service, "transcribe_youtube_video", _whisper)
+
+        with pytest.raises(youtube_transcript.NoTranscript) as raised:
+            await _messages()
+        assert str(raised.value) == (
+            "Video dQw4w9WgXcQ has no captions, and Whisper is not configured (OPENAI_API_KEY is empty)"
+        )
+
+    async def test_captions_with_no_text_are_no_transcript(self, youtube):
+        youtube["captions"] = [{"text": "  ", "start": 0.0, "duration": 60.0}]
+
+        with pytest.raises(youtube_transcript.NoTranscript):
+            await _messages()
+        assert youtube["whisper_calls"] == 0
+
+
+class TestWhisperSaysWhyItGaveNothing:
+    async def test_without_an_openai_key(self, monkeypatch):
+        monkeypatch.setattr(settings, "OPENAI_API_KEY", "")
+
+        with pytest.raises(transcription_service.WhisperGaveNothing) as raised:
+            await transcription_service.transcribe_youtube_video("https://www.youtube.com/watch?v=x")
+        assert str(raised.value) == "Whisper is not configured (OPENAI_API_KEY is empty)"
+
+    async def test_when_it_fails(self, monkeypatch):
+        monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-test")
+
+        def _fails(video_url):
+            raise RuntimeError("yt-dlp: HTTP Error 429")
+
+        monkeypatch.setattr(transcription_service, "_transcribe_sync", _fails)
+
+        with pytest.raises(transcription_service.WhisperGaveNothing) as raised:
+            await transcription_service.transcribe_youtube_video("https://www.youtube.com/watch?v=x")
+        assert str(raised.value) == "Whisper failed: yt-dlp: HTTP Error 429"
 
     async def test_youtube_refusing_captions_is_waited_out_not_paid_for(self, youtube, monkeypatch, caplog):
         # #125: Whisper would be paid for a video YouTube will hand over later,
@@ -166,11 +209,12 @@ class TestWhatWhisperCostIsNeverLost:
         assert msgs[0].pre_pipeline_task_type == "transcription"
         assert usage_log.added == []           # carried, so logged downstream, once
 
-    async def test_a_transcript_with_no_text_at_all_is_still_recorded(self, youtube, usage_log):
+    async def test_a_transcript_with_no_text_at_all_is_paid_for_and_is_no_transcript(self, youtube, usage_log):
         youtube["whisper"] = ([{"text": "", "start": 0.0, "duration": 60.0}], Decimal("0.006"))
         workspace_id = uuid.uuid4()
 
-        assert await _messages(workspace_id=workspace_id) == []
+        with pytest.raises(youtube_transcript.NoTranscript):
+            await _messages(workspace_id=workspace_id)
 
         [event] = usage_log.added
         assert event.task_type == "transcription"

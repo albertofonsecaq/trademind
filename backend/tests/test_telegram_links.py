@@ -152,7 +152,10 @@ class TestAYouTubeLinkIsNotScrapedAsAPage:
         known[url] = {"url": url, "title": "YouTube", "text": _ARTICLE}
         db = FakeWorkspace()
 
-        await ingestion_pipeline.process_message(db, _link(url), "forex")
+        # Without a transcript the link is a failed message (#126); either
+        # way, the watch page is never scraped as an article.
+        with pytest.raises(youtube_transcript.NoTranscript):
+            await ingestion_pipeline.process_message(db, _link(url), "forex")
 
         assert fetched == []
         assert [e.type for e in db.added if isinstance(e, EvidenceItem)] == []
@@ -195,8 +198,8 @@ _WATCH = f"https://www.youtube.com/watch?v={_VIDEO}"
 _UNTIL = datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)
 
 
-def _the_video(refused) -> RawMessage:
-    """A video a YouTube source was refused captions for, as its connector hands it on (#125)."""
+def _the_video(fetch_failure) -> RawMessage:
+    """A video a YouTube source could not get the transcript of, as its connector hands it on (#125, #126)."""
     return RawMessage(
         stable_id=f"youtube:{_VIDEO}",
         source_config_id=uuid.uuid4(),
@@ -208,7 +211,7 @@ def _the_video(refused) -> RawMessage:
         source_type="youtube",
         content_type="youtube_video",
         metadata={"title": "a lesson", "video_id": _VIDEO},
-        refused=refused,
+        fetch_failure=fetch_failure,
     )
 
 
@@ -257,10 +260,12 @@ class TestAYouTubeLinkBecomesTranscriptEvidence:
         assert len(transcription) == 1
         assert transcription[0].cost_usd == Decimal("0.072")
 
-    async def test_no_captions_and_no_whisper_is_nothing_and_no_error(self, videos):
+    async def test_no_captions_and_no_whisper_is_raised_to_be_recorded_for_the_link(self, videos):
+        # #126: raised, so the link is recorded as a failed message.
         db = FakeWorkspace()
 
-        assert await ingestion_pipeline.process_message(db, _link(_WATCH), "forex") is None
+        with pytest.raises(youtube_transcript.NoTranscript):
+            await ingestion_pipeline.process_message(db, _link(_WATCH), "forex")
         assert db.held == []
 
 
@@ -410,7 +415,9 @@ class TestTheHeldCheckAgainstARealDatabase:
         source = await make_source(db_session)
         await self._hold(db_session, source, "youtube:abXcdefghij:full")
 
-        await ingestion_pipeline.process_message(db_session, self._link_for(source), "forex")
+        # Not skipped: the video was looked for (no captions, so Whisper too,
+        # and then a failure to record, #126).
+        with pytest.raises(youtube_transcript.NoTranscript):
+            await ingestion_pipeline.process_message(db_session, self._link_for(source), "forex")
 
-        # Not skipped: the video was looked for (no captions, so Whisper too).
         assert videos["asked"][0] == ("captions", self._ID)
