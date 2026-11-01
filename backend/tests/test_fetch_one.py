@@ -16,6 +16,7 @@ from telethon.tl.types import Message, PeerChannel
 from app.connectors.base import RawMessage
 from app.connectors.telegram import TelegramConnector
 from app.connectors.youtube import YouTubeConnector
+from tests.conftest import fake_youtube_window
 
 _NOON = datetime(2026, 10, 25, 12, tzinfo=timezone.utc)
 
@@ -89,9 +90,6 @@ WINDOW = [
 def youtube(monkeypatch):
     c = YouTubeConnector(source_config_id=uuid.uuid4(), workspace_id=uuid.uuid4(), channel_identifier="@chan")
 
-    async def _videos():
-        return WINDOW
-
     async def _chunks(video):
         return [_chunk(video, n) for n in range(3)]
 
@@ -113,7 +111,7 @@ def youtube(monkeypatch):
             content_type="video_transcript",
         )
 
-    monkeypatch.setattr(c, "_get_videos", _videos)
+    fake_youtube_window(monkeypatch, c, WINDOW)
     monkeypatch.setattr(c, "_transcript", _chunks)
     return c
 

@@ -632,6 +632,21 @@ class FakeChannel:
             yield msg
 
 
+def fake_youtube_window(monkeypatch, connector, window: list[dict]) -> None:
+    """
+    A YouTube connector's channel, answered from `window` (newest first): the
+    newest videos as a poll reads them, and any one of them by its id (#131).
+    """
+    async def _videos(since=None):
+        return window
+
+    async def _video(video_id):
+        return next((v for v in window if v["video_id"] == video_id), None)
+
+    monkeypatch.setattr(connector, "_get_videos", _videos)
+    monkeypatch.setattr(connector, "_get_video", _video)
+
+
 @pytest.fixture
 def channel(monkeypatch):
     channel = FakeChannel()

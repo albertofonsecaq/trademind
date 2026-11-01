@@ -14,7 +14,7 @@ Each one says what was decided, not what was done. The sections are:
 - **Alternatives considered** — the real options, each rejected on its merits.
   A strawman here makes the record worth less than no record.
 
-`Status` is one of `accepted`, `accepted, amended by NNNN`, `superseded by NNNN`
+`Status` is one of `accepted`, `accepted, amended by NNNN` (or several), `superseded by NNNN`
 or `withdrawn`. An ADR is not edited to reflect a change of mind: a new one
 supersedes it, and the old one keeps its reasoning so the change is legible.
 When a new one changes only part of an old one, the old one's status says so and
