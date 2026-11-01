@@ -9,9 +9,9 @@ import asyncio
 import logging
 import uuid
 from dataclasses import replace
-from functools import partial
 from datetime import datetime, timezone
 from decimal import Decimal
+from functools import partial
 from typing import AsyncIterator
 
 from app.connectors.base import BaseConnector, FetchPosition, RawMessage, to_aware_utc
@@ -39,35 +39,38 @@ def _uploads_playlist(youtube, channel_identifier: str) -> str:
     """
     if channel_identifier.startswith("PL"):
         return channel_identifier
+    channels = youtube.channels()
     if channel_identifier.startswith("UC"):
-        items = youtube.channels().list(part="contentDetails", id=channel_identifier).execute().get("items", [])
+        items = channels.list(part="contentDetails", id=channel_identifier).execute().get("items", [])
     else:
         # Handle @username or plain username
         handle = channel_identifier.lstrip("@")
-        items = youtube.channels().list(part="contentDetails", forHandle=handle).execute().get("items", [])
+        items = channels.list(part="contentDetails", forHandle=handle).execute().get("items", [])
         if not items:
             # Try forUsername as fallback
-            items = youtube.channels().list(part="contentDetails", forUsername=handle).execute().get("items", [])
+            items = channels.list(part="contentDetails", forUsername=handle).execute().get("items", [])
     if not items:
         raise ValueError(f"Channel not found: {channel_identifier}")
     return items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
 
 
-def _video(video_id: str, snippet: dict) -> dict:
+def _video_record(video_id: str, snippet: dict, published_at: str) -> dict:
+    """A video as this connector passes it around."""
     return {
         "video_id": video_id,
         "title": snippet.get("title", ""),
-        "published_at": snippet.get("publishedAt", ""),
+        "published_at": published_at,
         "description": snippet.get("description", ""),
         "channel_title": snippet.get("channelTitle", ""),
         "thumbnail_url": snippet.get("thumbnails", {}).get("default", {}).get("url"),
     }
 
 
-def _published(video: dict) -> datetime | None:
+def _parse_published(value: str) -> datetime | None:
+    """An API timestamp ("…Z") as aware UTC (ADR 1), or None if it is not one."""
     try:
-        return to_aware_utc(datetime.fromisoformat(video["published_at"].replace("Z", "+00:00")))
-    except (KeyError, ValueError):
+        return to_aware_utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
+    except (AttributeError, ValueError):
         return None
 
 
@@ -78,15 +81,18 @@ def _get_channel_videos_sync(
     channel_identifier: str, api_key: str, *, since: datetime | None = None
 ) -> list[dict]:
     """
-    A channel's uploads, newest first, as {video_id, title, published_at,
-    description, channel_title, thumbnail_url}.
+    A channel's uploads, newest first, as video records.
 
     Without `since`, its newest page: what a poll needs. With it, page after
-    page until one reaches back past `since`, so a backfill gets every video in
-    its dates rather than the newest 50 only (#131).
+    page until one has nothing published since then, so a backfill gets every
+    video in its dates rather than the newest 50 only (#131). A whole page, not
+    its last video: the uploads are in the order they were added, and a
+    premiere is added before it is published. A playlist source is in its
+    owner's order, so it is read to its end.
     """
     youtube = _client(api_key)
     playlist_id = _uploads_playlist(youtube, channel_identifier)
+    newest_first = not channel_identifier.startswith("PL")
 
     videos: list[dict] = []
     page_token: str | None = None
@@ -95,27 +101,43 @@ def _get_channel_videos_sync(
         response = youtube.playlistItems().list(
             part="contentDetails,snippet", playlistId=playlist_id, maxResults=_PAGE, **page,
         ).execute()
+        on_page = []
         for item in response.get("items", []):
             snippet = item.get("snippet", {})
             content = item.get("contentDetails", {})
             video_id = content.get("videoId") or snippet.get("resourceId", {}).get("videoId")
             if video_id:
-                videos.append(_video(video_id, snippet))
+                # The snippet's date is when it was added to the playlist; the
+                # video's own is in contentDetails (#131).
+                published_at = content.get("videoPublishedAt") or snippet.get("publishedAt", "")
+                on_page.append(_video_record(video_id, snippet, published_at))
+        videos.extend(on_page)
         page_token = response.get("nextPageToken")
         if since is None or not page_token:
             return videos
-        oldest = _published(videos[-1]) if videos else None
-        if oldest is not None and oldest < since:
+        if newest_first and _nothing_since(on_page, since):
             return videos
 
 
-def _get_video_sync(video_id: str, api_key: str) -> dict | None:
+def _nothing_since(videos: list[dict], since: datetime) -> bool:
+    published = [_parse_published(v["published_at"]) for v in videos]
+    return all(p is not None and p < since for p in published)
+
+
+def _get_video_sync(video_id: str, api_key: str, channel_id: str | None) -> dict | None:
     """
     One video by its own id, wherever it is on its channel: one quota unit
-    (#131). None when YouTube no longer shows it — deleted, or made private.
+    (#131). None when YouTube no longer shows it (deleted, or made private), or
+    when it is another channel's. An API error raises: it is not "gone".
     """
-    items = _client(api_key).videos().list(part="snippet", id=video_id).execute().get("items", [])
-    return _video(items[0]["id"], items[0].get("snippet", {})) if items else None
+    response = _client(api_key).videos().list(part="snippet", id=video_id).execute()
+    items = response.get("items", [])
+    if not items:
+        return None
+    snippet = items[0].get("snippet", {})
+    if channel_id and snippet.get("channelId") != channel_id:
+        return None
+    return _video_record(items[0]["id"], snippet, snippet.get("publishedAt", ""))
 
 
 def whole_video_id(video_id: str | None) -> str:
@@ -150,17 +172,17 @@ class YouTubeConnector(BaseConnector):
     async def _get_video(self, video_id: str | None) -> dict | None:
         if not video_id:
             return None
+        # A channel given by its id is checked; a handle would cost a lookup
+        # to resolve, and a playlist's videos are any channel's.
+        channel_id = self.channel_identifier if self.channel_identifier.startswith("UC") else None
         return await asyncio.get_event_loop().run_in_executor(
-            None, _get_video_sync, video_id, self._api_key(),
+            None, _get_video_sync, video_id, self._api_key(), channel_id,
         )
 
     def _parse_timestamp(self, published_at: str) -> datetime:
-        # Aware UTC, which is what everything above the connectors uses (ADR 1).
-        # The API returns "…Z"; the fallback is now(), so both go through one path.
-        try:
-            return to_aware_utc(datetime.fromisoformat(published_at.replace("Z", "+00:00")))
-        except Exception:
-            return now_utc()
+        # Aware UTC, which is what everything above the connectors uses (ADR 1);
+        # a timestamp the API did not give falls back to now().
+        return _parse_published(published_at) or now_utc()
 
     def _transcript_fields(self, video: dict) -> dict:
         """Whose a video's transcript is, and what it carries along: RawMessage's fields."""

@@ -16,6 +16,7 @@ import pytest
 from app.connectors.base import FetchPosition, RawMessage
 from app.connectors.youtube import YouTubeConnector
 from app.services import youtube_transcript
+from tests.conftest import fake_youtube_window
 
 _UNTIL = datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)
 
@@ -33,9 +34,6 @@ def youtube(monkeypatch):
     state = {"refused": set(), "no_transcript": set(), "asked": []}
     c = YouTubeConnector(source_config_id=uuid.uuid4(), workspace_id=uuid.uuid4(), channel_identifier="UCchan")
 
-    async def _videos():
-        return WINDOW
-
     async def _transcript(video_id, **fields):
         state["asked"].append(video_id)
         if video_id in state["refused"]:
@@ -44,11 +42,7 @@ def youtube(monkeypatch):
             raise youtube_transcript.NoTranscript(video_id, "Whisper produced nothing")
         return [RawMessage(stable_id=f"youtube:{video_id}:full", text="transcript", content_type="video_transcript", **fields)]
 
-    async def _video(video_id):
-        return next((v for v in WINDOW if v["video_id"] == video_id), None)
-
-    monkeypatch.setattr(c, "_get_videos", _videos)
-    monkeypatch.setattr(c, "_get_video", _video)
+    fake_youtube_window(monkeypatch, c, WINDOW)
     monkeypatch.setattr(youtube_transcript, "video_transcript_messages", _transcript)
     state["connector"] = c
     return state
