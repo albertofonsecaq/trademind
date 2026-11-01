@@ -276,20 +276,20 @@ class TestYouTubeRefusingCaptions:
     def refusing(self, videos, monkeypatch):
         async def _refused(video_id):
             videos["asked"].append(("captions", video_id))
-            raise youtube_transcript.CaptionsRefused("refused", until=_UNTIL)
+            raise youtube_transcript.YouTubeRefused("refused", until=_UNTIL)
 
         monkeypatch.setattr(youtube_transcript, "fetch_captions", _refused)
         return videos
 
     async def test_a_link_to_a_video_raises_it_for_the_link_alone(self, refusing):
-        with pytest.raises(youtube_transcript.CaptionsRefused):
+        with pytest.raises(youtube_transcript.YouTubeRefused):
             await ingestion_pipeline.process_message(FakeWorkspace(), _link(_WATCH), "forex")
         assert ("whisper", _WATCH) not in refusing["asked"]
 
     async def test_a_message_its_connector_was_refused_for_raises_it_unasked(self, refusing):
-        refused = youtube_transcript.CaptionsRefused("refused", until=_UNTIL)
+        refused = youtube_transcript.YouTubeRefused("refused", until=_UNTIL)
 
-        with pytest.raises(youtube_transcript.CaptionsRefused) as raised:
+        with pytest.raises(youtube_transcript.YouTubeRefused) as raised:
             await ingestion_pipeline.process_message(FakeWorkspace(), _the_video(refused), "forex")
         assert raised.value is refused
         assert refusing["asked"] == []

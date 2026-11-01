@@ -83,7 +83,7 @@ A message whose processing raised during a fetch or a backfill, recorded against
 _Avoid_: Error, dead letter, poison message, skipped
 
 **Refusal**:
-A platform turning our requests away for a while, which says nothing about the message asked for: YouTube answering caption requests with 429, or blocking our address. A refusal is waited out — what it held up becomes a failed message that counts no attempt and is not retried before the refusal ends, and the platform is not asked again until a _cool-down_ passes. It never stops a fetch. A 403 or any other error is not a refusal. See ADR 0007.
+A platform turning our requests away for a while, which says nothing about the message asked for: YouTube answering caption requests with 429, or blocking our address. A refusal is waited out — what it held up becomes a failed message that counts no attempt and is not retried before the refusal ends, and the platform is not asked again by any fetch until a _cool-down_ passes. YouTube refusing the audio download for Whisper is the same refusal. It never stops a fetch. A 403 or any other error is not a refusal. See ADR 0007 and ADR 0009.
 _Avoid_: Block, rate limit, ban, 429
 
 **Backlog**:

@@ -17,14 +17,14 @@ import uuid
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from youtube_transcript_api import NoTranscriptFound, RequestBlocked, YouTubeTranscriptApi
+from youtube_transcript_api import NoTranscriptFound, YouTubeTranscriptApi
 
 from app.connectors.base import RawMessage
 from app.core.clock import now_utc
 from app.core.config import settings
 from app.core.content_unavailable import ContentUnavailable
 from app.core.platform_refusal import PlatformRefused
-from app.services import transcription_service
+from app.services import refusal_store, transcription_service, youtube_refusal
 from app.services.usage_service import log_usage_event
 
 log = logging.getLogger(__name__)
@@ -79,18 +79,14 @@ def _chunk_end(chunk: list[dict]) -> float:
     return float(last.get("start", 0)) + float(last.get("duration", 0))
 
 
-class CaptionsRefused(PlatformRefused):
+class YouTubeRefused(PlatformRefused):
     """
-    YouTube refused to hand over captions (a 429, or our address blocked).
+    YouTube refusing us — its captions, or the audio Whisper needs (a 429, our
+    address blocked, a demand to prove we are not a bot).
 
     Not the same as a video without captions: every video after this one
-    would be refused too, and it says nothing about the video (#124, #125).
+    would be refused too, and it says nothing about the video (#124, #125, #130).
     """
-
-
-# Until when YouTube is not asked for captions, after it refused. In this
-# process only: a restart asks once more, and a refusal then sets it again.
-_refused_until: datetime | None = None
 
 
 class NoTranscript(ContentUnavailable):
@@ -109,8 +105,8 @@ class NoTranscript(ContentUnavailable):
         return self._GAPS.get(attempts)
 
 
-def _refusal(until: datetime) -> CaptionsRefused:
-    return CaptionsRefused(f"YouTube is refusing caption requests until {until:%H:%M} UTC", until=until)
+def _refusal(until: datetime) -> YouTubeRefused:
+    return YouTubeRefused(f"YouTube is refusing our requests until {until:%H:%M} UTC", until=until)
 
 
 class _LibraryRefused(Exception):
@@ -133,9 +129,9 @@ def _get_captions_sync(video_id: str) -> list[dict] | None:
                 if t is None:
                     return None
         return t.fetch().to_raw_data()
-    except RequestBlocked as e:         # the library's IpBlocked, for a 429, is one
-        raise _LibraryRefused(type(e).__name__) from e
     except Exception as e:
+        if youtube_refusal.is_refusal(e):
+            raise _LibraryRefused(type(e).__name__) from e
         log.debug("No captions for %s: %s", video_id, e)
         return None
 
@@ -144,25 +140,30 @@ async def fetch_captions(video_id: str) -> list[dict] | None:
     """
     The video's captions, or None if it has none.
 
-    CaptionsRefused if YouTube refuses, and from then on without asking it,
+    YouTubeRefused if YouTube refuses, and from then on without asking it,
     until the cool-down has passed: asking anyway is what got it to refuse
-    (about 58,000 requests over three days, before #125).
+    (about 58,000 requests over three days, before #125). The refusal is
+    recorded where every fetch, and a restart, reads it first (#130).
     """
-    global _refused_until
-    now = now_utc()
-    if _refused_until is not None and now < _refused_until:
-        raise _refusal(_refused_until)
+    until = await refusal_store.refused_until(refusal_store.YOUTUBE)
+    if until is not None and now_utc() < until:
+        raise _refusal(until)
     try:
         return await asyncio.get_event_loop().run_in_executor(
             None, _get_captions_sync, video_id
         )
     except _LibraryRefused as e:
-        _refused_until = now + timedelta(minutes=settings.YOUTUBE_REFUSAL_COOLDOWN_MINUTES)
-        log.warning(
-            "YouTube refused captions for %s (%s): no caption requests until %s UTC",
-            video_id, e, f"{_refused_until:%H:%M}",
-        )
-        raise _refusal(_refused_until) from e
+        raise await _refused(video_id, str(e)) from e
+
+
+async def _refused(video_id: str, reason: str) -> YouTubeRefused:
+    """Record that YouTube refused us, say so, and return the refusal for the caller to raise."""
+    wanted = now_utc() + timedelta(minutes=settings.YOUTUBE_REFUSAL_COOLDOWN_MINUTES)
+    until = await refusal_store.refuse(refusal_store.YOUTUBE, wanted, reason)
+    log.warning(
+        "YouTube refused us for %s (%s): no requests to it until %s UTC", video_id, reason, f"{until:%H:%M}",
+    )
+    return _refusal(until)
 
 
 async def _segments_for_video(video_id: str) -> tuple[list[dict], str]:
@@ -170,7 +171,7 @@ async def _segments_for_video(video_id: str) -> tuple[list[dict], str]:
     Return (segments, whisper_cost_usd_str).
     whisper_cost is "0" when captions were used (no cost).
     """
-    # CaptionsRefused goes up as it is: the video is waited for, not paid for
+    # YouTubeRefused goes up as it is: the video is waited for, not paid for
     # with Whisper, which YouTube would likely refuse to download from too (#125).
     segments = await fetch_captions(video_id)
     if segments:
@@ -180,6 +181,8 @@ async def _segments_for_video(video_id: str) -> tuple[list[dict], str]:
     video_url = f"https://www.youtube.com/watch?v={video_id}"
     try:
         result = await transcription_service.transcribe_youtube_video(video_url)
+    except transcription_service.DownloadRefused as e:
+        raise await _refused(video_id, str(e)) from e
     except transcription_service.WhisperGaveNothing as e:
         raise NoTranscript(video_id, str(e)) from e
     if result:
@@ -203,7 +206,7 @@ async def video_transcript_messages(
     """
     The video's transcript as `video_transcript` messages, one per chunk.
     NoTranscript when it has no captions and no Whisper result, or neither has
-    any text (#126); CaptionsRefused when YouTube is refusing caption
+    any text (#126); YouTubeRefused when YouTube is refusing caption
     requests: the video is waited for (#125).
 
     The caller says whose evidence this is; `metadata` is merged under the

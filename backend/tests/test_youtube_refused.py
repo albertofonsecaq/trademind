@@ -37,7 +37,7 @@ def youtube(monkeypatch):
     async def _transcript(video_id, **fields):
         state["asked"].append(video_id)
         if video_id in state["refused"]:
-            raise youtube_transcript.CaptionsRefused("refused", until=_UNTIL)
+            raise youtube_transcript.YouTubeRefused("refused", until=_UNTIL)
         if video_id in state["no_transcript"]:
             raise youtube_transcript.NoTranscript(video_id, "Whisper produced nothing")
         return [RawMessage(stable_id=f"youtube:{video_id}:full", text="transcript", content_type="video_transcript", **fields)]
@@ -91,14 +91,14 @@ class TestFetchingARefusedVideoAgain:
     async def test_while_youtube_still_refuses_the_refusal_is_raised(self, youtube):
         youtube["refused"] = {"v2"}
 
-        with pytest.raises(youtube_transcript.CaptionsRefused):
+        with pytest.raises(youtube_transcript.YouTubeRefused):
             await youtube["connector"].fetch_again("youtube:v2")
 
     async def test_one_part_of_a_video_asked_for_during_a_block_is_refused_not_gone(self, youtube):
         # Read as gone, it would be given up at once: a video lost to a block.
         youtube["refused"] = {"v2"}
 
-        with pytest.raises(youtube_transcript.CaptionsRefused):
+        with pytest.raises(youtube_transcript.YouTubeRefused):
             await youtube["connector"].fetch_one("youtube:v2:full")
 
     async def test_a_video_no_longer_in_the_window_is_gone(self, youtube):
