@@ -23,6 +23,7 @@ from youtube_transcript_api import (
 from app.core.config import settings
 from app.services import youtube_transcript
 from app.services.youtube_transcript import CaptionsRefused, fetch_captions
+from tests.conftest import fake_refusal_store
 
 VIDEO = "dQw4w9WgXcQ"
 
@@ -65,10 +66,10 @@ def youtube(monkeypatch):
 
     monkeypatch.setattr(youtube_transcript, "YouTubeTranscriptApi", _Api)
     # Each test starts with YouTube not refusing, at a moment it controls.
-    monkeypatch.setattr(youtube_transcript, "_refused_until", None)
     clock = {"now": datetime(2026, 10, 31, 9, 0, tzinfo=timezone.utc)}
     monkeypatch.setattr(youtube_transcript, "now_utc", lambda: clock["now"])
     state["clock"] = clock
+    state["refusals"] = fake_refusal_store(monkeypatch)
     return state
 
 
@@ -161,3 +162,24 @@ class TestARefusalIsWaitedOut:
                     await fetch_captions(video)
         [warning] = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert "10:00" in warning.getMessage()
+
+
+class TestARefusalIsSharedByEveryFetch:
+    """#130: the refusal is where every fetch and a restart see it, not in one process."""
+
+    async def test_one_recorded_by_another_fetch_or_before_a_restart_is_waited_out(self, youtube):
+        youtube["refusals"]["youtube"] = datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)
+        youtube["listed"] = [_Captions("en", generated=False)]
+
+        with pytest.raises(CaptionsRefused) as raised:
+            await fetch_captions(VIDEO)
+        assert raised.value.until == datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)
+        assert youtube["asked"] == 0
+
+    async def test_a_refusal_here_is_recorded_for_the_others(self, youtube, monkeypatch):
+        monkeypatch.setattr(settings, "YOUTUBE_REFUSAL_COOLDOWN_MINUTES", 60)
+        youtube["error"] = IpBlocked(VIDEO)
+
+        with pytest.raises(CaptionsRefused):
+            await fetch_captions(VIDEO)
+        assert youtube["refusals"]["youtube"] == datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)

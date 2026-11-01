@@ -29,3 +29,4 @@ __all__ = [
     "BrokerOrder", "JournalEntry", "JournalOutcome",
     "AdminAuditLog", "AskRecord", "AnalysisRun", "FailedMessage",
 ]
+from app.models.platform_refusal import PlatformRefusal

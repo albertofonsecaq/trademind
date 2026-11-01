@@ -16,6 +16,7 @@ import pytest
 
 from app.core.config import settings
 from app.services import transcription_service, youtube_transcript
+from tests.conftest import fake_refusal_store
 
 _WHEN = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 
@@ -42,6 +43,7 @@ def youtube(monkeypatch):
     monkeypatch.setattr(youtube_transcript, "fetch_captions", _captions)
     monkeypatch.setattr(transcription_service, "transcribe_youtube_video", _whisper)
     monkeypatch.setattr(settings, "YOUTUBE_CHUNK_SECONDS", 300)
+    state["refusals"] = fake_refusal_store(monkeypatch)
     return state
 
 
@@ -123,6 +125,22 @@ class TestWhisperWhenThereAreNoCaptions:
         assert youtube["whisper_calls"] == 0
 
 
+class TestYouTubeRefusingWhispersDownload:
+    """#130: YouTube blocking the audio download is the same refusal as for captions."""
+
+    async def test_is_waited_out_with_the_captions(self, youtube, monkeypatch):
+        monkeypatch.setattr(settings, "YOUTUBE_REFUSAL_COOLDOWN_MINUTES", 60)
+
+        async def _whisper(video_url):
+            raise transcription_service.DownloadRefused("HTTP Error 429: Too Many Requests")
+
+        monkeypatch.setattr(transcription_service, "transcribe_youtube_video", _whisper)
+
+        with pytest.raises(youtube_transcript.CaptionsRefused) as raised:
+            await _messages()
+        assert youtube["refusals"]["youtube"] == raised.value.until
+
+
 class TestWhisperSaysWhyItGaveNothing:
     async def test_without_an_openai_key(self, monkeypatch):
         monkeypatch.setattr(settings, "OPENAI_API_KEY", "")
@@ -131,17 +149,32 @@ class TestWhisperSaysWhyItGaveNothing:
             await transcription_service.transcribe_youtube_video("https://www.youtube.com/watch?v=x")
         assert str(raised.value) == "Whisper is not configured (OPENAI_API_KEY is empty)"
 
+    @pytest.mark.parametrize("error", [
+        "ERROR: [youtube] dQw4w9WgXcQ: Unable to download webpage: HTTP Error 429: Too Many Requests",
+        "ERROR: [youtube] dQw4w9WgXcQ: Sign in to confirm you\u2019re not a bot. Use --cookies-from-browser",
+    ])
+    async def test_when_youtube_refuses_the_download(self, monkeypatch, error):
+        monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-test")
+
+        def _refused(video_url):
+            raise RuntimeError(error)
+
+        monkeypatch.setattr(transcription_service, "_transcribe_sync", _refused)
+
+        with pytest.raises(transcription_service.DownloadRefused):
+            await transcription_service.transcribe_youtube_video("https://www.youtube.com/watch?v=x")
+
     async def test_when_it_fails(self, monkeypatch):
         monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-test")
 
         def _fails(video_url):
-            raise RuntimeError("yt-dlp: HTTP Error 429")
+            raise RuntimeError("yt-dlp: HTTP Error 500")
 
         monkeypatch.setattr(transcription_service, "_transcribe_sync", _fails)
 
         with pytest.raises(transcription_service.WhisperGaveNothing) as raised:
             await transcription_service.transcribe_youtube_video("https://www.youtube.com/watch?v=x")
-        assert str(raised.value) == "Whisper failed: yt-dlp: HTTP Error 429"
+        assert str(raised.value) == "Whisper failed: yt-dlp: HTTP Error 500"
 
     async def test_youtube_refusing_captions_is_waited_out_not_paid_for(self, youtube, monkeypatch, caplog):
         # #125: Whisper would be paid for a video YouTube will hand over later,

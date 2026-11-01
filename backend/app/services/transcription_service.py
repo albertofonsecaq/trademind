@@ -20,6 +20,14 @@ class WhisperGaveNothing(Exception):
     """Why Whisper produced no transcript: not configured, too long, or failed."""
 
 
+class DownloadRefused(Exception):
+    """YouTube refused the audio download: the same refusal as for captions (#130)."""
+
+
+# What yt-dlp says when YouTube is refusing us rather than the video being at fault.
+_REFUSALS = ("HTTP Error 429", "Too Many Requests", "Sign in to confirm")
+
+
 # Whisper API pricing: $0.006 / minute (as of 2024)
 WHISPER_COST_PER_MINUTE = Decimal("0.006")
 
@@ -40,6 +48,8 @@ async def transcribe_youtube_video(video_url: str) -> tuple[list[dict], Decimal]
     except WhisperGaveNothing:
         raise
     except Exception as e:
+        if any(sign in str(e) for sign in _REFUSALS):
+            raise DownloadRefused(str(e)) from e
         log.warning("Whisper transcription failed for %s: %s", video_url, e)
         raise WhisperGaveNothing(f"Whisper failed: {e}") from e
 

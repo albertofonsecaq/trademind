@@ -117,7 +117,7 @@ class TestWhatTheApplicationStillNeeds:
     """The guard is worthless if it also stops the product working."""
 
     @pytest.mark.parametrize("privilege", ["SELECT", "INSERT", "UPDATE", "DELETE"])
-    @pytest.mark.parametrize("table", ["evidence_items", "evidence_images", "trade_ideas", "usage_events"])
+    @pytest.mark.parametrize("table", ["evidence_items", "evidence_images", "trade_ideas", "usage_events", "platform_refusals"])
     async def test_it_can_read_and_write_the_tables(self, db_session, table, privilege):
         assert await _scalar(
             db_session,

@@ -632,6 +632,27 @@ class FakeChannel:
             yield msg
 
 
+def fake_refusal_store(monkeypatch) -> dict:
+    """
+    The record of platforms refusing us (#130), kept in a dict rather than the
+    database: platform → until when. A later refusal never moves it back.
+    """
+    from app.services import refusal_store
+
+    until: dict = {}
+
+    async def _refused_until(platform):
+        return until.get(platform)
+
+    async def _refuse(platform, when, reason):
+        until[platform] = max(until.get(platform, when), when)
+        return until[platform]
+
+    monkeypatch.setattr(refusal_store, "refused_until", _refused_until)
+    monkeypatch.setattr(refusal_store, "refuse", _refuse)
+    return until
+
+
 def fake_youtube_window(monkeypatch, connector, window: list[dict]) -> None:
     """
     A YouTube connector's channel, answered from `window` (newest first): the
