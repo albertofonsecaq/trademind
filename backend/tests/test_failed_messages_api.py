@@ -13,6 +13,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.api import sources as sources_api
+from app.core.clock import now_utc
 from app.models.failed_message import FailedMessage
 from app.models.workspace_member import WorkspaceMember
 from tests.conftest import make_source, make_user, make_workspace
@@ -29,12 +30,12 @@ async def _member(session, workspace):
     return user
 
 
-async def _failed(session, source, msg_id, *, given_up=False, attempts=1, failed_at=_AT):
+async def _failed(session, source, msg_id, *, given_up=False, attempts=1, failed_at=_AT, retry_after=None):
     row = FailedMessage(
         workspace_id=source.workspace_id, source_config_id=source.id,
         stable_id=f"telegram:chan:{msg_id}", message_at=_AT, error=f"broken {msg_id}",
         attempts=attempts, first_failed_at=failed_at, last_failed_at=failed_at,
-        given_up_at=failed_at if given_up else None,
+        given_up_at=failed_at if given_up else None, retry_after=retry_after,
     )
     session.add(row)
     await session.flush()
@@ -54,6 +55,39 @@ class TestTheSourcesList:
 
         assert (listed[busy.id].failed_retrying, listed[busy.id].failed_given_up) == (2, 1)
         assert (listed[quiet.id].failed_retrying, listed[quiet.id].failed_given_up) == (0, 0)
+
+
+class TestWaitingMessages:
+    """#132: a failed message whose retry is still ahead is waiting, and the page says until when."""
+
+    async def test_are_counted_apart_from_those_retried_now_and_those_given_up(self, db_session):
+        workspace = await make_workspace(db_session)
+        user = await _member(db_session, workspace)
+        source = await make_source(db_session, workspace)
+        now = now_utc()
+        await _failed(db_session, source, 1, attempts=0, retry_after=now + timedelta(hours=1))   # a refusal
+        await _failed(db_session, source, 2, attempts=1, retry_after=now + timedelta(hours=23))  # no transcript
+        await _failed(db_session, source, 3, attempts=1, retry_after=now - timedelta(minutes=1))  # its time has come
+        await _failed(db_session, source, 4)
+        await _failed(db_session, source, 5, given_up=True, attempts=3)
+
+        [listed] = await sources_api.list_sources(workspace.id, user, db_session)
+
+        assert (listed.failed_waiting, listed.failed_retrying, listed.failed_given_up) == (2, 2, 1)
+
+    async def test_say_when_they_will_next_be_retried(self, db_session):
+        workspace = await make_workspace(db_session)
+        user = await _member(db_session, workspace)
+        source = await make_source(db_session, workspace)
+        until = now_utc() + timedelta(hours=1)
+        await _failed(db_session, source, 1, attempts=0, retry_after=until)
+        await _failed(db_session, source, 2)
+
+        rows = await sources_api.list_failed_messages(workspace.id, source.id, user, db_session)
+        listed = {m.stable_id: m for m in map(sources_api.FailedMessageOut.model_validate, rows)}
+
+        assert listed["telegram:chan:1"].retry_after == until
+        assert listed["telegram:chan:2"].retry_after is None
 
 
 class TestASourcesFailedMessages:
