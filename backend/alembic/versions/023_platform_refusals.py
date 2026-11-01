@@ -28,7 +28,7 @@ def upgrade() -> None:
         sa.Column("platform", sa.String(50), primary_key=True),
         sa.Column("until", sa.DateTime(timezone=True), nullable=False),
         sa.Column("reason", sa.Text(), nullable=False),
-        sa.Column("refused_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column("refused_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
     )
 
 

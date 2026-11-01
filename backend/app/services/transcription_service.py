@@ -13,6 +13,7 @@ import tempfile
 from decimal import Decimal
 
 from app.core.config import settings
+from app.services import youtube_refusal
 
 log = logging.getLogger(__name__)
 
@@ -22,10 +23,6 @@ class WhisperGaveNothing(Exception):
 
 class DownloadRefused(Exception):
     """YouTube refused the audio download: the same refusal as for captions (#130)."""
-
-
-# What yt-dlp says when YouTube is refusing us rather than the video being at fault.
-_REFUSALS = ("HTTP Error 429", "Too Many Requests", "Sign in to confirm")
 
 
 # Whisper API pricing: $0.006 / minute (as of 2024)
@@ -45,17 +42,22 @@ async def transcribe_youtube_video(video_url: str) -> tuple[list[dict], Decimal]
         return await asyncio.get_event_loop().run_in_executor(
             None, _transcribe_sync, video_url
         )
-    except WhisperGaveNothing:
+    except (WhisperGaveNothing, DownloadRefused):
         raise
     except Exception as e:
-        if any(sign in str(e) for sign in _REFUSALS):
-            raise DownloadRefused(str(e)) from e
         log.warning("Whisper transcription failed for %s: %s", video_url, e)
         raise WhisperGaveNothing(f"Whisper failed: {e}") from e
 
 
-def _transcribe_sync(video_url: str) -> tuple[list[dict], Decimal] | None:
+def _download_audio(video_url: str, into: dict) -> None:
+    """The video's audio, downloaded by yt-dlp with the options `into` gives."""
     import yt_dlp
+
+    with yt_dlp.YoutubeDL(into) as ydl:
+        ydl.download([video_url])
+
+
+def _transcribe_sync(video_url: str) -> tuple[list[dict], Decimal] | None:
     from openai import OpenAI
 
     client = OpenAI(api_key=settings.OPENAI_API_KEY)
@@ -75,8 +77,13 @@ def _transcribe_sync(video_url: str) -> tuple[list[dict], Decimal] | None:
             "no_warnings": True,
         }
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([video_url])
+        try:
+            _download_audio(video_url, ydl_opts)
+        except Exception as e:
+            # Only the download goes through YouTube; OpenAI's errors are not its refusal.
+            if youtube_refusal.is_refusal(e):
+                raise DownloadRefused(str(e)) from e
+            raise
 
         # Find the downloaded mp3
         mp3_files = [f for f in os.listdir(tmpdir) if f.endswith(".mp3")]

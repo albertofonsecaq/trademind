@@ -1,6 +1,6 @@
 # 9. A refusal is recorded where every fetch sees it
 
-Date: 2026-11-01
+Date: 2026-10-31
 
 Status: accepted
 
@@ -37,8 +37,9 @@ alike, waited out alike.
 - Asking costs a read of one row before each video's captions. It is small
   beside the request it guards.
 - Two fetches that meet the refusal at the same moment, before either has
-  recorded it, still ask once each. Nothing smaller than a lock around every
-  request would stop that, and the poller fetches sources one at a time.
+  recorded it, still ask once each, and each says so in the log. Nothing
+  smaller than a lock around every request would stop that, and the poller
+  fetches sources one at a time.
 - A refusal outlives the block itself if the block ends early: nothing is asked
   until the recorded end. That is the cool-down working as meant.
 - Which download errors mean "YouTube is refusing us" is a list of what yt-dlp

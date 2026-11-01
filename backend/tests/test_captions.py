@@ -21,8 +21,8 @@ from youtube_transcript_api import (
 )
 
 from app.core.config import settings
-from app.services import youtube_transcript
-from app.services.youtube_transcript import CaptionsRefused, fetch_captions
+from app.services import refusal_store, youtube_transcript
+from app.services.youtube_transcript import YouTubeRefused, fetch_captions
 from tests.conftest import fake_refusal_store
 
 VIDEO = "dQw4w9WgXcQ"
@@ -111,7 +111,7 @@ class TestYouTubeRefusingIsNotNoCaptions:
     @pytest.mark.parametrize("error", [IpBlocked(VIDEO), RequestBlocked(VIDEO)])
     async def test_a_refusal_is_said_as_one(self, youtube, error):
         youtube["error"] = error
-        with pytest.raises(CaptionsRefused):
+        with pytest.raises(YouTubeRefused):
             await fetch_captions(VIDEO)
 
     async def test_a_refusal_while_fetching_the_chosen_captions_is_one_too(self, youtube):
@@ -120,7 +120,7 @@ class TestYouTubeRefusingIsNotNoCaptions:
                 raise IpBlocked(VIDEO)
 
         youtube["listed"] = [_Refused("en", generated=False)]
-        with pytest.raises(CaptionsRefused):
+        with pytest.raises(YouTubeRefused):
             await fetch_captions(VIDEO)
 
 
@@ -131,7 +131,7 @@ class TestARefusalIsWaitedOut:
     async def refused(self, youtube, monkeypatch):
         monkeypatch.setattr(settings, "YOUTUBE_REFUSAL_COOLDOWN_MINUTES", 60)
         youtube["error"] = IpBlocked(VIDEO)
-        with pytest.raises(CaptionsRefused):
+        with pytest.raises(YouTubeRefused):
             await fetch_captions(VIDEO)
         youtube["error"] = None
         youtube["listed"] = [_Captions("en", generated=False)]
@@ -139,12 +139,12 @@ class TestARefusalIsWaitedOut:
 
     async def test_no_request_is_made_during_the_cool_down(self, refused):
         refused["clock"]["now"] += timedelta(minutes=59)
-        with pytest.raises(CaptionsRefused):
+        with pytest.raises(YouTubeRefused):
             await fetch_captions("another")
         assert refused["asked"] == 1
 
     async def test_the_refusal_says_when_it_ends(self, refused):
-        with pytest.raises(CaptionsRefused) as raised:
+        with pytest.raises(YouTubeRefused) as raised:
             await fetch_captions("another")
         assert raised.value.until == datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)
 
@@ -158,7 +158,7 @@ class TestARefusalIsWaitedOut:
         youtube["error"] = IpBlocked(VIDEO)
         with caplog.at_level(logging.WARNING, logger=youtube_transcript.__name__):
             for video in ("a", "b", "c"):
-                with pytest.raises(CaptionsRefused):
+                with pytest.raises(YouTubeRefused):
                     await fetch_captions(video)
         [warning] = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert "10:00" in warning.getMessage()
@@ -168,10 +168,10 @@ class TestARefusalIsSharedByEveryFetch:
     """#130: the refusal is where every fetch and a restart see it, not in one process."""
 
     async def test_one_recorded_by_another_fetch_or_before_a_restart_is_waited_out(self, youtube):
-        youtube["refusals"]["youtube"] = datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)
+        youtube["refusals"][refusal_store.YOUTUBE] = datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)
         youtube["listed"] = [_Captions("en", generated=False)]
 
-        with pytest.raises(CaptionsRefused) as raised:
+        with pytest.raises(YouTubeRefused) as raised:
             await fetch_captions(VIDEO)
         assert raised.value.until == datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)
         assert youtube["asked"] == 0
@@ -180,6 +180,6 @@ class TestARefusalIsSharedByEveryFetch:
         monkeypatch.setattr(settings, "YOUTUBE_REFUSAL_COOLDOWN_MINUTES", 60)
         youtube["error"] = IpBlocked(VIDEO)
 
-        with pytest.raises(CaptionsRefused):
+        with pytest.raises(YouTubeRefused):
             await fetch_captions(VIDEO)
-        assert youtube["refusals"]["youtube"] == datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)
+        assert youtube["refusals"][refusal_store.YOUTUBE] == datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)

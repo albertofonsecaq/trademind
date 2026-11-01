@@ -15,7 +15,7 @@ from decimal import Decimal
 import pytest
 
 from app.core.config import settings
-from app.services import transcription_service, youtube_transcript
+from app.services import refusal_store, transcription_service, youtube_transcript
 from tests.conftest import fake_refusal_store
 
 _WHEN = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
@@ -136,9 +136,9 @@ class TestYouTubeRefusingWhispersDownload:
 
         monkeypatch.setattr(transcription_service, "transcribe_youtube_video", _whisper)
 
-        with pytest.raises(youtube_transcript.CaptionsRefused) as raised:
+        with pytest.raises(youtube_transcript.YouTubeRefused) as raised:
             await _messages()
-        assert youtube["refusals"]["youtube"] == raised.value.until
+        assert youtube["refusals"][refusal_store.YOUTUBE] == raised.value.until
 
 
 class TestWhisperSaysWhyItGaveNothing:
@@ -156,12 +156,25 @@ class TestWhisperSaysWhyItGaveNothing:
     async def test_when_youtube_refuses_the_download(self, monkeypatch, error):
         monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-test")
 
-        def _refused(video_url):
+        def _refused(video_url, into):
             raise RuntimeError(error)
 
-        monkeypatch.setattr(transcription_service, "_transcribe_sync", _refused)
+        monkeypatch.setattr(transcription_service, "_download_audio", _refused)
 
         with pytest.raises(transcription_service.DownloadRefused):
+            await transcription_service.transcribe_youtube_video("https://www.youtube.com/watch?v=x")
+
+    async def test_an_age_restricted_video_is_not_youtube_refusing_us(self, monkeypatch):
+        # Read as a refusal, it would hold all of YouTube up, never count an
+        # attempt, and never be given up.
+        monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-test")
+
+        def _age_restricted(video_url, into):
+            raise RuntimeError("ERROR: [youtube] dQw4w9WgXcQ: Sign in to confirm your age. This video may be inappropriate")
+
+        monkeypatch.setattr(transcription_service, "_download_audio", _age_restricted)
+
+        with pytest.raises(transcription_service.WhisperGaveNothing):
             await transcription_service.transcribe_youtube_video("https://www.youtube.com/watch?v=x")
 
     async def test_when_it_fails(self, monkeypatch):
@@ -182,13 +195,13 @@ class TestWhisperSaysWhyItGaveNothing:
         until = datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)
 
         async def _refused(video_id):
-            raise youtube_transcript.CaptionsRefused("refused", until=until)
+            raise youtube_transcript.YouTubeRefused("refused", until=until)
 
         monkeypatch.setattr(youtube_transcript, "fetch_captions", _refused)
         youtube["whisper"] = (_segments(1), Decimal("0.006"))
 
         with caplog.at_level(logging.INFO, logger=youtube_transcript.__name__):
-            with pytest.raises(youtube_transcript.CaptionsRefused):
+            with pytest.raises(youtube_transcript.YouTubeRefused):
                 await _messages()
         assert youtube["whisper_calls"] == 0
         assert "No transcript available" not in caplog.text

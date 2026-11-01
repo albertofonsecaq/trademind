@@ -20,6 +20,7 @@ from app.models.admin_audit_log import AdminAuditLog
 from app.models.ask_record import AskRecord
 from app.models.analysis_run import AnalysisRun
 from app.models.failed_message import FailedMessage
+from app.models.platform_refusal import PlatformRefusal
 
 __all__ = [
     "User", "Workspace", "WorkspaceMember", "Subscription", "UsageEvent",
@@ -27,6 +28,5 @@ __all__ = [
     "EvidenceItem", "EvidenceImage", "TradeIdea", "EmbeddingRow",
     "StrategyCard", "PlanItem", "OutcomeCheck",
     "BrokerOrder", "JournalEntry", "JournalOutcome",
-    "AdminAuditLog", "AskRecord", "AnalysisRun", "FailedMessage",
+    "AdminAuditLog", "AskRecord", "AnalysisRun", "FailedMessage", "PlatformRefusal",
 ]
-from app.models.platform_refusal import PlatformRefusal

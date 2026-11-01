@@ -197,7 +197,7 @@ class YouTubeConnector(BaseConnector):
         )
 
     async def _transcript(self, video: dict) -> list[RawMessage]:
-        """The video's transcript chunks; CaptionsRefused while YouTube refuses them."""
+        """The video's transcript chunks; YouTubeRefused while YouTube refuses them."""
         return await youtube_transcript.video_transcript_messages(
             video["video_id"], **self._transcript_fields(video)
         )
