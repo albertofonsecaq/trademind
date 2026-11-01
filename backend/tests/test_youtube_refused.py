@@ -44,7 +44,11 @@ def youtube(monkeypatch):
             raise youtube_transcript.NoTranscript(video_id, "Whisper produced nothing")
         return [RawMessage(stable_id=f"youtube:{video_id}:full", text="transcript", content_type="video_transcript", **fields)]
 
+    async def _video(video_id):
+        return next((v for v in WINDOW if v["video_id"] == video_id), None)
+
     monkeypatch.setattr(c, "_get_videos", _videos)
+    monkeypatch.setattr(c, "_get_video", _video)
     monkeypatch.setattr(youtube_transcript, "video_transcript_messages", _transcript)
     state["connector"] = c
     return state

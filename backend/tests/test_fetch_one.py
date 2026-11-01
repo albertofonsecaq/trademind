@@ -113,7 +113,11 @@ def youtube(monkeypatch):
             content_type="video_transcript",
         )
 
+    async def _video(video_id):
+        return next((v for v in WINDOW if v["video_id"] == video_id), None)
+
     monkeypatch.setattr(c, "_get_videos", _videos)
+    monkeypatch.setattr(c, "_get_video", _video)
     monkeypatch.setattr(c, "_transcript", _chunks)
     return c
 
