@@ -328,7 +328,7 @@ async def list_sources(
         .group_by(FailedMessage.source_config_id)
     )
     failed = {source_id: tuple(rest) for source_id, *rest in counts.all()}
-    stuck = await _stuck_per_source(db, workspace_id)
+    stuck = await failed_message_service.stuck_per_source(db, workspace_id)
     listed = []
     for source in sources:
         retrying, waiting_n, given_up = failed.get(source.id, (0, 0, 0))
@@ -341,32 +341,6 @@ async def list_sources(
             }
         ))
     return listed
-
-
-async def _stuck_per_source(db: AsyncSession, workspace_id: uuid.UUID) -> dict[uuid.UUID, int]:
-    """
-    How many of each source's waiting messages are stuck rather than merely
-    waiting (#141).
-
-    Counted in Python, by `failed_message_service.is_stuck`, so that what
-    "stuck" means is read in the one place it is written rather than restated
-    as SQL here. The query narrows to the rows that rule could possibly say
-    yes to — waiting, with no attempt counted — which is the backlog one
-    platform block is holding up: tens of rows, not a workspace's history.
-    """
-    rows = await db.execute(
-        select(FailedMessage).where(
-            FailedMessage.workspace_id == workspace_id,
-            FailedMessage.given_up_at.is_(None),
-            FailedMessage.attempts == 0,
-            FailedMessage.retry_after > now_utc(),
-        )
-    )
-    counts: dict[uuid.UUID, int] = {}
-    for row in rows.scalars():
-        if failed_message_service.is_stuck(row):
-            counts[row.source_config_id] = counts.get(row.source_config_id, 0) + 1
-    return counts
 
 
 async def _source_in_workspace(db: AsyncSession, workspace_id: uuid.UUID, source_id: uuid.UUID) -> None:
@@ -436,9 +410,12 @@ async def list_failed_messages(
         .where(FailedMessage.source_config_id == source_id)
         .order_by(FailedMessage.last_failed_at.desc(), FailedMessage.stable_id)
     )
+    # The same cool-down for every row: the rule measures a wait against the
+    # one in force, and asking once is what the whole list is shown against.
+    cooldown = await failed_message_service.cooldown_in_force()
     return [
         FailedMessageOut.model_validate(row).model_copy(
-            update={"stuck": failed_message_service.is_stuck(row)}
+            update={"stuck": failed_message_service.is_stuck(row, cooldown=cooldown)}
         )
         for row in rows.scalars()
     ]

@@ -18,8 +18,9 @@ from app.core.clock import now_utc
 from app.core.config import settings
 from app.core.llm_errors import safe_failure_summary
 from app.core.content_unavailable import ContentUnavailable
-from app.core.platform_refusal import PlatformRefused
+from app.core.platform_refusal import PlatformRefused, cooldown_length
 from app.models.failed_message import MAX_ATTEMPTS, FailedMessage
+from app.services import refusal_store
 
 # A database error carries its whole statement and parameters — 6 KB of junk
 # for one of #94's links — and a person needs only the start of it.
@@ -191,14 +192,15 @@ def _whose_turn(row: FailedMessage) -> tuple:
     The least recently attempted message goes first, and one never attempted
     before any that has been (#138).
 
-    Under a block only one request a cool-down reaches the platform — the one
-    at the front of this queue — and it earns the next block, so everything
-    behind it is refused by the pre-check without being asked for. Ordered by
+    While a platform is refusing us only one request a cool-down reaches it —
+    the one at the front of this queue — and that request earns the next
+    cool-down, so everything behind it is refused by the pre-check without
+    being asked for. Ordered by
     first failure, that front never moved: nine poll ticks over twenty hours
     spent 15 refusals on two videos and ingested nothing, and the video first
     failing on 2026-11-04 was still taking the turn a week later. Ordered by
-    when a message was last attempted, the turn rotates, so a block costs each
-    message a delay instead of costing the backlog everything.
+    when a message was last attempted, the turn rotates, so a run of refusals
+    costs each message a delay instead of costing the backlog everything.
 
     A refusal does not count an attempt (ADR 0007), so `attempts == 0` is a
     message nothing is yet held against; it goes before one whose own attempts
@@ -209,9 +211,30 @@ def _whose_turn(row: FailedMessage) -> tuple:
     return (row.attempts > 0, row.last_failed_at, row.stable_id)
 
 
-def is_stuck(row: FailedMessage, *, longest_cooldown: timedelta | None = None) -> bool:
+async def cooldown_in_force() -> timedelta:
     """
-    Whether a message is *stuck* rather than merely waiting (#141).
+    How long the cool-down a refusal is being waited out under lasts (#140,
+    ADR 0010) — the measure `is_stuck` holds a message's wait against.
+
+    It is the ladder's current rung: the base doubled once for each refusal in
+    a row recorded beside it, which is the one thing that remembers them. With
+    nothing recorded, or the count back at 0 because the platform answered us,
+    it is the base — the shortest any single cool-down can be.
+
+    YouTube's, because it is the only platform that refuses us today (ADR 0007).
+    """
+    refused = await refusal_store.current(refusal_store.YOUTUBE)
+    return cooldown_length(
+        refused.consecutive if refused is not None else 0,
+        base=timedelta(minutes=settings.YOUTUBE_REFUSAL_COOLDOWN_MINUTES),
+        ceiling=timedelta(minutes=settings.YOUTUBE_REFUSAL_COOLDOWN_MAX_MINUTES),
+    )
+
+
+def is_stuck(row: FailedMessage, *, cooldown: timedelta) -> bool:
+    """
+    Whether a message is *stuck* rather than merely waiting (#141), given how
+    long the cool-down now in force lasts.
 
     A waiting message is one not retried before a time still ahead: a video
     whose captions may come later, or one held back by something that is not
@@ -224,39 +247,73 @@ def is_stuck(row: FailedMessage, *, longest_cooldown: timedelta | None = None) -
 
         it is waiting, no attempt has ever been counted against it, and the
         whole of its wait — from its first failure to the end of the wait it
-        is in now — is longer than any one cool-down can last.
+        is in now — is longer than the cool-down holding it, so more than one
+        cool-down has held it.
 
-    The last clause is what tells the two apart, and why it is not a fixed
-    hour. A cool-down grows with each refusal in a row, up to a configured
-    ceiling (#140, ADR 0010), so "longer than an hour" says nothing; but no
-    single cool-down can outlast that ceiling, so a wait that does has been
-    served by more than one of them. A message that first failed inside the
-    cool-down it is waiting out is never counted, however long that one
-    cool-down is. With the default ladder, 60 → 1440 minutes, a message held
-    by a continuing block reads as stuck after about fifteen hours of it.
+    The last clause is what tells the two apart. A message first refused now
+    waits exactly one cool-down: its first failure and that wait's start are
+    the same moment, so its whole wait is that one wait's length and no more.
+    One whose wait reaches further back than the wait it is in was already
+    waiting when this one began, which takes a second cool-down. That is the
+    spec's words — it has sat across more than one — and not a count of waits,
+    which nothing records.
 
     `attempts == 0` is the rest of the state ADR 0007 creates. A message whose
     own attempts have failed is spending its three chances and will be given
     up by the third; one no attempt is counted against is spending nothing, so
     nothing will ever give it up and nothing it does will move it.
 
-    Two failures count no attempt, and both belong here: a platform refusing
-    us (ADR 0007) and our own tooling being stale (#139, ADR 0011). Neither is
-    the message's, neither ends by itself, and a stale tool waits an hour at a
-    time — well inside the ceiling — so a wait that outlasts the ceiling has
-    spanned several of those too. What is holding a message is in the reason it
-    shows; that it is held at all is what this says.
+    What it cannot know, and so does not claim:
 
-    The ceiling is YouTube's: it is the only platform that refuses us today
-    (ADR 0007), and a wait recorded by anything else is not a cool-down.
+    - **Which kind of wait holds this message.** Two failures count no
+      attempt, and both belong here: a platform refusing us (ADR 0007) and our
+      own tooling being stale (#139, ADR 0011). A stale tool waits a flat hour
+      at a time, which is the base or less, so while refusals have escalated
+      the wait in force, a message waiting on our tooling is measured against
+      the longer of the two and reads as stuck later than it is. It says what
+      is holding it in its reason either way; that it is held at all is what
+      this answers.
+    - **Which cool-down was in force when the wait it is in was recorded.**
+      Only the one in force now is recorded. A request the platform has
+      answered since returns the count to the base (ADR 0010), so a message
+      still waiting out a longer wait earned before that answer is measured
+      against the base and can read as stuck on its first cool-down. The run
+      of refusals that earned the longer wait did happen; this message may not
+      have been there for all of it.
     """
     if row.given_up_at is not None or row.attempts > 0:
         return False
     if row.retry_after is None or row.retry_after <= now_utc():
         # Its turn has come: the next fetch retries it, so it is not waiting.
         return False
-    ceiling = longest_cooldown or timedelta(minutes=settings.YOUTUBE_REFUSAL_COOLDOWN_MAX_MINUTES)
-    return row.retry_after - row.first_failed_at > ceiling
+    return row.retry_after - row.first_failed_at > cooldown
+
+
+async def stuck_per_source(db: AsyncSession, workspace_id: uuid.UUID) -> dict[uuid.UUID, int]:
+    """
+    How many of each source's waiting messages are stuck rather than merely
+    waiting (#141), for the sources list.
+
+    Here beside the rule it applies, and counted in Python, so that what
+    "stuck" means is read where it is written rather than restated as SQL. The
+    query narrows to the rows the rule could possibly say yes to — waiting,
+    with no attempt counted — which is the backlog one platform's refusals are
+    holding up: tens of rows, not a workspace's history.
+    """
+    cooldown = await cooldown_in_force()
+    rows = await db.execute(
+        select(FailedMessage).where(
+            FailedMessage.workspace_id == workspace_id,
+            FailedMessage.given_up_at.is_(None),
+            FailedMessage.attempts == 0,
+            FailedMessage.retry_after > now_utc(),
+        )
+    )
+    counts: dict[uuid.UUID, int] = {}
+    for row in rows.scalars():
+        if is_stuck(row, cooldown=cooldown):
+            counts[row.source_config_id] = counts.get(row.source_config_id, 0) + 1
+    return counts
 
 
 async def _find(db: AsyncSession, source_config_id: uuid.UUID, stable_id: str) -> FailedMessage | None:
@@ -278,11 +335,9 @@ def _can_never_succeed(exc: BaseException) -> bool:
     """
     Whether no later attempt could get this content, so it is given up now.
 
-    Only a connector's own verdict says so. A refusal never does, whatever the
-    platform said: it is waited out, not given up (ADR 0007, ADR 0009).
+    Only a connector's own verdict says so, and a refusal's is no: it is
+    waited out, not given up, whatever the platform said (ADR 0007, ADR 0009).
     """
-    if isinstance(exc, PlatformRefused):
-        return False
     return isinstance(exc, ContentUnavailable) and exc.can_never_succeed()
 
 

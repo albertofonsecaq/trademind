@@ -23,12 +23,13 @@ from sqlalchemy import select
 from app.api import sources as sources_api
 from app.connectors.base import RawMessage
 from app.core.clock import now_utc
-from app.core.platform_refusal import PlatformRefused
+from app.core.config import settings
+from app.core.platform_refusal import Cooldown, PlatformRefused
 from app.services.youtube_transcript import ExtractorOutOfDate, NeverTranscribable, NoTranscript
 from app.models.failed_message import FailedMessage
 from app.models.source_config import SourceConfig
-from app.services import failed_message_service, ingestion_pipeline
-from tests.conftest import FakeSession, make_source, make_workspace
+from app.services import failed_message_service, ingestion_pipeline, refusal_store
+from tests.conftest import FakeSession, fake_refusal_store, make_source, make_workspace
 
 _AT = datetime(2026, 10, 25, 21, 0, tzinfo=timezone.utc)
 
@@ -757,6 +758,7 @@ class TestStoringAPartOfAMessage:
 
 # ── a stuck message (#141) ────────────────────────────────────────────────────
 _STUCK_NOW = datetime(2026, 11, 11, 12, 0, tzinfo=timezone.utc)
+HOUR = timedelta(hours=1)
 
 
 def _waiting(
@@ -793,47 +795,86 @@ class TestAStuckMessage:
     def _now(self, monkeypatch):
         monkeypatch.setattr(failed_message_service, "now_utc", lambda: _STUCK_NOW)
 
-    def test_has_waited_longer_than_one_cool_down_could_last_with_no_attempt_counted(self):
-        row = _waiting(waiting_since=timedelta(days=7), until=timedelta(hours=4))
+    def test_has_waited_longer_than_the_cool_down_holding_it_with_no_attempt_counted(self):
+        # Seven days of refusals, and the wait it is in is four hours of them:
+        # it was already waiting when that wait began. BlBoKnm9O_o's state.
+        row = _waiting(waiting_since=timedelta(days=7), until=4 * HOUR)
 
-        assert failed_message_service.is_stuck(row) is True
+        assert failed_message_service.is_stuck(row, cooldown=4 * HOUR) is True
 
     def test_waiting_out_the_cool_down_it_first_failed_in_is_merely_waiting(self):
-        # A day's cool-down, met the moment the message first failed: one block,
+        # Refused for the first time: the wait started when the message failed,
+        # so the whole of its wait is that one cool-down, however long it is,
         # and the page already says when it will be retried (#132).
-        row = _waiting(waiting_since=timedelta(minutes=1), until=timedelta(hours=23))
+        row = _waiting(waiting_since=timedelta(0), until=23 * HOUR)
 
-        assert failed_message_service.is_stuck(row) is False
+        assert failed_message_service.is_stuck(row, cooldown=23 * HOUR) is False
 
     def test_is_never_one_an_attempt_has_been_counted_against(self):
         # Three attempts is what gives a message up; this one is spending them.
-        row = _waiting(waiting_since=timedelta(days=7), until=timedelta(hours=4), attempts=1)
+        row = _waiting(waiting_since=timedelta(days=7), until=4 * HOUR, attempts=1)
 
-        assert failed_message_service.is_stuck(row) is False
+        assert failed_message_service.is_stuck(row, cooldown=4 * HOUR) is False
 
     def test_is_not_one_whose_wait_has_already_ended(self):
         row = _waiting(waiting_since=timedelta(days=7), until=-timedelta(minutes=1))
 
-        assert failed_message_service.is_stuck(row) is False
+        assert failed_message_service.is_stuck(row, cooldown=4 * HOUR) is False
 
     def test_is_not_one_that_has_been_given_up(self):
-        row = _waiting(waiting_since=timedelta(days=7), until=timedelta(hours=4), given_up=True)
+        row = _waiting(waiting_since=timedelta(days=7), until=4 * HOUR, given_up=True)
 
-        assert failed_message_service.is_stuck(row) is False
+        assert failed_message_service.is_stuck(row, cooldown=4 * HOUR) is False
 
     def test_is_one_waiting_on_our_own_stale_tooling_just_as_much(self):
         # #139, ADR 0011: an out-of-date yt-dlp counts no attempt either, and
-        # waits an hour at a time, so a day of it is many waits and no progress.
-        row = _waiting(waiting_since=timedelta(days=2), until=timedelta(hours=1))
+        # waits an hour at a time, so two days of it is many waits and no
+        # progress — which the ladder's ceiling of a day would not have said.
+        row = _waiting(waiting_since=timedelta(days=2), until=HOUR)
         row.error = "Video sW1axKLV-t4 is waiting for an up-to-date yt-dlp: ..."
 
-        assert failed_message_service.is_stuck(row) is True
+        assert failed_message_service.is_stuck(row, cooldown=HOUR) is True
 
-    def test_is_measured_against_the_longest_cool_down_the_ladder_allows(self):
-        row = _waiting(waiting_since=timedelta(hours=3), until=timedelta(hours=1))
+    def test_is_measured_against_the_cool_down_in_force_and_not_the_ceiling(self):
+        # The deviation #141 was fixed for: against the ceiling a message held
+        # by hour-long waits reads as stuck only after about twenty-four of
+        # them, where the rule is more than one.
+        row = _waiting(waiting_since=timedelta(hours=3), until=HOUR)
 
-        assert failed_message_service.is_stuck(row, longest_cooldown=timedelta(days=1)) is False
-        assert failed_message_service.is_stuck(row, longest_cooldown=timedelta(hours=2)) is True
+        assert failed_message_service.is_stuck(row, cooldown=HOUR) is True
+        assert failed_message_service.is_stuck(row, cooldown=timedelta(days=1)) is False
+
+
+class TestTheCoolDownAWaitIsMeasuredAgainst:
+    """
+    #141: the length of the wait in force, which is what "more than one
+    cool-down" is counted against — not the ceiling the ladder tops out at.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _ladder(self, monkeypatch):
+        monkeypatch.setattr(settings, "YOUTUBE_REFUSAL_COOLDOWN_MINUTES", 60)
+        monkeypatch.setattr(settings, "YOUTUBE_REFUSAL_COOLDOWN_MAX_MINUTES", 1440)
+        return fake_refusal_store(monkeypatch, now=lambda: _STUCK_NOW)
+
+    async def test_is_the_base_while_nothing_has_refused_us(self, _ladder):
+        assert await failed_message_service.cooldown_in_force() == HOUR
+
+    async def test_is_the_rung_the_refusals_in_a_row_have_reached(self, _ladder):
+        _ladder[refusal_store.YOUTUBE] = Cooldown(until=_STUCK_NOW + HOUR, consecutive=3)
+
+        assert await failed_message_service.cooldown_in_force() == 4 * HOUR
+
+    async def test_is_the_base_again_once_the_platform_has_answered_us(self, _ladder):
+        # `consecutive` 0 is what a request YouTube answered leaves (ADR 0010).
+        _ladder[refusal_store.YOUTUBE] = Cooldown(until=_STUCK_NOW + HOUR, consecutive=0)
+
+        assert await failed_message_service.cooldown_in_force() == HOUR
+
+    async def test_never_passes_the_ceiling(self, _ladder):
+        _ladder[refusal_store.YOUTUBE] = Cooldown(until=_STUCK_NOW + HOUR, consecutive=17)
+
+        assert await failed_message_service.cooldown_in_force() == timedelta(days=1)
 
 
 class TestASourcesFailedMessageList:
@@ -844,12 +885,17 @@ class TestASourcesFailedMessageList:
 
     async def test_says_of_each_waiting_message_whether_it_is_stuck(self, monkeypatch):
         monkeypatch.setattr(failed_message_service, "now_utc", lambda: _STUCK_NOW)
+        monkeypatch.setattr(settings, "YOUTUBE_REFUSAL_COOLDOWN_MINUTES", 60)
+        # Three refusals in a row: a four-hour wait is the one in force, and
+        # what each message's whole wait is measured against (#140, ADR 0010).
+        recorded = fake_refusal_store(monkeypatch, now=lambda: _STUCK_NOW)
+        recorded[refusal_store.YOUTUBE] = Cooldown(until=_STUCK_NOW + 4 * HOUR, consecutive=3)
         source_id = uuid.uuid4()
         db = FakeSession(rows={
             SourceConfig: source_id,
             FailedMessage: [
-                _waiting(waiting_since=timedelta(days=7), until=timedelta(hours=4), stable_id="youtube:stuck"),
-                _waiting(waiting_since=timedelta(minutes=1), until=timedelta(hours=1), stable_id="youtube:waiting"),
+                _waiting(waiting_since=timedelta(days=7), until=4 * HOUR, stable_id="youtube:stuck"),
+                _waiting(waiting_since=timedelta(0), until=4 * HOUR, stable_id="youtube:waiting"),
             ],
         })
 

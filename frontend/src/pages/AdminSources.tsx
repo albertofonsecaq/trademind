@@ -246,6 +246,9 @@ function WorkspaceIngestion({ workspace, busy, error, onToggle }: {
 // where those messages are kept in sight (#96, ADR 0005).
 function FailedBadges({ source }: { source: Source }) {
   const { t } = useTranslation();
+  // A stuck message is one of the waiting, so the ordinary waits are what is
+  // left of them (#141).
+  const merelyWaiting = source.failed_waiting - source.failed_stuck;
   return (
     <>
       {source.failed_retrying > 0 && (
@@ -255,9 +258,9 @@ function FailedBadges({ source }: { source: Source }) {
       )}
       {/* The waiting badge counts the ordinary waits only: a stuck message is
           one of the waiting, and saying so twice would read as two messages. */}
-      {source.failed_waiting - source.failed_stuck > 0 && (
+      {merelyWaiting > 0 && (
         <span style={{ ...pill, background: "#eef2f7", color: "#4a5a70", border: "1px solid #c9d3e0" }}>
-          {t("sources.failedWaiting", { count: source.failed_waiting - source.failed_stuck })}
+          {t("sources.failedWaiting", { count: merelyWaiting })}
         </span>
       )}
       {source.failed_stuck > 0 && (
