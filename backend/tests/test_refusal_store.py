@@ -94,7 +94,7 @@ class TestTheRefusalsInARow:
 
         assert await store.current("youtube") is None
 
-    async def test_the_block_starts_again_at_the_base_after_one(self, store, monkeypatch):
+    async def test_a_run_starts_again_at_the_base_after_one(self, store, monkeypatch):
         await _refuse(store)
         monkeypatch.setattr(store, "now_utc", lambda: _TEN)
         await _refuse(store)
@@ -102,3 +102,28 @@ class TestTheRefusalsInARow:
 
         monkeypatch.setattr(store, "now_utc", lambda: _TEN + 3 * HOUR)
         assert await _refuse(store) == Cooldown(until=_TEN + 4 * HOUR, consecutive=1)
+
+    async def test_a_run_long_over_is_forgotten_by_the_row_and_not_only_the_arithmetic(
+        self, store, monkeypatch
+    ):
+        """
+        The count written is the one `escalate` worked out, not the greater of
+        it and what the row held.
+
+        Kept at the greater, a refusal arriving long after the last wait ended
+        waited the base — `escalate` says it starts a run of its own — while
+        the row went on saying the old count, so the reason and the log said
+        "N in a row" for a wait of an hour, and the next refusal doubled from
+        N and landed near the ceiling.
+        """
+        await _refuse(store)
+        monkeypatch.setattr(store, "now_utc", lambda: _TEN)
+        await _refuse(store)  # two in a row, a two-hour wait ending at noon
+
+        # Nothing asked for a day: whatever was refusing us is not read as
+        # going on (ADR 0010), so this is the first refusal of a new run.
+        monkeypatch.setattr(store, "now_utc", lambda: _TEN + DAY)
+        recorded = await _refuse(store)
+
+        assert recorded == Cooldown(until=_TEN + DAY + HOUR, consecutive=1)
+        assert await store.current("youtube") == recorded

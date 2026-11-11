@@ -639,8 +639,9 @@ def fake_refusal_store(monkeypatch, now=None) -> dict:
 
     Only the storage is faked. How long a refusal waits is the real `escalate`
     (#140), so a test that earns a longer wait earns the one the store would
-    give it, and a neither-shorter-nor-fewer write is kept here too. `now` is
-    the test's clock, for tests that move time by hand.
+    give it, and the row's own write rules are kept here too — the later end
+    holds, and the count earned is the count kept. `now` is the test's clock,
+    for tests that move time by hand.
     """
     from dataclasses import replace
 
@@ -658,9 +659,11 @@ def fake_refusal_store(monkeypatch, now=None) -> dict:
         was = recorded.get(platform)
         wanted = platform_refusal.escalate(was, now=clock(), base=base, ceiling=ceiling)
         if was is not None:
+            # As the row is written: the later of two ends holds, and the
+            # count earned is written as it stands, so a run of refusals that
+            # has been forgotten is not carried on the row either (#140).
             wanted = platform_refusal.Cooldown(
-                until=max(was.until, wanted.until),
-                consecutive=max(was.consecutive, wanted.consecutive),
+                until=max(was.until, wanted.until), consecutive=wanted.consecutive
             )
         recorded[platform] = wanted
         return wanted

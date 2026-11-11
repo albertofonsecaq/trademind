@@ -50,8 +50,18 @@ async def refuse(
 ) -> Cooldown:
     """
     Record that the platform has refused us, and return the cool-down it now
-    has: never shorter than one already recorded, and never fewer refusals in
-    a row, since two fetches refused at the same moment each record one.
+    has: never ending sooner than one already recorded, since two fetches
+    refused at the same moment each record one.
+
+    How many refusals in a row is `escalate`'s answer and is written as it
+    stands, because a refusal arriving long after the last wait ended starts a
+    run of its own at the base (ADR 0010). Kept at the greater of the count
+    held and the count earned, the row would say "N in a row" while an hour
+    was being waited, and the next refusal would double from N and land near
+    the ceiling. Two refusals recorded close together read the same row, so
+    each earns the same count and the higher still holds: it is `until` that
+    needs the greater of the two, since the later of two ends is the one in
+    force.
 
     Reading the row before writing it means two such fetches can compute the
     same escalation and record one refusal between them, as ADR 0009 already
@@ -71,9 +81,7 @@ async def refuse(
                 "until": func.greatest(PlatformRefusal.until, stmt.excluded.until),
                 "reason": stmt.excluded.reason,
                 "refused_at": func.now(),
-                "consecutive_refusals": func.greatest(
-                    PlatformRefusal.consecutive_refusals, stmt.excluded.consecutive_refusals
-                ),
+                "consecutive_refusals": stmt.excluded.consecutive_refusals,
             },
         ).returning(PlatformRefusal.until, PlatformRefusal.consecutive_refusals)
         recorded = (await db.execute(stmt)).one()
@@ -88,8 +96,8 @@ async def let_through(platform: str) -> None:
 
     The row stays, with when it last refused us and why, for whoever looks. Of
     a success and a refusal racing here, the success can be the later write and
-    cost the block one doubling; it cannot shorten the wait in force, which is
-    `until` and is not touched.
+    cost the run of refusals one doubling; it cannot shorten the wait in force,
+    which is `until` and is not touched.
     """
     async with AsyncSessionLocal() as db:
         await db.execute(
