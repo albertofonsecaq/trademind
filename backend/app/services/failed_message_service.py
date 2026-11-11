@@ -7,6 +7,7 @@ pipeline's job, which calls these as it goes.
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -14,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.connectors.base import RawMessage
 from app.core.clock import now_utc
+from app.core.config import settings
 from app.core.llm_errors import safe_failure_summary
 from app.core.content_unavailable import ContentUnavailable
 from app.core.platform_refusal import PlatformRefused
@@ -197,6 +199,48 @@ def _whose_turn(row: FailedMessage) -> tuple:
     places between ticks without one of them having been attempted.
     """
     return (row.attempts > 0, row.last_failed_at, row.stable_id)
+
+
+def is_stuck(row: FailedMessage, *, longest_cooldown: timedelta | None = None) -> bool:
+    """
+    Whether a message is *stuck* rather than merely waiting (#141).
+
+    A waiting message is one not retried before a time still ahead: a video
+    whose captions may come later, or one a platform refusing us is holding
+    back. The second kind reads like the first and is not the same thing at
+    all — a refusal counts no attempt (ADR 0007), so nothing ever gives such a
+    message up, and `BlBoKnm9O_o` was shown as an ordinary wait for seven days.
+
+    This is the one place that rule is written, and the rule is:
+
+        it is waiting, no attempt has ever been counted against it, and the
+        whole of its wait — from its first failure to the end of the wait it
+        is in now — is longer than any one cool-down can last.
+
+    The last clause is what tells the two apart, and why it is not a fixed
+    hour. A cool-down grows with each refusal in a row, up to a configured
+    ceiling (#140, ADR 0010), so "longer than an hour" says nothing; but no
+    single cool-down can outlast that ceiling, so a wait that does has been
+    served by more than one of them. A message that first failed inside the
+    cool-down it is waiting out is never counted, however long that one
+    cool-down is. With the default ladder, 60 → 1440 minutes, a message held
+    by a continuing block reads as stuck after about fifteen hours of it.
+
+    `attempts == 0` is the rest of the state ADR 0007 creates. A message whose
+    own attempts have failed is spending its three chances and will be given
+    up by the third; one no attempt is counted against is spending nothing,
+    and only the platform letting us through will move it.
+
+    The ceiling is YouTube's: it is the only platform that refuses us today
+    (ADR 0007), and a wait recorded by anything else is not a cool-down.
+    """
+    if row.given_up_at is not None or row.attempts > 0:
+        return False
+    if row.retry_after is None or row.retry_after <= now_utc():
+        # Its turn has come: the next fetch retries it, so it is not waiting.
+        return False
+    ceiling = longest_cooldown or timedelta(minutes=settings.YOUTUBE_REFUSAL_COOLDOWN_MAX_MINUTES)
+    return row.retry_after - row.first_failed_at > ceiling
 
 
 async def _find(db: AsyncSession, source_config_id: uuid.UUID, stable_id: str) -> FailedMessage | None:

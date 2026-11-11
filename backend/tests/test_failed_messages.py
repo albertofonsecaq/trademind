@@ -13,12 +13,14 @@ fault: it is neither recorded nor counted.
 import uuid
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import anthropic
 import httpx
 import pytest
 from sqlalchemy import select
 
+from app.api import sources as sources_api
 from app.connectors.base import RawMessage
 from app.core.clock import now_utc
 from app.core.platform_refusal import PlatformRefused
@@ -267,6 +269,24 @@ class TestAGivenUpMessageSentBack:
         await setup.fetch()
 
         assert setup.processed == ["telegram:chan:2"]
+        assert await setup.recorded() == []
+
+    async def test_a_sources_given_up_messages_sent_back_together_are_all_retried(self, setup, db_session):
+        """#141: the page sends a whole source's back after an outage, and the next fetch takes them."""
+        setup.channel.new = [2, 3]
+        for msg_id in (2, 3):
+            setup.failing[f"telegram:chan:{msg_id}"] = RuntimeError("relevance check timed out")
+        for _ in range(3):
+            await setup.fetch()
+            setup.channel.new = []
+        assert all(row.given_up_at is not None for row in await setup.recorded())
+
+        sent_back = await failed_message_service.send_back_given_up(db_session, setup.source.id)
+        setup.failing.clear()
+        await setup.fetch()
+
+        assert sent_back == 2
+        assert sorted(setup.processed) == ["telegram:chan:2", "telegram:chan:3"]
         assert await setup.recorded() == []
 
     async def test_that_fails_three_more_times_is_given_up_again_with_the_new_reason(self, setup, db_session):
@@ -624,3 +644,100 @@ class TestStoringAPartOfAMessage:
         await db_session.commit()
 
         assert len(await setup.recorded()) == 1
+
+
+# ── a stuck message (#141) ────────────────────────────────────────────────────
+_STUCK_NOW = datetime(2026, 11, 11, 12, 0, tzinfo=timezone.utc)
+
+
+def _waiting(
+    *,
+    waiting_since: timedelta,
+    until: timedelta,
+    attempts: int = 0,
+    given_up: bool = False,
+    stable_id: str = "youtube:BlBoKnm9O_o",
+) -> FailedMessage:
+    """A row as a refusal leaves it: first failed a while ago, not retried before `until`."""
+    first_failed_at = _STUCK_NOW - waiting_since
+    return FailedMessage(
+        id=uuid.uuid4(),
+        workspace_id=uuid.uuid4(),
+        source_config_id=uuid.uuid4(),
+        stable_id=stable_id,
+        error="YouTube is refusing caption requests",
+        attempts=attempts,
+        first_failed_at=first_failed_at,
+        last_failed_at=first_failed_at,
+        retry_after=_STUCK_NOW + until,
+        given_up_at=_STUCK_NOW if given_up else None,
+    )
+
+
+class TestAStuckMessage:
+    """
+    #141: a message that waits out one refusal after another reads exactly like
+    one that will go through in an hour, and nothing ever gives it up (ADR 0007).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _now(self, monkeypatch):
+        monkeypatch.setattr(failed_message_service, "now_utc", lambda: _STUCK_NOW)
+
+    def test_has_waited_longer_than_one_cool_down_could_last_with_no_attempt_counted(self):
+        row = _waiting(waiting_since=timedelta(days=7), until=timedelta(hours=4))
+
+        assert failed_message_service.is_stuck(row) is True
+
+    def test_waiting_out_the_cool_down_it_first_failed_in_is_merely_waiting(self):
+        # A day's cool-down, met the moment the message first failed: one block,
+        # and the page already says when it will be retried (#132).
+        row = _waiting(waiting_since=timedelta(minutes=1), until=timedelta(hours=23))
+
+        assert failed_message_service.is_stuck(row) is False
+
+    def test_is_never_one_an_attempt_has_been_counted_against(self):
+        # Three attempts is what gives a message up; this one is spending them.
+        row = _waiting(waiting_since=timedelta(days=7), until=timedelta(hours=4), attempts=1)
+
+        assert failed_message_service.is_stuck(row) is False
+
+    def test_is_not_one_whose_wait_has_already_ended(self):
+        row = _waiting(waiting_since=timedelta(days=7), until=-timedelta(minutes=1))
+
+        assert failed_message_service.is_stuck(row) is False
+
+    def test_is_not_one_that_has_been_given_up(self):
+        row = _waiting(waiting_since=timedelta(days=7), until=timedelta(hours=4), given_up=True)
+
+        assert failed_message_service.is_stuck(row) is False
+
+    def test_is_measured_against_the_longest_cool_down_the_ladder_allows(self):
+        row = _waiting(waiting_since=timedelta(hours=3), until=timedelta(hours=1))
+
+        assert failed_message_service.is_stuck(row, longest_cooldown=timedelta(days=1)) is False
+        assert failed_message_service.is_stuck(row, longest_cooldown=timedelta(hours=2)) is True
+
+
+class TestASourcesFailedMessageList:
+    """
+    #141: the page is told which messages are stuck, so the rule stays in the
+    one place it is written instead of being guessed at again in the frontend.
+    """
+
+    async def test_says_of_each_waiting_message_whether_it_is_stuck(self, monkeypatch):
+        monkeypatch.setattr(failed_message_service, "now_utc", lambda: _STUCK_NOW)
+        source_id = uuid.uuid4()
+        db = FakeSession(rows={
+            SourceConfig: source_id,
+            FailedMessage: [
+                _waiting(waiting_since=timedelta(days=7), until=timedelta(hours=4), stable_id="youtube:stuck"),
+                _waiting(waiting_since=timedelta(minutes=1), until=timedelta(hours=1), stable_id="youtube:waiting"),
+            ],
+        })
+
+        listed = await sources_api.list_failed_messages(
+            uuid.uuid4(), source_id, SimpleNamespace(id=uuid.uuid4()), db
+        )
+
+        assert {m.stable_id: m.stuck for m in listed} == {"youtube:stuck": True, "youtube:waiting": False}

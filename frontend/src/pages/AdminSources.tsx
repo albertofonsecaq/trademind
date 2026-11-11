@@ -15,11 +15,18 @@ type Source = {
   // Failed messages retried at the next fetch, waiting for a later retry (#132),
   // and given up (#96). Only the list carries them.
   failed_retrying: number; failed_waiting: number; failed_given_up: number;
+  // Those of the waiting whose wait is going nowhere (#141). A part of
+  // `failed_waiting`, so the badges subtract rather than add.
+  failed_stuck: number;
 };
 type FailedMessage = {
   id: string; stable_id: string; message_at: string | null; error: string; attempts: number;
   first_failed_at: string; last_failed_at: string; given_up_at: string | null;
   retry_after: string | null;   // not retried before this; null: at the next fetch
+  // Waiting across more than one cool-down with no attempt ever counted (#141).
+  // The backend decides: `failed_message_service.is_stuck` is the only place
+  // that rule is written, and reading it off the message keeps it that way.
+  stuck: boolean;
 };
 
 /** Not given up, and its next retry is still ahead: a refusal waited out, or a gap between retries. */
@@ -246,9 +253,16 @@ function FailedBadges({ source }: { source: Source }) {
           {t("sources.failedRetrying", { count: source.failed_retrying })}
         </span>
       )}
-      {source.failed_waiting > 0 && (
+      {/* The waiting badge counts the ordinary waits only: a stuck message is
+          one of the waiting, and saying so twice would read as two messages. */}
+      {source.failed_waiting - source.failed_stuck > 0 && (
         <span style={{ ...pill, background: "#eef2f7", color: "#4a5a70", border: "1px solid #c9d3e0" }}>
-          {t("sources.failedWaiting", { count: source.failed_waiting })}
+          {t("sources.failedWaiting", { count: source.failed_waiting - source.failed_stuck })}
+        </span>
+      )}
+      {source.failed_stuck > 0 && (
+        <span style={{ ...pill, background: "#f3e5f5", color: "#6a1b9a", border: "1px solid #d7bde2", fontWeight: 600 }}>
+          {t("sources.failedStuck", { count: source.failed_stuck })}
         </span>
       )}
       {source.failed_given_up > 0 && (
@@ -299,12 +313,18 @@ function FailedMessages({ workspaceId, sourceId, onChanged }: {
     }
   };
   const givenUp = (messages ?? []).filter((m) => m.given_up_at).length;
+  const stuck = (messages ?? []).filter((m) => m.stuck).length;
 
   if (loadFailed) return <p style={{ fontSize: "0.82rem", color: "#c0392b" }}>{t("sources.failedLoadError")}</p>;
   if (messages === null) return <p style={{ fontSize: "0.82rem", color: "#aaa" }}>{t("common.loading")}</p>;
   return (
     <div>
       <p style={{ fontSize: "0.8rem", color: "#888", margin: "0 0 0.6rem" }}>{t("sources.failedHint")}</p>
+      {stuck > 0 && (
+        <p style={{ fontSize: "0.8rem", color: "#6a1b9a", margin: "0 0 0.6rem" }}>
+          {t("sources.failedStuckHint", { count: stuck })}
+        </p>
+      )}
       {givenUp > 0 && (
         <button
           style={{ ...btn(false, false, sending !== null), marginBottom: "0.6rem" }}
@@ -322,9 +342,10 @@ function FailedMessages({ workspaceId, sourceId, onChanged }: {
       ) : messages.map((m) => (
         <div key={m.stable_id} style={{ padding: "0.45rem 0", borderBottom: "1px solid #f0f0f0", fontSize: "0.8rem" }}>
           <div style={{ display: "flex", gap: "0.6rem", alignItems: "center", flexWrap: "wrap" }}>
-            <span style={{ fontWeight: 700, color: m.given_up_at ? "#c0392b" : isWaiting(m) ? "#4a5a70" : "#e65100", minWidth: "80px" }}>
+            <span style={{ fontWeight: 700, color: m.given_up_at ? "#c0392b" : m.stuck ? "#6a1b9a" : isWaiting(m) ? "#4a5a70" : "#e65100", minWidth: "80px" }}>
               {m.given_up_at
                 ? t("sources.failedStatus.givenUp")
+                : m.stuck ? t("sources.failedStatus.stuck")
                 : isWaiting(m) ? t("sources.failedStatus.waiting") : t("sources.failedStatus.retrying")}
             </span>
             <span style={{ fontFamily: "monospace", color: "#555" }}>{m.stable_id}</span>
@@ -334,8 +355,15 @@ function FailedMessages({ workspaceId, sourceId, onChanged }: {
               </span>
             )}
             {isWaiting(m) && (
-              <span style={{ color: "#4a5a70" }}>
+              <span style={{ color: m.stuck ? "#6a1b9a" : "#4a5a70" }}>
                 {t("sources.failedRetryAfter", { when: new Date(m.retry_after!).toLocaleString() })}
+              </span>
+            )}
+            {/* That retry time is true and, alone, misleading: a stuck message
+                has been promised one like it since the day it first failed. */}
+            {m.stuck && (
+              <span style={{ color: "#6a1b9a" }}>
+                {t("sources.failedStuckSince", { when: new Date(m.first_failed_at).toLocaleString() })}
               </span>
             )}
             {/* A refusal counts no attempt: "0 attempts" would read as a failure that never was. */}

@@ -374,6 +374,11 @@
     "failedGivenUp_other": "{{count}} given up",
     "failedWaiting_one": "1 waiting",
     "failedWaiting_other": "{{count}} waiting",
+    "failedStuck_one": "1 stuck",
+    "failedStuck_other": "{{count}} stuck",
+    "failedStuckHint_one": "1 message here is stuck: it has been waiting across more than one cool-down and no attempt has ever been counted against it, because the platform keeps refusing us rather than answering about the message itself. Nothing gives such a message up and nothing here will move it — it goes through once the platform lets us back in.",
+    "failedStuckHint_other": "{{count}} messages here are stuck: they have been waiting across more than one cool-down and no attempt has ever been counted against them, because the platform keeps refusing us rather than answering about the messages themselves. Nothing gives such a message up and nothing here will move it — they go through once the platform lets us back in.",
+    "failedStuckSince": "waiting since {{when}}, never attempted",
     "failedRetryAfter": "retried after {{when}}",
     "failedPosted": "posted {{when}}",
     "failedAttempts_one": "1 attempt",
@@ -381,6 +386,7 @@
     "failedStatus": {
       "retrying": "Retrying",
       "waiting": "Waiting",
+      "stuck": "Stuck",
       "givenUp": "Given up"
     },
     "failedLoadError": "Could not load the failed messages. Try again in a moment.",
