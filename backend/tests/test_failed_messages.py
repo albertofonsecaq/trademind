@@ -20,6 +20,7 @@ import pytest
 from sqlalchemy import select
 
 from app.connectors.base import RawMessage
+from app.core.clock import now_utc
 from app.core.platform_refusal import PlatformRefused
 from app.services.youtube_transcript import NeverTranscribable, NoTranscript
 from app.models.failed_message import FailedMessage
@@ -461,6 +462,37 @@ class TestAPlatformRefusingIsWaitedOut:
         assert setup.channel.fetched_again == ["telegram:chan:1"]
         rows = await setup.recorded()
         assert [(r.attempts, r.retry_after) for r in rows] == [(0, _UNTIL + timedelta(hours=1))] * 2
+
+    async def test_each_cool_down_asks_for_a_different_message(self, setup, clock):
+        """
+        #138: the one request a cool-down allows goes to the message that has
+        waited longest for its turn, so a block delays the backlog instead of
+        spending every cool-down on the same message — which is what ordering
+        the queue by first failure did for seven days.
+        """
+        setup.channel.new = [1, 2, 3]
+        for n in (1, 2, 3):
+            setup.failing[f"telegram:chan:{n}"] = _refused()
+        await setup.fetch()
+        setup.channel.new = []
+        setup.failing.clear()
+        setup.channel.fetched_again.clear()
+
+        asked_per_cool_down = []
+        # Ahead of when the rows were recorded, as a live source's clock is:
+        # the block began hours before the cool-down that lifts now.
+        at = now_utc() + timedelta(hours=1)
+        for _ in range(3):
+            clock["at"] = at
+            refused_again = _refused_until(at + timedelta(hours=1))
+            setup.channel.unreachable = {n: refused_again for n in (1, 2, 3)}
+            await setup.fetch()
+            asked_per_cool_down.append(list(setup.channel.fetched_again))
+            setup.channel.fetched_again.clear()
+            at += timedelta(hours=1)
+
+        assert [len(asked) for asked in asked_per_cool_down] == [1, 1, 1]
+        assert len({asked[0] for asked in asked_per_cool_down}) == 3
 
     async def test_a_refusal_while_retrying_does_not_hold_up_an_ordinary_failure(self, setup, clock):
         setup.channel.new = [1, 2]

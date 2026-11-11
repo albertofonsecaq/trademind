@@ -764,7 +764,7 @@ async def _retry_failed_messages(
             # wait for the same end, without being asked (ADR 0007). A failure
             # of any other kind is retried as usual.
             failed += 1
-            await failed_message_service.count_attempt(db, row, refused)
+            await failed_message_service.wait_out(db, row, refused)
             continue
         try:
             msgs = await connector.fetch_again(row.stable_id)
