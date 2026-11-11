@@ -214,10 +214,11 @@ def is_stuck(row: FailedMessage, *, longest_cooldown: timedelta | None = None) -
     Whether a message is *stuck* rather than merely waiting (#141).
 
     A waiting message is one not retried before a time still ahead: a video
-    whose captions may come later, or one a platform refusing us is holding
-    back. The second kind reads like the first and is not the same thing at
-    all — a refusal counts no attempt (ADR 0007), so nothing ever gives such a
-    message up, and `BlBoKnm9O_o` was shown as an ordinary wait for seven days.
+    whose captions may come later, or one held back by something that is not
+    about the message at all. The second kind reads like the first and is not
+    the same thing — such a failure counts no attempt (ADR 0007), so nothing
+    ever gives the message up, and `BlBoKnm9O_o` was shown as an ordinary wait
+    for seven days.
 
     This is the one place that rule is written, and the rule is:
 
@@ -236,8 +237,15 @@ def is_stuck(row: FailedMessage, *, longest_cooldown: timedelta | None = None) -
 
     `attempts == 0` is the rest of the state ADR 0007 creates. A message whose
     own attempts have failed is spending its three chances and will be given
-    up by the third; one no attempt is counted against is spending nothing,
-    and only the platform letting us through will move it.
+    up by the third; one no attempt is counted against is spending nothing, so
+    nothing will ever give it up and nothing it does will move it.
+
+    Two failures count no attempt, and both belong here: a platform refusing
+    us (ADR 0007) and our own tooling being stale (#139, ADR 0011). Neither is
+    the message's, neither ends by itself, and a stale tool waits an hour at a
+    time — well inside the ceiling — so a wait that outlasts the ceiling has
+    spanned several of those too. What is holding a message is in the reason it
+    shows; that it is held at all is what this says.
 
     The ceiling is YouTube's: it is the only platform that refuses us today
     (ADR 0007), and a wait recorded by anything else is not a cool-down.

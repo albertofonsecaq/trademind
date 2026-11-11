@@ -821,6 +821,14 @@ class TestAStuckMessage:
 
         assert failed_message_service.is_stuck(row) is False
 
+    def test_is_one_waiting_on_our_own_stale_tooling_just_as_much(self):
+        # #139, ADR 0011: an out-of-date yt-dlp counts no attempt either, and
+        # waits an hour at a time, so a day of it is many waits and no progress.
+        row = _waiting(waiting_since=timedelta(days=2), until=timedelta(hours=1))
+        row.error = "Video sW1axKLV-t4 is waiting for an up-to-date yt-dlp: ..."
+
+        assert failed_message_service.is_stuck(row) is True
+
     def test_is_measured_against_the_longest_cool_down_the_ladder_allows(self):
         row = _waiting(waiting_since=timedelta(hours=3), until=timedelta(hours=1))
 
