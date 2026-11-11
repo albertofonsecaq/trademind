@@ -19,7 +19,7 @@ class ContentUnavailable(Exception):
     def can_never_succeed(self) -> bool:
         """
         Whether no attempt could ever get this content, so the message is given
-        up at once rather than retried (#137, ADR 0005).
+        up at once rather than retried (#137, ADR 0012).
 
         False unless a subclass knows better: a failure is retried by default,
         because the cost of retrying something hopeless is three attempts, and

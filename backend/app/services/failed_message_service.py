@@ -41,7 +41,7 @@ async def record_failure(db: AsyncSession, msg: RawMessage, exc: BaseException) 
     A platform's refusal is recorded without counting as an attempt: it was not
     the message's doing, and it is waited out rather than given up (ADR 0007).
     Nor is a failure of our own tooling, which waits for the fix (#139).
-    Content no attempt could ever get is given up here and then (#137).
+    Content no attempt could ever get is given up here and then (#137, ADR 0012).
     """
     row = await _find(db, msg.source_config_id, msg.stable_id)
     if row is None:
@@ -72,7 +72,7 @@ async def record_failure(db: AsyncSession, msg: RawMessage, exc: BaseException) 
 async def count_attempt(db: AsyncSession, row: FailedMessage, exc: BaseException) -> FailedMessage:
     """
     Another failed attempt at a recorded message; the third gives it up, and so
-    does the first that says no attempt could ever succeed (#137).
+    does the first that says no attempt could ever succeed (#137, ADR 0012).
 
     A platform's refusal does not count: the message waits until it ends. A
     failure of our own tooling does not count either, and waits as long as it
@@ -103,10 +103,11 @@ async def wait_out(db: AsyncSession, row: FailedMessage, refusal: PlatformRefuse
     another one (ADR 0007): nothing of it reached the platform.
 
     So `last_failed_at` is left alone. It is when the message was last
-    attempted, and that is what decides whose turn comes next (#138): stamped
-    here too, every waiting message would move back together on every tick and
-    the front of the queue would never change — which is how one video took
-    every cool-down's single request for seven days while the backlog waited.
+    attempted, and that is what decides whose turn comes next (#138, ADR
+    0013): stamped here too, every waiting message would move back together on
+    every tick and the front of the queue would never change — which is how one
+    video took every cool-down's single request for seven days while the
+    backlog waited.
     """
     row.error = _summary(refusal)
     row.retry_after = refusal.until
@@ -190,7 +191,7 @@ async def to_retry(db: AsyncSession, source_config_id: uuid.UUID) -> list[Failed
 def _whose_turn(row: FailedMessage) -> tuple:
     """
     The least recently attempted message goes first, and one never attempted
-    before any that has been (#138).
+    before any that has been (#138, ADR 0013).
 
     While a platform is refusing us only one request a cool-down reaches it —
     the one at the front of this queue — and that request earns the next
