@@ -83,6 +83,23 @@ async def count_attempt(db: AsyncSession, row: FailedMessage, exc: BaseException
     return row
 
 
+async def wait_out(db: AsyncSession, row: FailedMessage, refusal: PlatformRefused) -> FailedMessage:
+    """
+    A message that was never asked for waits for the end of a refusal met on
+    another one (ADR 0007): nothing of it reached the platform.
+
+    So `last_failed_at` is left alone. It is when the message was last
+    attempted, and that is what decides whose turn comes next (#138): stamped
+    here too, every waiting message would move back together on every tick and
+    the front of the queue would never change — which is how one video took
+    every cool-down's single request for seven days while the backlog waited.
+    """
+    row.error = _summary(refusal)
+    row.retry_after = refusal.until
+    await db.commit()
+    return row
+
+
 async def give_up(db: AsyncSession, row: FailedMessage, reason: str) -> None:
     """
     Stop retrying at once, without spending the attempts left: the reason
@@ -138,17 +155,45 @@ async def forget(db: AsyncSession, source_config_id: uuid.UUID, stable_id: str) 
 
 
 async def to_retry(db: AsyncSession, source_config_id: uuid.UUID) -> list[FailedMessage]:
-    """A source's failures still being retried and not waiting out a refusal, oldest first."""
+    """
+    A source's failures still being retried and not waiting out a refusal,
+    whose turn it is first.
+
+    Whose turn it is is decided here rather than in the query, because it is a
+    rule about the queue and is read — and tested — as one. The result is every
+    eligible row either way: there is no limit for an ordering to cut at.
+    """
     rows = await db.execute(
-        select(FailedMessage)
-        .where(
+        select(FailedMessage).where(
             FailedMessage.source_config_id == source_config_id,
             FailedMessage.given_up_at.is_(None),
             or_(FailedMessage.retry_after.is_(None), FailedMessage.retry_after <= now_utc()),
         )
-        .order_by(FailedMessage.first_failed_at, FailedMessage.stable_id)
     )
-    return list(rows.scalars())
+    return sorted(rows.scalars(), key=_whose_turn)
+
+
+def _whose_turn(row: FailedMessage) -> tuple:
+    """
+    The least recently attempted message goes first, and one never attempted
+    before any that has been (#138).
+
+    Under a block only one request a cool-down reaches the platform — the one
+    at the front of this queue — and it earns the next block, so everything
+    behind it is refused by the pre-check without being asked for. Ordered by
+    first failure, that front never moved: nine poll ticks over twenty hours
+    spent 15 refusals on two videos and ingested nothing, and the video first
+    failing on 2026-11-04 was still taking the turn a week later. Ordered by
+    when a message was last attempted, the turn rotates, so a block costs each
+    message a delay instead of costing the backlog everything.
+
+    A refusal does not count an attempt (ADR 0007), so `attempts == 0` is a
+    message nothing is yet held against; it goes before one whose own attempts
+    failed. `stable_id` is unique per source, so this is a total order: the
+    same state always produces the same queue, and two messages cannot swap
+    places between ticks without one of them having been attempted.
+    """
+    return (row.attempts > 0, row.last_failed_at, row.stable_id)
 
 
 async def _find(db: AsyncSession, source_config_id: uuid.UUID, stable_id: str) -> FailedMessage | None:
