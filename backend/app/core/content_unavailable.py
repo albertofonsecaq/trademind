@@ -26,3 +26,16 @@ class ContentUnavailable(Exception):
         the cost of giving up on something temporary is the content itself.
         """
         return False
+
+    def counts_an_attempt(self) -> bool:
+        """
+        Whether this failure is the message's own, so it spends one of the three
+        attempts it has (#139, ADR 0005).
+
+        True unless a subclass knows better. A platform refusing us does not
+        count (ADR 0007), and neither does our own tooling failing (ADR 0011):
+        a message whose attempts were spent on our bug is given up and has to be
+        sent back by hand, while one that waited is picked up by an ordinary
+        retry as soon as the bug is fixed.
+        """
+        return True

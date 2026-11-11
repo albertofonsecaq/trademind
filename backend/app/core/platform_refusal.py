@@ -23,6 +23,10 @@ class PlatformRefused(ContentUnavailable):
         super().__init__(message)
         self.until = until
 
+    def counts_an_attempt(self) -> bool:
+        """Never: the platform refused us, and the message was not at fault (ADR 0007)."""
+        return False
+
 
 @dataclass(frozen=True)
 class Cooldown:

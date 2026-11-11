@@ -123,6 +123,37 @@ class NeverTranscribable(ContentUnavailable):
         return True
 
 
+class ExtractorOutOfDate(ContentUnavailable):
+    """
+    Our yt-dlp can no longer read YouTube's player, so nothing can be
+    downloaded for Whisper until it is upgraded (#139).
+
+    Neither the video's failure nor the platform's: recorded as "Whisper
+    failed", it spent one of the video's three attempts, and a tool left stale
+    for three fetches gave up every video of the backlog it would have fetched
+    after an upgrade. So it counts no attempt — like a refusal (ADR 0007) — and
+    is not given up either, because the upgrade makes it work. The message
+    waits, saying what to run, and an ordinary retry picks it up afterwards
+    (ADR 0011).
+    """
+
+    # Long enough that a stale tool is not asked about every video on every
+    # poll tick — which for the 25 failures of one source is the flood ADR 0007
+    # was written about — and short enough that an upgrade is noticed the same
+    # hour, without anybody sending anything back.
+    WAIT = timedelta(hours=1)
+
+    def __init__(self, video_id: str, why: str):
+        super().__init__(f"Video {video_id} is waiting for an up-to-date yt-dlp: {why}")
+
+    def wait_after(self, attempts: int) -> timedelta | None:
+        # Whatever the attempts, because this failure spends none of them.
+        return self.WAIT
+
+    def counts_an_attempt(self) -> bool:
+        return False
+
+
 def _refusal(until: datetime) -> YouTubeRefused:
     # The day as well as the hour: a wait that escalates can outlast one (#140),
     # and this reason is what the source page shows for the messages it holds up.
@@ -232,6 +263,10 @@ async def _segments_for_video(video_id: str) -> tuple[list[dict], str]:
         never = youtube_refusal.never_transcribable(e)
         if never:
             raise NeverTranscribable(video_id, never) from e
+        # And whether it was our own tooling rather than the video at all (#139).
+        stale = youtube_refusal.extractor_out_of_date(e)
+        if stale:
+            raise ExtractorOutOfDate(video_id, stale) from e
         raise NoTranscript(video_id, str(e)) from e
     if result:
         segs, cost = result
@@ -255,8 +290,9 @@ async def video_transcript_messages(
     The video's transcript as `video_transcript` messages, one per chunk.
     NoTranscript when it has no captions and no Whisper result, or neither has
     any text (#126); NeverTranscribable when no attempt could produce one
-    (#137); YouTubeRefused when YouTube is refusing caption requests: the video
-    is waited for (#125).
+    (#137); ExtractorOutOfDate when our yt-dlp is what failed (#139);
+    YouTubeRefused when YouTube is refusing caption requests: the video is
+    waited for (#125).
 
     The caller says whose evidence this is; `metadata` is merged under the
     chunk's own fields. Whisper cost rides on the first message only — the
