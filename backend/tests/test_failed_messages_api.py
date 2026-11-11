@@ -25,7 +25,7 @@ _AT = datetime(2026, 10, 25, 21, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture(autouse=True)
-def cooldown_in_force(monkeypatch):
+def _cooldown_in_force(monkeypatch):
     """
     The cool-down a waiting message's wait is measured against (#141), with
     nothing refusing us: the base, an hour.

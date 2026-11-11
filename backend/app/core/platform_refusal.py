@@ -48,10 +48,10 @@ def cooldown_length(consecutive: int, *, base: timedelta, ceiling: timedelta) ->
     before it, never past the ceiling.
 
     Doubling is not about asking more politely. At one caption request an hour
-    we are not refused for volume, and waiting longer does not end a block any
-    sooner. What it buys is a wait as long as the platform has actually been
-    refusing us — so a block lasting days costs a day's wait, instead of the
-    same hour re-armed 17 times, which is what the log recorded between
+    we are not refused for volume, and waiting longer does not get the platform
+    to stop any sooner. What it buys is a wait as long as the platform has
+    actually been refusing us — so days of refusals cost a day's wait, instead
+    of the same hour re-armed 17 times, which is what the log recorded between
     2026-11-04 and 2026-11-11.
     """
     length = base
@@ -68,10 +68,10 @@ def escalate(
     """
     The cool-down a refusal met now earns, given the one recorded before it.
 
-    A refusal arriving while we were only just let back in is the same block
-    carrying on, and waits longer than the last one did. One arriving long
-    after the last wait ended is a block of its own and starts at the base, as
-    does the first after the platform answered us (`consecutive == 0`).
+    A refusal arriving while we were only just let back in is the same run of
+    refusals carrying on, and waits longer than the last one did. One arriving
+    long after the last wait ended is a run of its own and starts at the base,
+    as does the first after the platform answered us (`consecutive == 0`).
 
     "Only just" is the last wait's own length: the longer a platform has been
     refusing us, the longer a quiet spell has to be before we read it as over.
