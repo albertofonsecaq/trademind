@@ -170,6 +170,61 @@ class TestAVideoThatCanNeverBeTranscribed:
         assert raised.value.wait_after(2) == timedelta(hours=23)
 
 
+class TestAnExtractorThatNoLongerMatchesYouTube:
+    """
+    #139: a yt-dlp whose extractor YouTube has outgrown is our failure, not the
+    video's. It was wrapped as "Whisper failed" and spent one of the video's
+    three attempts, so a stale tool quietly gave up the backlog an upgrade
+    would have fetched.
+    """
+
+    # What the channel source met on sW1axKLV-t4.
+    _STALE = (
+        "Whisper failed: ERROR: [youtube] sW1axKLV-t4: Failed to extract any player response; "
+        "please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out "
+        "the appropriate issue template. Confirm you are on the latest version using yt-dlp -U"
+    )
+
+    @pytest.fixture
+    def whisper_said(self, youtube, monkeypatch):
+        def _said(error: str):
+            async def _whisper(video_url):
+                raise transcription_service.WhisperGaveNothing(error)
+
+            monkeypatch.setattr(transcription_service, "transcribe_youtube_video", _whisper)
+        return _said
+
+    async def test_costs_the_video_no_attempt_and_says_what_to_run(self, whisper_said):
+        whisper_said(self._STALE)
+
+        with pytest.raises(youtube_transcript.ExtractorOutOfDate) as raised:
+            await _messages()
+
+        assert not raised.value.counts_an_attempt()
+        assert "pip install -U yt-dlp" in str(raised.value)
+
+    async def test_is_waited_for_rather_than_given_up(self, whisper_said):
+        # It succeeds once the tool is refreshed, so giving it up (#137) would
+        # need a person to send it back by hand.
+        whisper_said(self._STALE)
+
+        with pytest.raises(youtube_transcript.ExtractorOutOfDate) as raised:
+            await _messages()
+
+        assert not raised.value.can_never_succeed()
+        assert raised.value.wait_after(1) == timedelta(hours=1)
+
+    async def test_holds_no_other_request_to_youtube_up(self, whisper_said, youtube):
+        # ADR 0009: our stale tool says nothing about YouTube, which is still
+        # serving captions to every other video of the source.
+        whisper_said(self._STALE)
+
+        with pytest.raises(youtube_transcript.ExtractorOutOfDate):
+            await _messages()
+
+        assert youtube["refusals"] == {}
+
+
 class TestYouTubeRefusingWhispersDownload:
     """#130: YouTube blocking the audio download is the same refusal as for captions."""
 

@@ -22,7 +22,7 @@ from sqlalchemy import select
 from app.connectors.base import RawMessage
 from app.core.clock import now_utc
 from app.core.platform_refusal import PlatformRefused
-from app.services.youtube_transcript import NeverTranscribable, NoTranscript
+from app.services.youtube_transcript import ExtractorOutOfDate, NeverTranscribable, NoTranscript
 from app.models.failed_message import FailedMessage
 from app.models.source_config import SourceConfig
 from app.services import failed_message_service, ingestion_pipeline
@@ -370,6 +370,66 @@ class TestAFailureNoAttemptCouldFix:
         assert "no audio" in row.error
 
 
+class TestAFailureOfOurOwnTooling:
+    """
+    #139: a stale yt-dlp is ours, not the video's. Its three attempts would be
+    spent on our bug and the backlog given up, so it spends none of them and
+    waits — and is not given up either, because an upgrade makes it work.
+    """
+
+    def _stale(self) -> ExtractorOutOfDate:
+        return ExtractorOutOfDate(
+            "sW1axKLV-t4", "our yt-dlp can no longer read YouTube's player. Refresh it with "
+            "`pip install -U yt-dlp`"
+        )
+
+    async def _recorded(self, exc: BaseException) -> FailedMessage:
+        db = FakeSession()
+        return await failed_message_service.record_failure(
+            db,
+            RawMessage(
+                stable_id="youtube:sW1axKLV-t4",
+                source_config_id=uuid.uuid4(),
+                workspace_id=uuid.uuid4(),
+                text=None,
+                author="A trader",
+                channel="UCBjArPvYiR2Uu2U1XlK4pRw",
+                timestamp=_AT,
+                source_type="youtube",
+                content_type="youtube_video",
+            ),
+            exc,
+        )
+
+    async def test_is_recorded_without_an_attempt_and_waits_with_the_command_to_fix_it(self):
+        row = await self._recorded(self._stale())
+
+        assert row.attempts == 0
+        assert row.given_up_at is None
+        assert row.retry_after is not None
+        assert "pip install -U yt-dlp" in row.error
+
+    async def test_spends_none_of_the_attempts_of_a_message_already_recorded(self):
+        db = FakeSession()
+        row = FailedMessage(stable_id="youtube:sW1axKLV-t4", attempts=2)
+
+        await failed_message_service.count_attempt(db, row, self._stale())
+
+        assert row.attempts == 2
+        assert row.given_up_at is None
+        assert row.retry_after is not None
+
+    async def test_leaves_its_turn_in_the_queue_behind_the_messages_not_yet_tried(self):
+        # #138: a failure that was attempted is stamped, so the rotation moves
+        # on instead of asking the same video every tick.
+        db = FakeSession()
+        row = FailedMessage(stable_id="youtube:sW1axKLV-t4", attempts=0, last_failed_at=None)
+
+        await failed_message_service.count_attempt(db, row, self._stale())
+
+        assert row.last_failed_at is not None
+
+
 _UNTIL = datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)
 
 
@@ -600,6 +660,55 @@ class TestAVideoThatCanNeverBeTranscribed:
         await setup.fetch()
 
         assert setup.channel.fetched_again == []
+
+
+@pytest.mark.db
+class TestAVideoOurOwnStaleToolingFailed:
+    """
+    #139: a yt-dlp YouTube has outgrown fails every video it is asked for. Read
+    as each video's own failure it gave up the whole backlog in three fetches;
+    counting nothing, the backlog is there to fetch once the tool is refreshed.
+    """
+
+    def _stale(self) -> ExtractorOutOfDate:
+        return ExtractorOutOfDate(
+            "v2", "our yt-dlp can no longer read YouTube's player. Refresh it with "
+            "`pip install -U yt-dlp`"
+        )
+
+    async def test_waits_unattempted_and_an_ordinary_retry_ingests_it_after_the_refresh(self, setup, clock):
+        start = clock["at"]
+        setup.channel.new = [2]
+        setup.failing["telegram:chan:2"] = self._stale()
+        await setup.fetch()
+        setup.channel.new = []
+
+        [row] = await setup.recorded()
+        assert (row.attempts, row.retry_after) == (0, start + timedelta(hours=1))
+        assert "pip install -U yt-dlp" in row.error
+
+        # Not asked again meanwhile: a stale tool fails for every video of the
+        # source, and one request each a minute is the flood ADR 0007 names.
+        clock["at"] = start + timedelta(minutes=59)
+        await setup.fetch()
+        assert setup.channel.fetched_again == []
+
+        # Three more hours. An ordinary failure would have been given up by now.
+        for hours in (1, 2, 3):
+            clock["at"] = start + timedelta(hours=hours)
+            await setup.fetch()
+
+        [row] = await setup.recorded()
+        assert (row.attempts, row.given_up_at) == (0, None)
+        assert len(setup.channel.fetched_again) == 3
+
+        # The tool refreshed, and nothing sent back by hand.
+        del setup.failing["telegram:chan:2"]
+        clock["at"] = start + timedelta(hours=4)
+        outcome = await setup.fetch()
+
+        assert outcome.ingested == 1
+        assert await setup.recorded() == []
 
 
 @pytest.mark.db

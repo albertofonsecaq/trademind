@@ -31,7 +31,7 @@ WINDOW = [
 @pytest.fixture
 def youtube(monkeypatch):
     """The channel window, and which of its videos YouTube refuses captions for."""
-    state = {"refused": set(), "no_transcript": set(), "never": set(), "asked": []}
+    state = {"refused": set(), "no_transcript": set(), "never": set(), "stale": set(), "asked": []}
     c = YouTubeConnector(source_config_id=uuid.uuid4(), workspace_id=uuid.uuid4(), channel_identifier="UCchan")
 
     async def _transcript(video_id, **fields):
@@ -42,6 +42,8 @@ def youtube(monkeypatch):
             raise youtube_transcript.NoTranscript(video_id, "Whisper produced nothing")
         if video_id in state["never"]:
             raise youtube_transcript.NeverTranscribable(video_id, "it is a live event that has ended")
+        if video_id in state["stale"]:
+            raise youtube_transcript.ExtractorOutOfDate(video_id, "our yt-dlp can no longer read YouTube's player")
         return [RawMessage(stable_id=f"youtube:{video_id}:full", text="transcript", content_type="video_transcript", **fields)]
 
     fake_youtube_window(monkeypatch, c, WINDOW)
@@ -137,3 +139,18 @@ class TestAVideoThatCanNeverBeTranscribed:
         failure = got[1].fetch_failure
         assert isinstance(failure, youtube_transcript.NeverTranscribable)
         assert failure.can_never_succeed()
+
+
+class TestAVideoOurOwnStaleToolingFailed:
+    """#139: handed on like any other, carrying a failure that costs it no attempt."""
+
+    async def test_comes_out_as_the_video_itself_and_the_rest_of_the_channel_carries_on(self, youtube):
+        youtube["stale"] = {"v2"}
+
+        got = await _fetched(youtube["connector"])
+
+        assert [m.stable_id for m in got] == ["youtube:v1:full", "youtube:v2", "youtube:v3:full"]
+        failure = got[1].fetch_failure
+        assert isinstance(failure, youtube_transcript.ExtractorOutOfDate)
+        assert not failure.counts_an_attempt()
+        assert not failure.can_never_succeed()

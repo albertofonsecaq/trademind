@@ -37,6 +37,7 @@ async def record_failure(db: AsyncSession, msg: RawMessage, exc: BaseException) 
 
     A platform's refusal is recorded without counting as an attempt: it was not
     the message's doing, and it is waited out rather than given up (ADR 0007).
+    Nor is a failure of our own tooling, which waits for the fix (#139).
     Content no attempt could ever get is given up here and then (#137).
     """
     row = await _find(db, msg.source_config_id, msg.stable_id)
@@ -48,7 +49,7 @@ async def record_failure(db: AsyncSession, msg: RawMessage, exc: BaseException) 
             stable_id=msg.stable_id,
             message_at=msg.timestamp,
             error=_summary(exc),
-            attempts=0 if refused else 1,
+            attempts=1 if _counts_an_attempt(exc) else 0,
             retry_after=exc.until if refused else _retry_after(exc, 1),
             given_up_at=now_utc() if _can_never_succeed(exc) else None,
         )
@@ -70,12 +71,19 @@ async def count_attempt(db: AsyncSession, row: FailedMessage, exc: BaseException
     Another failed attempt at a recorded message; the third gives it up, and so
     does the first that says no attempt could ever succeed (#137).
 
-    A platform's refusal does not count: the message waits until it ends.
+    A platform's refusal does not count: the message waits until it ends. A
+    failure of our own tooling does not count either, and waits as long as it
+    says: its attempts would be spent on a bug of ours, and the message given
+    up before anybody could fix it (#139).
     """
     row.error = _summary(exc)
     row.last_failed_at = now_utc()
     if isinstance(exc, PlatformRefused):
         row.retry_after = exc.until
+        await db.commit()
+        return row
+    if not _counts_an_attempt(exc):
+        row.retry_after = _retry_after(exc, row.attempts)
         await db.commit()
         return row
     row.attempts += 1
@@ -224,6 +232,20 @@ def _can_never_succeed(exc: BaseException) -> bool:
     if isinstance(exc, PlatformRefused):
         return False
     return isinstance(exc, ContentUnavailable) and exc.can_never_succeed()
+
+
+def _counts_an_attempt(exc: BaseException) -> bool:
+    """
+    Whether this failure is the message's own, so it spends one of the three
+    attempts it has (ADR 0005).
+
+    Anything that is not a connector's verdict is: an ordinary bug met while
+    processing one message says nothing about the next. A refusal and a failure
+    of our own tooling are the two that are not — the first the platform's doing
+    (ADR 0007), the second ours (ADR 0010) — and both are waited out instead, so
+    nothing is given up for a reason that was never about it.
+    """
+    return not isinstance(exc, ContentUnavailable) or exc.counts_an_attempt()
 
 
 def _retry_after(exc: BaseException, attempts: int):
