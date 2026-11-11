@@ -208,6 +208,9 @@ class SourceListOut(SourceOut):
     # Only the list carries these: the Sources page reads every source from it,
     # and a single-source answer would otherwise claim a 0 it never counted (#96).
     failed_retrying: int = 0
+    # Not given up, and not retried before a time still ahead: a refusal being
+    # waited out, or a video with no transcript between its retries (#132).
+    failed_waiting: int = 0
     failed_given_up: int = 0
 
 
@@ -222,6 +225,8 @@ class FailedMessageOut(BaseModel):
     first_failed_at: datetime
     last_failed_at: datetime
     given_up_at: datetime | None
+    # Not retried before this; None, at the next fetch (#125, #132).
+    retry_after: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -304,21 +309,23 @@ async def list_sources(
         select(SourceConfig).where(SourceConfig.workspace_id == workspace_id)
     )
     sources = result.scalars().all()
+    waiting = func.coalesce(FailedMessage.retry_after > now_utc(), False)
     counts = await db.execute(
         select(
             FailedMessage.source_config_id,
-            func.count().filter(FailedMessage.given_up_at.is_(None)),
+            func.count().filter(FailedMessage.given_up_at.is_(None), ~waiting),
+            func.count().filter(FailedMessage.given_up_at.is_(None), waiting),
             func.count().filter(FailedMessage.given_up_at.is_not(None)),
         )
         .where(FailedMessage.workspace_id == workspace_id)
         .group_by(FailedMessage.source_config_id)
     )
-    failed = {source_id: (retrying, given_up) for source_id, retrying, given_up in counts.all()}
+    failed = {source_id: tuple(rest) for source_id, *rest in counts.all()}
     listed = []
     for source in sources:
-        retrying, given_up = failed.get(source.id, (0, 0))
+        retrying, waiting_n, given_up = failed.get(source.id, (0, 0, 0))
         listed.append(SourceListOut.model_validate(source).model_copy(
-            update={"failed_retrying": retrying, "failed_given_up": given_up}
+            update={"failed_retrying": retrying, "failed_waiting": waiting_n, "failed_given_up": given_up}
         ))
     return listed
 
