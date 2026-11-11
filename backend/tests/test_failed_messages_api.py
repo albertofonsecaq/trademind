@@ -14,13 +14,28 @@ from fastapi import HTTPException
 
 from app.api import sources as sources_api
 from app.core.clock import now_utc
+from app.core.config import settings
 from app.models.failed_message import FailedMessage
 from app.models.workspace_member import WorkspaceMember
-from tests.conftest import make_source, make_user, make_workspace
+from tests.conftest import fake_refusal_store, make_source, make_user, make_workspace
 
 pytestmark = pytest.mark.db
 
 _AT = datetime(2026, 10, 25, 21, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _cooldown_in_force(monkeypatch):
+    """
+    The cool-down a waiting message's wait is measured against (#141), with
+    nothing refusing us: the base, an hour.
+
+    Faked for every test here because a source's list of failed messages now
+    reads it, and a refusal is a row of its own read in a session of its own
+    (ADR 0009) — not the transaction these tests write their rows into.
+    """
+    monkeypatch.setattr(settings, "YOUTUBE_REFUSAL_COOLDOWN_MINUTES", 60)
+    return fake_refusal_store(monkeypatch)
 
 
 async def _member(session, workspace):
@@ -202,3 +217,60 @@ class TestSendingAGivenUpMessageBack:
             with pytest.raises(HTTPException) as refused:
                 await attempt
             assert refused.value.status_code == 404
+
+
+class TestStuckMessages:
+    """
+    #141: a message waiting out one refusal after another is told apart from one
+    that will go through at the time it shows. `failed_message_service.is_stuck`
+    is the rule; these say the page is given it.
+    """
+
+    async def _source_with_both(self, session, workspace):
+        source = await make_source(session, workspace)
+        now = now_utc()
+        # Seven days of refusals, no attempt ever counted: BlBoKnm9O_o's state.
+        await _failed(session, source, 1, attempts=0,
+                      failed_at=now - timedelta(days=7), retry_after=now + timedelta(hours=4))
+        # Refused for the first time a minute ago, and waiting the hour that
+        # refusal earned: an ordinary wait, and one cool-down long.
+        await _failed(session, source, 2, attempts=0,
+                      failed_at=now - timedelta(minutes=1), retry_after=now + timedelta(minutes=59))
+        # Waiting a long time, but its own attempts are failing: it will be given up.
+        await _failed(session, source, 3, attempts=1,
+                      failed_at=now - timedelta(days=7), retry_after=now + timedelta(hours=23))
+        await _failed(session, source, 4, given_up=True, attempts=3)
+        return source
+
+    async def test_are_counted_as_a_part_of_the_waiting_so_the_source_still_adds_up(self, db_session):
+        workspace = await make_workspace(db_session)
+        user = await _member(db_session, workspace)
+        await self._source_with_both(db_session, workspace)
+
+        [listed] = await sources_api.list_sources(workspace.id, user, db_session)
+
+        assert (listed.failed_waiting, listed.failed_stuck, listed.failed_given_up) == (3, 1, 1)
+        assert listed.failed_retrying == 0
+
+    async def test_a_source_with_none_is_counted_as_having_none(self, db_session):
+        workspace = await make_workspace(db_session)
+        user = await _member(db_session, workspace)
+        source = await make_source(db_session, workspace)
+        # Refused once, waiting exactly the hour that refusal earned.
+        now = now_utc()
+        await _failed(db_session, source, 1, attempts=0,
+                      failed_at=now, retry_after=now + timedelta(hours=1))
+
+        [listed] = await sources_api.list_sources(workspace.id, user, db_session)
+
+        assert (listed.failed_waiting, listed.failed_stuck) == (1, 0)
+
+    async def test_the_sources_own_list_says_which_message_is_stuck(self, db_session):
+        workspace = await make_workspace(db_session)
+        user = await _member(db_session, workspace)
+        source = await self._source_with_both(db_session, workspace)
+
+        listed = {m.stable_id: m for m in await sources_api.list_failed_messages(workspace.id, source.id, user, db_session)}
+
+        assert listed["telegram:chan:1"].stuck is True
+        assert [listed[f"telegram:chan:{n}"].stuck for n in (2, 3, 4)] == [False, False, False]

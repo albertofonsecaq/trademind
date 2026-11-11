@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, Text, func
+from sqlalchemy import DateTime, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.clock import now_utc
@@ -22,3 +22,9 @@ class PlatformRefusal(Base):
     # What the platform said, for whoever looks: "HTTP 429", "IpBlocked".
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     refused_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, server_default=func.now())
+    # How many refusals in a row earned the current wait, which is how the next
+    # one knows to wait longer (#140, ADR 0010). 0 once the platform has
+    # answered a request since: the next refusal starts again at the base wait.
+    consecutive_refusals: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )

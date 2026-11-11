@@ -632,25 +632,51 @@ class FakeChannel:
             yield msg
 
 
-def fake_refusal_store(monkeypatch) -> dict:
+def fake_refusal_store(monkeypatch, now=None) -> dict:
     """
     The record of platforms refusing us (#130), kept in a dict rather than the
-    database: platform → until when. A later refusal never moves it back.
+    database: platform → the `Cooldown` recorded for it.
+
+    Only the storage is faked. How long a refusal waits is the real `escalate`
+    (#140), so a test that earns a longer wait earns the one the store would
+    give it, and the row's own write rules are kept here too — the later end
+    holds, and the count earned is the count kept. `now` is the test's clock,
+    for tests that move time by hand.
     """
+    from dataclasses import replace
+
+    from app.core import platform_refusal
+    from app.core.clock import now_utc
     from app.services import refusal_store
 
-    until: dict = {}
+    clock = now or now_utc
+    recorded: dict = {}
 
-    async def _refused_until(platform):
-        return until.get(platform)
+    async def _current(platform):
+        return recorded.get(platform)
 
-    async def _refuse(platform, when, reason):
-        until[platform] = max(until.get(platform, when), when)
-        return until[platform]
+    async def _refuse(platform, reason, *, base, ceiling):
+        was = recorded.get(platform)
+        wanted = platform_refusal.escalate(was, now=clock(), base=base, ceiling=ceiling)
+        if was is not None:
+            # As the row is written: the later of two ends holds, and the
+            # count earned is written as it stands, so a run of refusals that
+            # has been forgotten is not carried on the row either (#140).
+            wanted = platform_refusal.Cooldown(
+                until=max(was.until, wanted.until), consecutive=wanted.consecutive
+            )
+        recorded[platform] = wanted
+        return wanted
 
-    monkeypatch.setattr(refusal_store, "refused_until", _refused_until)
+    async def _let_through(platform):
+        was = recorded.get(platform)
+        if was is not None and was.consecutive > 0:
+            recorded[platform] = replace(was, consecutive=0)
+
+    monkeypatch.setattr(refusal_store, "current", _current)
     monkeypatch.setattr(refusal_store, "refuse", _refuse)
-    return until
+    monkeypatch.setattr(refusal_store, "let_through", _let_through)
+    return recorded
 
 
 def fake_youtube_window(monkeypatch, connector, window: list[dict]) -> None:

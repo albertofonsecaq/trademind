@@ -211,6 +211,10 @@ class SourceListOut(SourceOut):
     # Not given up, and not retried before a time still ahead: a refusal being
     # waited out, or a video with no transcript between its retries (#132).
     failed_waiting: int = 0
+    # Those of the waiting whose wait is going nowhere — a subset of
+    # `failed_waiting`, not a fourth state, so the total still adds up (#141).
+    # `failed_message_service.is_stuck` is what "stuck" means.
+    failed_stuck: int = 0
     failed_given_up: int = 0
 
 
@@ -227,6 +231,9 @@ class FailedMessageOut(BaseModel):
     given_up_at: datetime | None
     # Not retried before this; None, at the next fetch (#125, #132).
     retry_after: datetime | None = None
+    # Waiting, but its wait is going nowhere (#141). Not a column: the rule is
+    # `failed_message_service.is_stuck`, applied to the row as it is read.
+    stuck: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -321,11 +328,17 @@ async def list_sources(
         .group_by(FailedMessage.source_config_id)
     )
     failed = {source_id: tuple(rest) for source_id, *rest in counts.all()}
+    stuck = await failed_message_service.stuck_per_source(db, workspace_id)
     listed = []
     for source in sources:
         retrying, waiting_n, given_up = failed.get(source.id, (0, 0, 0))
         listed.append(SourceListOut.model_validate(source).model_copy(
-            update={"failed_retrying": retrying, "failed_waiting": waiting_n, "failed_given_up": given_up}
+            update={
+                "failed_retrying": retrying,
+                "failed_waiting": waiting_n,
+                "failed_stuck": stuck.get(source.id, 0),
+                "failed_given_up": given_up,
+            }
         ))
     return listed
 
@@ -386,7 +399,10 @@ async def list_failed_messages(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Which of a source's messages failed, why, and whether they are still retried (#96)."""
+    """
+    Which of a source's messages failed, why, and whether they are still
+    retried (#96) — and which of those waiting are stuck (#141).
+    """
     await _assert_member(db, workspace_id, current_user.id)
     await _source_in_workspace(db, workspace_id, source_id)
     rows = await db.execute(
@@ -394,7 +410,15 @@ async def list_failed_messages(
         .where(FailedMessage.source_config_id == source_id)
         .order_by(FailedMessage.last_failed_at.desc(), FailedMessage.stable_id)
     )
-    return rows.scalars().all()
+    # The same cool-down for every row: the rule measures a wait against the
+    # one in force, and asking once is what the whole list is shown against.
+    cooldown = await failed_message_service.cooldown_in_force()
+    return [
+        FailedMessageOut.model_validate(row).model_copy(
+            update={"stuck": failed_message_service.is_stuck(row, cooldown=cooldown)}
+        )
+        for row in rows.scalars()
+    ]
 
 
 class SourceUpdateRequest(_ReadsTimestampsAsUtc):

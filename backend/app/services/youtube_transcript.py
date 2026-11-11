@@ -23,7 +23,7 @@ from app.connectors.base import RawMessage
 from app.core.clock import now_utc
 from app.core.config import settings
 from app.core.content_unavailable import ContentUnavailable
-from app.core.platform_refusal import PlatformRefused
+from app.core.platform_refusal import Cooldown, PlatformRefused
 from app.services import refusal_store, transcription_service, youtube_refusal
 from app.services.usage_service import log_usage_event
 
@@ -105,8 +105,76 @@ class NoTranscript(ContentUnavailable):
         return self._GAPS.get(attempts)
 
 
-def _refusal(until: datetime) -> YouTubeRefused:
-    return YouTubeRefused(f"YouTube is refusing our requests until {until:%H:%M} UTC", until=until)
+class NeverTranscribable(ContentUnavailable):
+    """
+    The video can never produce a transcript: a live event that has ended, a
+    video YouTube offers no audio for (#137).
+
+    Not the same as a video without captions yet, which YouTube often adds
+    hours after an upload: no later attempt can change this one, so it is given
+    up at once with its reason, instead of spending three attempts over a day
+    on a platform that is already refusing us.
+    """
+
+    def __init__(self, video_id: str, why: str):
+        super().__init__(f"Video {video_id} can never be transcribed: {why}")
+
+    def can_never_succeed(self) -> bool:
+        return True
+
+
+class ExtractorOutOfDate(ContentUnavailable):
+    """
+    Our yt-dlp can no longer read YouTube's player, so nothing can be
+    downloaded for Whisper until it is upgraded (#139).
+
+    Neither the video's failure nor the platform's: recorded as "Whisper
+    failed", it spent one of the video's three attempts, and a tool left stale
+    for three fetches gave up every video of the backlog it would have fetched
+    after an upgrade. So it counts no attempt — like a refusal (ADR 0007) — and
+    is not given up either, because the upgrade makes it work. The message
+    waits, saying what to run, and an ordinary retry picks it up afterwards
+    (ADR 0011).
+    """
+
+    # Long enough that a stale tool is not asked about every video on every
+    # poll tick — which for the 25 failures of one source is the flood ADR 0007
+    # was written about — and short enough that an upgrade is noticed the same
+    # hour, without anybody sending anything back.
+    WAIT = timedelta(hours=1)
+
+    def __init__(self, video_id: str, why: str):
+        super().__init__(f"Video {video_id} is waiting for an up-to-date yt-dlp: {why}")
+
+    def wait_after(self, attempts: int) -> timedelta | None:
+        # Whatever the attempts, because this failure spends none of them.
+        return self.WAIT
+
+    def counts_an_attempt(self) -> bool:
+        return False
+
+
+def _refusal(cooldown: Cooldown) -> YouTubeRefused:
+    """
+    The refusal to raise for a cool-down, saying which refusal in a row earned
+    it and until when.
+
+    This reason is what the source page shows for every message the wait holds
+    up, so it says both halves ADR 0010 asks for, not only the log line's: the
+    day as well as the hour, because an escalating wait can outlast one, and
+    how many refusals in a row there have been, because "until tomorrow" alone
+    says nothing about how long YouTube has been refusing us.
+
+    Nothing is claimed about a run when the platform has answered us since
+    (`consecutive` is 0): the recorded end still holds and is still waited out,
+    but there is no run of refusals to count.
+    """
+    in_a_row = f" ({cooldown.consecutive} in a row)" if cooldown.consecutive else ""
+    return YouTubeRefused(
+        f"YouTube is refusing our requests{in_a_row} "
+        f"until {cooldown.until:%Y-%m-%d %H:%M} UTC",
+        until=cooldown.until,
+    )
 
 
 class _LibraryRefused(Exception):
@@ -144,26 +212,49 @@ async def fetch_captions(video_id: str) -> list[dict] | None:
     until the cool-down has passed: asking anyway is what got it to refuse
     (about 58,000 requests over three days, before #125). The refusal is
     recorded where every fetch, and a restart, reads it first (#130).
+
+    An answer — this video's captions, or that it has none — is YouTube letting
+    us through, so it ends the run of refusals the next one would have
+    escalated from (#140). Only when there is a run to end: a platform that has
+    never refused us has nothing to reset.
     """
-    until = await refusal_store.refused_until(refusal_store.YOUTUBE)
-    if until is not None and now_utc() < until:
-        raise _refusal(until)
+    cooldown = await refusal_store.current(refusal_store.YOUTUBE)
+    if cooldown is not None and now_utc() < cooldown.until:
+        raise _refusal(cooldown)
     try:
-        return await asyncio.get_event_loop().run_in_executor(
+        captions = await asyncio.get_event_loop().run_in_executor(
             None, _get_captions_sync, video_id
         )
     except _LibraryRefused as e:
         raise await _refused(video_id, str(e)) from e
+    if cooldown is not None and cooldown.consecutive > 0:
+        await refusal_store.let_through(refusal_store.YOUTUBE)
+    return captions
 
 
 async def _refused(video_id: str, reason: str) -> YouTubeRefused:
-    """Record that YouTube refused us, say so, and return the refusal for the caller to raise."""
-    wanted = now_utc() + timedelta(minutes=settings.YOUTUBE_REFUSAL_COOLDOWN_MINUTES)
-    until = await refusal_store.refuse(refusal_store.YOUTUBE, wanted, reason)
-    log.warning(
-        "YouTube refused us for %s (%s): no requests to it until %s UTC", video_id, reason, f"{until:%H:%M}",
+    """
+    Record that YouTube refused us, say so, and return the refusal for the
+    caller to raise.
+
+    How long to wait is the store's to work out, from the refusals before this
+    one: one met while we were only just let back in waits longer than the last
+    did, up to a ceiling (#140, ADR 0010). At roughly one caption request an
+    hour this does not get YouTube to stop sooner — we are not refused for
+    volume — but the wait then says how long it has been refusing us,
+    instead of the same hour being re-armed indefinitely.
+    """
+    cooldown = await refusal_store.refuse(
+        refusal_store.YOUTUBE,
+        reason,
+        base=timedelta(minutes=settings.YOUTUBE_REFUSAL_COOLDOWN_MINUTES),
+        ceiling=timedelta(minutes=settings.YOUTUBE_REFUSAL_COOLDOWN_MAX_MINUTES),
     )
-    return _refusal(until)
+    log.warning(
+        "YouTube refused us for %s (%s), %s in a row: no requests to it until %s UTC",
+        video_id, reason, cooldown.consecutive, f"{cooldown.until:%Y-%m-%d %H:%M}",
+    )
+    return _refusal(cooldown)
 
 
 async def _segments_for_video(video_id: str) -> tuple[list[dict], str]:
@@ -184,6 +275,15 @@ async def _segments_for_video(video_id: str) -> tuple[list[dict], str]:
     except transcription_service.DownloadRefused as e:
         raise await _refused(video_id, str(e)) from e
     except transcription_service.WhisperGaveNothing as e:
+        # Whether this is the video's own, final problem is read in the one
+        # place that reads YouTube's words, which answers no for a refusal (#137).
+        never = youtube_refusal.never_transcribable(e)
+        if never:
+            raise NeverTranscribable(video_id, never) from e
+        # And whether it was our own tooling rather than the video at all (#139).
+        stale = youtube_refusal.extractor_out_of_date(e)
+        if stale:
+            raise ExtractorOutOfDate(video_id, stale) from e
         raise NoTranscript(video_id, str(e)) from e
     if result:
         segs, cost = result
@@ -206,8 +306,10 @@ async def video_transcript_messages(
     """
     The video's transcript as `video_transcript` messages, one per chunk.
     NoTranscript when it has no captions and no Whisper result, or neither has
-    any text (#126); YouTubeRefused when YouTube is refusing caption
-    requests: the video is waited for (#125).
+    any text (#126); NeverTranscribable when no attempt could produce one
+    (#137); ExtractorOutOfDate when our yt-dlp is what failed (#139);
+    YouTubeRefused when YouTube is refusing caption requests: the video is
+    waited for (#125).
 
     The caller says whose evidence this is; `metadata` is merged under the
     chunk's own fields. Whisper cost rides on the first message only — the

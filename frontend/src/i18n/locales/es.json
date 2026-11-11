@@ -374,6 +374,11 @@
     "failedGivenUp_other": "{{count}} dados por perdidos",
     "failedWaiting_one": "1 en espera",
     "failedWaiting_other": "{{count}} en espera",
+    "failedStuck_one": "1 atascado",
+    "failedStuck_other": "{{count}} atascados",
+    "failedStuckHint_one": "1 mensaje está atascado: lleva esperando más de un periodo de enfriamiento y nunca se le ha contado un intento, porque lo que falló no tenía que ver con el mensaje — la plataforma nos está rechazando, o una herramienta nuestra necesita un arreglo. Un mensaje así no se da nunca por perdido y reintentarlo no cambia nada: entrará en la siguiente ingesta cuando se acabe lo que lo retiene. El motivo de abajo dice qué es.",
+    "failedStuckHint_other": "{{count}} mensajes están atascados: llevan esperando más de un periodo de enfriamiento y nunca se les ha contado un intento, porque lo que falló no tenía que ver con los mensajes — la plataforma nos está rechazando, o una herramienta nuestra necesita un arreglo. Un mensaje así no se da nunca por perdido y reintentarlo no cambia nada: entrarán en la siguiente ingesta cuando se acabe lo que los retiene. Los motivos de abajo dicen qué es.",
+    "failedStuckSince": "esperando desde {{when}}, sin ningún intento",
     "failedRetryAfter": "se reintenta después de {{when}}",
     "failedPosted": "publicado {{when}}",
     "failedAttempts_one": "1 intento",
@@ -381,6 +386,7 @@
     "failedStatus": {
       "retrying": "Reintentando",
       "waiting": "En espera",
+      "stuck": "Atascado",
       "givenUp": "Dado por perdido"
     },
     "failedLoadError": "No se pudieron cargar los mensajes fallidos. Inténtalo de nuevo en un momento.",
