@@ -11,7 +11,8 @@ for a cool-down and never be given up.
 
 The same seam read once more tells a problem with one video that is temporary —
 no captions yet, which YouTube often adds hours after an upload — from one that
-is permanent, which is given up at once instead of retried for a day (#137).
+is permanent, which is given up at once instead of retried for a day (#137,
+ADR 0012).
 
 And read once more again, it tells both of those from a failure that is neither
 the platform's nor the video's but ours: a yt-dlp whose extractor no longer
