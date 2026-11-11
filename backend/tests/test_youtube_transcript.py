@@ -183,7 +183,7 @@ class TestYouTubeRefusingWhispersDownload:
 
         with pytest.raises(youtube_transcript.YouTubeRefused) as raised:
             await _messages()
-        assert youtube["refusals"][refusal_store.YOUTUBE] == raised.value.until
+        assert youtube["refusals"][refusal_store.YOUTUBE].until == raised.value.until
 
 
 class TestWhisperSaysWhyItGaveNothing:
