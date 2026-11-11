@@ -1,4 +1,4 @@
-# 10. A failure of our own tooling is waited out, not counted
+# 11. A failure of our own tooling is waited out, not counted
 
 Date: 2026-11-11
 

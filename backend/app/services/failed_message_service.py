@@ -242,7 +242,7 @@ def _counts_an_attempt(exc: BaseException) -> bool:
     Anything that is not a connector's verdict is: an ordinary bug met while
     processing one message says nothing about the next. A refusal and a failure
     of our own tooling are the two that are not — the first the platform's doing
-    (ADR 0007), the second ours (ADR 0010) — and both are waited out instead, so
+    (ADR 0007), the second ours (ADR 0011) — and both are waited out instead, so
     nothing is given up for a reason that was never about it.
     """
     return not isinstance(exc, ContentUnavailable) or exc.counts_an_attempt()

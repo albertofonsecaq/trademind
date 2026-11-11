@@ -51,8 +51,11 @@ class Settings(BaseSettings):
     WHISPER_MODEL: str = "whisper-1"
     # Max seconds per transcript chunk (≈5 min); increase for longer-form analysis
     YOUTUBE_CHUNK_SECONDS: int = 300
-    # How long YouTube is left alone once it refuses caption requests (#125)
+    # How long YouTube is left alone after the first refusal of a block (#125).
+    # Each further refusal met while we were only just let back in doubles it,
+    # up to the ceiling; a request YouTube answers returns it to this (#140).
     YOUTUBE_REFUSAL_COOLDOWN_MINUTES: int = 60
+    YOUTUBE_REFUSAL_COOLDOWN_MAX_MINUTES: int = 1440  # a day: long blocks have lasted a week
 
     # Phase 11: Stripe billing
     # Create a Product + Price in your Stripe Dashboard and paste the Price ID here.

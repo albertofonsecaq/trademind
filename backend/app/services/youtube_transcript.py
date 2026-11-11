@@ -134,7 +134,7 @@ class ExtractorOutOfDate(ContentUnavailable):
     after an upgrade. So it counts no attempt — like a refusal (ADR 0007) — and
     is not given up either, because the upgrade makes it work. The message
     waits, saying what to run, and an ordinary retry picks it up afterwards
-    (ADR 0010).
+    (ADR 0011).
     """
 
     # Long enough that a stale tool is not asked about every video on every
@@ -155,7 +155,9 @@ class ExtractorOutOfDate(ContentUnavailable):
 
 
 def _refusal(until: datetime) -> YouTubeRefused:
-    return YouTubeRefused(f"YouTube is refusing our requests until {until:%H:%M} UTC", until=until)
+    # The day as well as the hour: a wait that escalates can outlast one (#140),
+    # and this reason is what the source page shows for the messages it holds up.
+    return YouTubeRefused(f"YouTube is refusing our requests until {until:%Y-%m-%d %H:%M} UTC", until=until)
 
 
 class _LibraryRefused(Exception):
@@ -193,26 +195,49 @@ async def fetch_captions(video_id: str) -> list[dict] | None:
     until the cool-down has passed: asking anyway is what got it to refuse
     (about 58,000 requests over three days, before #125). The refusal is
     recorded where every fetch, and a restart, reads it first (#130).
+
+    An answer — this video's captions, or that it has none — is YouTube letting
+    us through, so it ends the block the next refusal would have escalated from
+    (#140). Only when there is a block to end: a platform that has never
+    refused us has nothing to reset.
     """
-    until = await refusal_store.refused_until(refusal_store.YOUTUBE)
-    if until is not None and now_utc() < until:
-        raise _refusal(until)
+    cooldown = await refusal_store.current(refusal_store.YOUTUBE)
+    if cooldown is not None and now_utc() < cooldown.until:
+        raise _refusal(cooldown.until)
     try:
-        return await asyncio.get_event_loop().run_in_executor(
+        captions = await asyncio.get_event_loop().run_in_executor(
             None, _get_captions_sync, video_id
         )
     except _LibraryRefused as e:
         raise await _refused(video_id, str(e)) from e
+    if cooldown is not None and cooldown.consecutive > 0:
+        await refusal_store.let_through(refusal_store.YOUTUBE)
+    return captions
 
 
 async def _refused(video_id: str, reason: str) -> YouTubeRefused:
-    """Record that YouTube refused us, say so, and return the refusal for the caller to raise."""
-    wanted = now_utc() + timedelta(minutes=settings.YOUTUBE_REFUSAL_COOLDOWN_MINUTES)
-    until = await refusal_store.refuse(refusal_store.YOUTUBE, wanted, reason)
-    log.warning(
-        "YouTube refused us for %s (%s): no requests to it until %s UTC", video_id, reason, f"{until:%H:%M}",
+    """
+    Record that YouTube refused us, say so, and return the refusal for the
+    caller to raise.
+
+    How long to wait is the store's to work out, from the refusals before this
+    one: one met while we were only just let back in waits longer than the last
+    did, up to a ceiling (#140, ADR 0010). At roughly one caption request an
+    hour this does not shorten the block we are in — we are not refused for
+    volume — but the wait then says how long YouTube has been refusing us,
+    instead of the same hour being re-armed indefinitely.
+    """
+    cooldown = await refusal_store.refuse(
+        refusal_store.YOUTUBE,
+        reason,
+        base=timedelta(minutes=settings.YOUTUBE_REFUSAL_COOLDOWN_MINUTES),
+        ceiling=timedelta(minutes=settings.YOUTUBE_REFUSAL_COOLDOWN_MAX_MINUTES),
     )
-    return _refusal(until)
+    log.warning(
+        "YouTube refused us for %s (%s), %s in a row: no requests to it until %s UTC",
+        video_id, reason, cooldown.consecutive, f"{cooldown.until:%Y-%m-%d %H:%M}",
+    )
+    return _refusal(cooldown.until)
 
 
 async def _segments_for_video(video_id: str) -> tuple[list[dict], str]:
