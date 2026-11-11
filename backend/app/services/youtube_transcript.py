@@ -23,7 +23,7 @@ from app.connectors.base import RawMessage
 from app.core.clock import now_utc
 from app.core.config import settings
 from app.core.content_unavailable import ContentUnavailable
-from app.core.platform_refusal import PlatformRefused
+from app.core.platform_refusal import Cooldown, PlatformRefused
 from app.services import refusal_store, transcription_service, youtube_refusal
 from app.services.usage_service import log_usage_event
 
@@ -154,10 +154,27 @@ class ExtractorOutOfDate(ContentUnavailable):
         return False
 
 
-def _refusal(until: datetime) -> YouTubeRefused:
-    # The day as well as the hour: a wait that escalates can outlast one (#140),
-    # and this reason is what the source page shows for the messages it holds up.
-    return YouTubeRefused(f"YouTube is refusing our requests until {until:%Y-%m-%d %H:%M} UTC", until=until)
+def _refusal(cooldown: Cooldown) -> YouTubeRefused:
+    """
+    The refusal to raise for a cool-down, saying which refusal in a row earned
+    it and until when.
+
+    This reason is what the source page shows for every message the wait holds
+    up, so it says both halves ADR 0010 asks for, not only the log line's: the
+    day as well as the hour, because an escalating wait can outlast one, and
+    how many refusals in a row there have been, because "until tomorrow" alone
+    says nothing about how long YouTube has been refusing us.
+
+    Nothing is claimed about a run when the platform has answered us since
+    (`consecutive` is 0): the recorded end still holds and is still waited out,
+    but there is no run of refusals to count.
+    """
+    in_a_row = f" ({cooldown.consecutive} in a row)" if cooldown.consecutive else ""
+    return YouTubeRefused(
+        f"YouTube is refusing our requests{in_a_row} "
+        f"until {cooldown.until:%Y-%m-%d %H:%M} UTC",
+        until=cooldown.until,
+    )
 
 
 class _LibraryRefused(Exception):
@@ -197,13 +214,13 @@ async def fetch_captions(video_id: str) -> list[dict] | None:
     recorded where every fetch, and a restart, reads it first (#130).
 
     An answer — this video's captions, or that it has none — is YouTube letting
-    us through, so it ends the block the next refusal would have escalated from
-    (#140). Only when there is a block to end: a platform that has never
-    refused us has nothing to reset.
+    us through, so it ends the run of refusals the next one would have
+    escalated from (#140). Only when there is a run to end: a platform that has
+    never refused us has nothing to reset.
     """
     cooldown = await refusal_store.current(refusal_store.YOUTUBE)
     if cooldown is not None and now_utc() < cooldown.until:
-        raise _refusal(cooldown.until)
+        raise _refusal(cooldown)
     try:
         captions = await asyncio.get_event_loop().run_in_executor(
             None, _get_captions_sync, video_id
@@ -223,8 +240,8 @@ async def _refused(video_id: str, reason: str) -> YouTubeRefused:
     How long to wait is the store's to work out, from the refusals before this
     one: one met while we were only just let back in waits longer than the last
     did, up to a ceiling (#140, ADR 0010). At roughly one caption request an
-    hour this does not shorten the block we are in — we are not refused for
-    volume — but the wait then says how long YouTube has been refusing us,
+    hour this does not get YouTube to stop sooner — we are not refused for
+    volume — but the wait then says how long it has been refusing us,
     instead of the same hour being re-armed indefinitely.
     """
     cooldown = await refusal_store.refuse(
@@ -237,7 +254,7 @@ async def _refused(video_id: str, reason: str) -> YouTubeRefused:
         "YouTube refused us for %s (%s), %s in a row: no requests to it until %s UTC",
         video_id, reason, cooldown.consecutive, f"{cooldown.until:%Y-%m-%d %H:%M}",
     )
-    return _refusal(cooldown.until)
+    return _refusal(cooldown)
 
 
 async def _segments_for_video(video_id: str) -> tuple[list[dict], str]:

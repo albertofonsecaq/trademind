@@ -180,6 +180,19 @@ class TestARefusalIsSharedByEveryFetch:
         assert raised.value.until == datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)
         assert youtube["asked"] == 0
 
+    async def test_one_with_no_run_in_force_says_only_until_when(self, youtube):
+        # A request YouTube answered since returned the count to 0 (#140) and
+        # left the recorded end standing: the wait is still waited out, and
+        # nothing is claimed about how many refusals earned it.
+        youtube["refusals"][refusal_store.YOUTUBE] = Cooldown(
+            until=datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc), consecutive=0
+        )
+
+        with pytest.raises(YouTubeRefused) as raised:
+            await fetch_captions(VIDEO)
+
+        assert str(raised.value) == "YouTube is refusing our requests until 2026-10-31 10:00 UTC"
+
     async def test_a_refusal_here_is_recorded_for_the_others(self, youtube, monkeypatch):
         monkeypatch.setattr(settings, "YOUTUBE_REFUSAL_COOLDOWN_MINUTES", 60)
         youtube["error"] = IpBlocked(VIDEO)
@@ -260,11 +273,33 @@ class TestARepeatedRefusalWaitsLonger:
         blocked["clock"]["now"] += await self._refused_now(blocked)
 
         with caplog.at_level(logging.WARNING, logger=youtube_transcript.__name__):
-            with pytest.raises(YouTubeRefused) as raised:
+            with pytest.raises(YouTubeRefused):
                 await fetch_captions(VIDEO)
 
         warning = [r for r in caplog.records if r.levelno == logging.WARNING][-1]
         assert "2 in a row" in warning.getMessage()
         assert "2026-10-31 12:00" in warning.getMessage()
-        # And so does the reason the source page shows for what it holds up.
-        assert "2026-10-31 12:00" in str(raised.value)
+
+    async def test_the_reason_the_messages_it_holds_up_show_says_both_as_well(self, blocked):
+        # ADR 0010 asks for the wait and its age in words on the reason
+        # recorded on every message the wait holds up, which is what the
+        # source page shows — not only in a log a person has to open. The log
+        # line alone is what #141 and #142 cannot read.
+        blocked["clock"]["now"] += await self._refused_now(blocked)
+
+        with pytest.raises(YouTubeRefused) as raised:
+            await fetch_captions(VIDEO)
+
+        assert str(raised.value) == (
+            "YouTube is refusing our requests (2 in a row) until 2026-10-31 12:00 UTC"
+        )
+
+    async def test_a_message_never_asked_for_shows_the_same_reason(self, blocked):
+        # The pre-check's refusal: nothing of this video reached YouTube, and
+        # the reason it waits out is the one recorded against it (#132).
+        await self._refused_now(blocked)
+
+        with pytest.raises(YouTubeRefused) as raised:
+            await fetch_captions("another")
+
+        assert "(1 in a row)" in str(raised.value)
