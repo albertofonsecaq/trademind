@@ -15,3 +15,14 @@ class ContentUnavailable(Exception):
     def wait_after(self, attempts: int) -> timedelta | None:
         """How long to wait before retrying, after this many attempts; None: at once."""
         return None
+
+    def can_never_succeed(self) -> bool:
+        """
+        Whether no attempt could ever get this content, so the message is given
+        up at once rather than retried (#137, ADR 0005).
+
+        False unless a subclass knows better: a failure is retried by default,
+        because the cost of retrying something hopeless is three attempts, and
+        the cost of giving up on something temporary is the content itself.
+        """
+        return False

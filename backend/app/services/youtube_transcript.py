@@ -105,6 +105,24 @@ class NoTranscript(ContentUnavailable):
         return self._GAPS.get(attempts)
 
 
+class NeverTranscribable(ContentUnavailable):
+    """
+    The video can never produce a transcript: a live event that has ended, a
+    video YouTube offers no audio for (#137).
+
+    Not the same as a video without captions yet, which YouTube often adds
+    hours after an upload: no later attempt can change this one, so it is given
+    up at once with its reason, instead of spending three attempts over a day
+    on a platform that is already refusing us.
+    """
+
+    def __init__(self, video_id: str, why: str):
+        super().__init__(f"Video {video_id} can never be transcribed: {why}")
+
+    def can_never_succeed(self) -> bool:
+        return True
+
+
 def _refusal(until: datetime) -> YouTubeRefused:
     return YouTubeRefused(f"YouTube is refusing our requests until {until:%H:%M} UTC", until=until)
 
@@ -184,6 +202,11 @@ async def _segments_for_video(video_id: str) -> tuple[list[dict], str]:
     except transcription_service.DownloadRefused as e:
         raise await _refused(video_id, str(e)) from e
     except transcription_service.WhisperGaveNothing as e:
+        # Whether this is the video's own, final problem is read in the one
+        # place that reads YouTube's words, which answers no for a refusal (#137).
+        never = youtube_refusal.never_transcribable(e)
+        if never:
+            raise NeverTranscribable(video_id, never) from e
         raise NoTranscript(video_id, str(e)) from e
     if result:
         segs, cost = result
@@ -206,8 +229,9 @@ async def video_transcript_messages(
     """
     The video's transcript as `video_transcript` messages, one per chunk.
     NoTranscript when it has no captions and no Whisper result, or neither has
-    any text (#126); YouTubeRefused when YouTube is refusing caption
-    requests: the video is waited for (#125).
+    any text (#126); NeverTranscribable when no attempt could produce one
+    (#137); YouTubeRefused when YouTube is refusing caption requests: the video
+    is waited for (#125).
 
     The caller says whose evidence this is; `metadata` is merged under the
     chunk's own fields. Whisper cost rides on the first message only — the

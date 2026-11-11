@@ -37,6 +37,7 @@ async def record_failure(db: AsyncSession, msg: RawMessage, exc: BaseException) 
 
     A platform's refusal is recorded without counting as an attempt: it was not
     the message's doing, and it is waited out rather than given up (ADR 0007).
+    Content no attempt could ever get is given up here and then (#137).
     """
     row = await _find(db, msg.source_config_id, msg.stable_id)
     if row is None:
@@ -49,6 +50,7 @@ async def record_failure(db: AsyncSession, msg: RawMessage, exc: BaseException) 
             error=_summary(exc),
             attempts=0 if refused else 1,
             retry_after=exc.until if refused else _retry_after(exc, 1),
+            given_up_at=now_utc() if _can_never_succeed(exc) else None,
         )
         try:
             # A savepoint: a poll and a backfill of the same source can both get
@@ -65,7 +67,8 @@ async def record_failure(db: AsyncSession, msg: RawMessage, exc: BaseException) 
 
 async def count_attempt(db: AsyncSession, row: FailedMessage, exc: BaseException) -> FailedMessage:
     """
-    Another failed attempt at a recorded message; the third gives it up.
+    Another failed attempt at a recorded message; the third gives it up, and so
+    does the first that says no attempt could ever succeed (#137).
 
     A platform's refusal does not count: the message waits until it ends.
     """
@@ -77,7 +80,7 @@ async def count_attempt(db: AsyncSession, row: FailedMessage, exc: BaseException
         return row
     row.attempts += 1
     row.retry_after = _retry_after(exc, row.attempts)
-    if row.attempts >= MAX_ATTEMPTS:
+    if row.attempts >= MAX_ATTEMPTS or _can_never_succeed(exc):
         row.given_up_at = now_utc()
     await db.commit()
     return row
@@ -164,6 +167,18 @@ def _itself_and_its_wholes(stable_id: str) -> list[str]:
     """"youtube:v:chunk_0" → it, "youtube:v" and "youtube": every id it extends."""
     parts = stable_id.split(":")
     return [":".join(parts[:n]) for n in range(len(parts), 0, -1)]
+
+
+def _can_never_succeed(exc: BaseException) -> bool:
+    """
+    Whether no later attempt could get this content, so it is given up now.
+
+    Only a connector's own verdict says so. A refusal never does, whatever the
+    platform said: it is waited out, not given up (ADR 0007, ADR 0009).
+    """
+    if isinstance(exc, PlatformRefused):
+        return False
+    return isinstance(exc, ContentUnavailable) and exc.can_never_succeed()
 
 
 def _retry_after(exc: BaseException, attempts: int):

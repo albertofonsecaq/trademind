@@ -9,7 +9,7 @@ the same stable ids — so the two paths recognise each other's videos.
 """
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -123,6 +123,51 @@ class TestWhisperWhenThereAreNoCaptions:
         with pytest.raises(youtube_transcript.NoTranscript):
             await _messages()
         assert youtube["whisper_calls"] == 0
+
+
+class TestAVideoThatCanNeverBeTranscribed:
+    """
+    #137: an outcome no attempt can change — a live event that has ended, a
+    video with no downloadable audio — is given up at once, with its reason,
+    rather than spending three attempts over a day on a platform already
+    refusing us.
+    """
+
+    @pytest.fixture
+    def whisper_said(self, youtube, monkeypatch):
+        def _said(error: str):
+            async def _whisper(video_url):
+                raise transcription_service.WhisperGaveNothing(error)
+
+            monkeypatch.setattr(transcription_service, "transcribe_youtube_video", _whisper)
+        return _said
+
+    @pytest.mark.parametrize("error, says", [
+        ("Whisper failed: ERROR: [youtube] dQw4w9WgXcQ: This live event has ended", "live event"),
+        ("Whisper failed: ERROR: [youtube] dQw4w9WgXcQ: Requested format is not available. "
+         "Use --list-formats for a list of available formats", "audio"),
+    ])
+    async def test_is_given_up_at_once_saying_which_case_it_was(self, whisper_said, error, says):
+        whisper_said(error)
+
+        with pytest.raises(youtube_transcript.NeverTranscribable) as raised:
+            await _messages()
+
+        assert raised.value.can_never_succeed()
+        assert raised.value.wait_after(1) is None
+        assert str(raised.value).startswith("Video dQw4w9WgXcQ can never be transcribed:")
+        assert says in str(raised.value)
+
+    async def test_a_video_with_no_captions_yet_is_still_retried(self, whisper_said):
+        # ADR 0005: YouTube often adds automatic captions hours after an upload.
+        whisper_said("Whisper failed: ERROR: [youtube] dQw4w9WgXcQ: HTTP Error 500: Internal Server Error")
+
+        with pytest.raises(youtube_transcript.NoTranscript) as raised:
+            await _messages()
+
+        assert not raised.value.can_never_succeed()
+        assert raised.value.wait_after(1) == timedelta(hours=1)
+        assert raised.value.wait_after(2) == timedelta(hours=23)
 
 
 class TestYouTubeRefusingWhispersDownload:

@@ -10,6 +10,7 @@ a message is given up — kept, and shown, for a person.
 A failure that would repeat for everything left in the run is not the message's
 fault: it is neither recorded nor counted.
 """
+import uuid
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
@@ -20,11 +21,11 @@ from sqlalchemy import select
 
 from app.connectors.base import RawMessage
 from app.core.platform_refusal import PlatformRefused
-from app.services.youtube_transcript import NoTranscript
+from app.services.youtube_transcript import NeverTranscribable, NoTranscript
 from app.models.failed_message import FailedMessage
 from app.models.source_config import SourceConfig
 from app.services import failed_message_service, ingestion_pipeline
-from tests.conftest import make_source, make_workspace
+from tests.conftest import FakeSession, make_source, make_workspace
 
 _AT = datetime(2026, 10, 25, 21, 0, tzinfo=timezone.utc)
 
@@ -310,6 +311,64 @@ class TestAFailureThatEndsTheRun:
         assert row.error == "relevance check timed out"
 
 
+class TestAFailureNoAttemptCouldFix:
+    """
+    #137: content no attempt could ever get is given up on its first failure,
+    keeping its reason, instead of spending three attempts proving it.
+    """
+
+    def _video(self) -> RawMessage:
+        return RawMessage(
+            stable_id="youtube:A8XsDk4BhyU",
+            source_config_id=uuid.uuid4(),
+            workspace_id=uuid.uuid4(),
+            text=None,
+            author="A trader",
+            channel="UCBjArPvYiR2Uu2U1XlK4pRw",
+            timestamp=_AT,
+            source_type="youtube",
+            content_type="youtube_video",
+        )
+
+    async def _recorded(self, exc: BaseException) -> FailedMessage:
+        db = FakeSession()
+        return await failed_message_service.record_failure(db, self._video(), exc)
+
+    async def test_is_given_up_on_its_first_failure_with_the_reason_it_gave(self):
+        row = await self._recorded(NeverTranscribable("A8XsDk4BhyU", "it is a live event that has ended"))
+
+        assert row.given_up_at is not None
+        assert row.attempts == 1
+        assert row.retry_after is None
+        assert row.error == "Video A8XsDk4BhyU can never be transcribed: it is a live event that has ended"
+
+    async def test_while_a_video_with_no_captions_yet_is_retried(self):
+        row = await self._recorded(NoTranscript("A8XsDk4BhyU", "Whisper produced nothing"))
+
+        assert row.given_up_at is None
+        assert row.attempts == 1
+        assert row.retry_after is not None
+
+    async def test_and_a_refusal_is_never_given_up(self):
+        # ADR 0009: the platform's doing, not the video's, whatever it said.
+        row = await self._recorded(PlatformRefused("YouTube is refusing us", until=_AT))
+
+        assert row.given_up_at is None
+        assert row.attempts == 0
+
+    async def test_one_already_recorded_is_given_up_without_its_attempts_left(self):
+        db = FakeSession()
+        row = FailedMessage(stable_id="youtube:A8XsDk4BhyU", attempts=1)
+
+        await failed_message_service.count_attempt(
+            db, row, NeverTranscribable("A8XsDk4BhyU", "YouTube offers no audio for it to download")
+        )
+
+        assert row.given_up_at is not None
+        assert row.attempts == 2
+        assert "no audio" in row.error
+
+
 _UNTIL = datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)
 
 
@@ -485,6 +544,30 @@ class TestAVideoWithNoTranscript:
         assert row.attempts == 3
         assert row.given_up_at is not None
         assert len(setup.channel.fetched_again) == 2
+
+
+@pytest.mark.db
+class TestAVideoThatCanNeverBeTranscribed:
+    """#137: given up on its first failure, so nothing asks the platform for it again."""
+
+    async def test_is_given_up_at_once_and_not_retried_a_day_later(self, setup, clock):
+        start = clock["at"]
+        setup.channel.new = [2]
+        setup.failing["telegram:chan:2"] = NeverTranscribable("v2", "it is a live event that has ended")
+
+        outcome = await setup.fetch()
+
+        [row] = await setup.recorded()
+        assert row.given_up_at is not None
+        assert row.attempts == 1
+        assert row.error == "Video v2 can never be transcribed: it is a live event that has ended"
+        assert (outcome.ingested, outcome.failed) == (0, 1)
+
+        setup.channel.new = []
+        clock["at"] = start + timedelta(days=1)
+        await setup.fetch()
+
+        assert setup.channel.fetched_again == []
 
 
 @pytest.mark.db

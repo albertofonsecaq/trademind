@@ -31,7 +31,7 @@ WINDOW = [
 @pytest.fixture
 def youtube(monkeypatch):
     """The channel window, and which of its videos YouTube refuses captions for."""
-    state = {"refused": set(), "no_transcript": set(), "asked": []}
+    state = {"refused": set(), "no_transcript": set(), "never": set(), "asked": []}
     c = YouTubeConnector(source_config_id=uuid.uuid4(), workspace_id=uuid.uuid4(), channel_identifier="UCchan")
 
     async def _transcript(video_id, **fields):
@@ -40,6 +40,8 @@ def youtube(monkeypatch):
             raise youtube_transcript.YouTubeRefused("refused", until=_UNTIL)
         if video_id in state["no_transcript"]:
             raise youtube_transcript.NoTranscript(video_id, "Whisper produced nothing")
+        if video_id in state["never"]:
+            raise youtube_transcript.NeverTranscribable(video_id, "it is a live event that has ended")
         return [RawMessage(stable_id=f"youtube:{video_id}:full", text="transcript", content_type="video_transcript", **fields)]
 
     fake_youtube_window(monkeypatch, c, WINDOW)
@@ -121,3 +123,17 @@ class TestAVideoWithNoTranscript:
 
         with pytest.raises(youtube_transcript.NoTranscript):
             await youtube["connector"].fetch_again("youtube:v2")
+
+
+class TestAVideoThatCanNeverBeTranscribed:
+    """#137: handed on like any other, carrying a failure that is given up at once."""
+
+    async def test_comes_out_as_the_video_itself_carrying_why_it_never_will_be(self, youtube):
+        youtube["never"] = {"v2"}
+
+        got = await _fetched(youtube["connector"])
+
+        assert [m.stable_id for m in got] == ["youtube:v1:full", "youtube:v2", "youtube:v3:full"]
+        failure = got[1].fetch_failure
+        assert isinstance(failure, youtube_transcript.NeverTranscribable)
+        assert failure.can_never_succeed()

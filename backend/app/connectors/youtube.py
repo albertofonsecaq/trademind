@@ -205,9 +205,9 @@ class YouTubeConnector(BaseConnector):
     def _unfetched_video(self, video: dict, failure: ContentUnavailable) -> RawMessage:
         """
         A video whose transcript could not be had — YouTube refused its captions
-        (#125), or it has none (#126) — handed on in its transcript's place: the
-        pipeline records it as a failed message, and fetch_again hands back its
-        transcript once there is one.
+        (#125), it has none (#126), or it can never have one (#137) — handed on
+        in its transcript's place: the pipeline records it as a failed message,
+        and fetch_again hands back its transcript once there is one.
         """
         fields = self._transcript_fields(video)
         fields["metadata"] = {**fields["metadata"], "video_id": video["video_id"]}
