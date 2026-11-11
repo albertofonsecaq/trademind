@@ -12,13 +12,20 @@ type Source = {
   fetch_cadence: string; content_filters: Record<string, boolean>;
   last_fetched_at: string | null; platform_connection_id: string | null;
   backfill_start_date: string | null; is_paused: boolean; paused_at: string | null;
-  // Failed messages still being retried, and given up (#96). Only the list carries them.
-  failed_retrying: number; failed_given_up: number;
+  // Failed messages retried at the next fetch, waiting for a later retry (#132),
+  // and given up (#96). Only the list carries them.
+  failed_retrying: number; failed_waiting: number; failed_given_up: number;
 };
 type FailedMessage = {
   id: string; stable_id: string; message_at: string | null; error: string; attempts: number;
   first_failed_at: string; last_failed_at: string; given_up_at: string | null;
+  retry_after: string | null;   // not retried before this; null: at the next fetch
 };
+
+/** Not given up, and its next retry is still ahead: a refusal waited out, or a gap between retries. */
+function isWaiting(m: FailedMessage): boolean {
+  return !m.given_up_at && m.retry_after !== null && new Date(m.retry_after) > new Date();
+}
 type ResumeMode = "catch_up" | "from_now";
 
 // ── can this source fetch at all? ────────────────────────────────────────────
@@ -239,6 +246,11 @@ function FailedBadges({ source }: { source: Source }) {
           {t("sources.failedRetrying", { count: source.failed_retrying })}
         </span>
       )}
+      {source.failed_waiting > 0 && (
+        <span style={{ ...pill, background: "#eef2f7", color: "#4a5a70", border: "1px solid #c9d3e0" }}>
+          {t("sources.failedWaiting", { count: source.failed_waiting })}
+        </span>
+      )}
       {source.failed_given_up > 0 && (
         <span style={{ ...pill, background: "#fdecea", color: "#c0392b", border: "1px solid #f5b7b1", fontWeight: 600 }}>
           {t("sources.failedGivenUp", { count: source.failed_given_up })}
@@ -310,8 +322,10 @@ function FailedMessages({ workspaceId, sourceId, onChanged }: {
       ) : messages.map((m) => (
         <div key={m.stable_id} style={{ padding: "0.45rem 0", borderBottom: "1px solid #f0f0f0", fontSize: "0.8rem" }}>
           <div style={{ display: "flex", gap: "0.6rem", alignItems: "center", flexWrap: "wrap" }}>
-            <span style={{ fontWeight: 700, color: m.given_up_at ? "#c0392b" : "#e65100", minWidth: "80px" }}>
-              {m.given_up_at ? t("sources.failedStatus.givenUp") : t("sources.failedStatus.retrying")}
+            <span style={{ fontWeight: 700, color: m.given_up_at ? "#c0392b" : isWaiting(m) ? "#4a5a70" : "#e65100", minWidth: "80px" }}>
+              {m.given_up_at
+                ? t("sources.failedStatus.givenUp")
+                : isWaiting(m) ? t("sources.failedStatus.waiting") : t("sources.failedStatus.retrying")}
             </span>
             <span style={{ fontFamily: "monospace", color: "#555" }}>{m.stable_id}</span>
             {m.message_at && (
@@ -319,7 +333,15 @@ function FailedMessages({ workspaceId, sourceId, onChanged }: {
                 {t("sources.failedPosted", { when: new Date(m.message_at).toLocaleString() })}
               </span>
             )}
-            <span style={{ color: "#888" }}>{t("sources.failedAttempts", { count: m.attempts })}</span>
+            {isWaiting(m) && (
+              <span style={{ color: "#4a5a70" }}>
+                {t("sources.failedRetryAfter", { when: new Date(m.retry_after!).toLocaleString() })}
+              </span>
+            )}
+            {/* A refusal counts no attempt: "0 attempts" would read as a failure that never was. */}
+            {m.attempts > 0 && (
+              <span style={{ color: "#888" }}>{t("sources.failedAttempts", { count: m.attempts })}</span>
+            )}
             {m.given_up_at && (
               <button
                 style={{ ...btn(false, false, sending !== null), padding: "0.15rem 0.6rem", fontSize: "0.75rem" }}
@@ -425,7 +447,7 @@ function SourcePanel({ source, workspaceId, workspacePaused, connectionBlocked, 
         <button style={tabBtn("settings")} onClick={() => setTab("settings")}>{t("sources.settings")}</button>
         <button style={tabBtn("backfill")} onClick={() => setTab("backfill")}>{t("sources.backfill")}</button>
         <button style={tabBtn("failed")} onClick={() => setTab("failed")}>
-          {t("sources.failedTab", { count: source.failed_retrying + source.failed_given_up })}
+          {t("sources.failedTab", { count: source.failed_retrying + source.failed_waiting + source.failed_given_up })}
         </button>
       </div>
       {tab === "failed" && <FailedMessages workspaceId={workspaceId} sourceId={source.id} onChanged={onSaved} />}
