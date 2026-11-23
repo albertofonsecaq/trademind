@@ -17,6 +17,7 @@ from typing import Awaitable, Callable
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from alembic.script.revision import ResolutionError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,21 +45,29 @@ async def read_database_revision(session: AsyncSession) -> str | None:
     return result.scalars().first()
 
 
-async def warn_if_schema_is_behind(read_database_revision: ReadRevision) -> None:
+async def warn_if_schema_is_behind(read_revision: ReadRevision) -> None:
     """Called once when the backend starts. Logs; never raises, never migrates."""
     try:
         scripts = migration_scripts()
         head = scripts.get_current_head()
-        current = await read_database_revision()
-        known = current is None or _is_known(scripts, current)
+    except Exception as error:
+        _warn_code_migrations_unreadable(error)
+        return
+    try:
+        current = await read_revision()
     except Exception as error:
         # A missing version table or a refused read is not a reason to stay down;
         # it is a reason to say the check did not happen.
         log.warning(
             "Started without knowing whether the database is on this code's migrations: "
-            "could not check (%s)",
+            "could not check the database (%s)",
             error,
         )
+        return
+    try:
+        known = current is None or _is_known(scripts, current)
+    except Exception as error:
+        _warn_code_migrations_unreadable(error)
         return
     if current == head:
         log.info("The database is at migration %s, as this code expects", head)
@@ -79,8 +88,19 @@ async def warn_if_schema_is_behind(read_database_revision: ReadRevision) -> None
         )
 
 
+def _warn_code_migrations_unreadable(error: Exception) -> None:
+    # The fault is in this working tree (an unmerged pair of heads, a broken
+    # migration file), not the database; whoever reads this should look there.
+    log.warning(
+        "Started without checking the database's migration: this code's own migrations "
+        "could not be read (%s)",
+        error,
+    )
+
+
 def _is_known(scripts: ScriptDirectory, revision: str) -> bool:
+    """Whether this code has the migration. Only alembic's "no such revision" means no."""
     try:
-        return scripts.get_revision(revision) is not None
-    except Exception:
+        return scripts.revision_map.get_revision(revision) is not None
+    except ResolutionError:
         return False
