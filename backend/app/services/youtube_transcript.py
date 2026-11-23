@@ -154,6 +154,33 @@ class ExtractorOutOfDate(ContentUnavailable):
         return False
 
 
+class ProxyFailed(ContentUnavailable):
+    """
+    The proxy in YOUTUBE_PROXY_URL is down, unreachable or rejects our
+    credentials (407), on the caption request or on the audio download (#153).
+
+    Our own setup's failure, like a stale yt-dlp (ADR 0011, 0014): read as "no
+    captions" it fell through to Whisper, failed again and spent one of the
+    video's three attempts, so a proxy left broken for three fetches gave up
+    the backlog; read as a refusal it would arm YouTube's cool-down for
+    something YouTube never said. So it counts no attempt, records no refusal,
+    and waits an hour at a time, saying the setting to fix — never the URL.
+    Fixing the proxy is enough for an ordinary retry to pick the video up.
+    """
+
+    WAIT = ExtractorOutOfDate.WAIT
+
+    def __init__(self, video_id: str, why: str):
+        super().__init__(f"Video {video_id} is waiting for the YouTube proxy: {why}")
+
+    def wait_after(self, attempts: int) -> timedelta | None:
+        # Whatever the attempts, because this failure spends none of them.
+        return self.WAIT
+
+    def counts_an_attempt(self) -> bool:
+        return False
+
+
 def _refusal(cooldown: Cooldown) -> YouTubeRefused:
     """
     The refusal to raise for a cool-down, saying which refusal in a row earned
@@ -181,9 +208,14 @@ class _LibraryRefused(Exception):
     """The library's refusal, out of the executor thread."""
 
 
+class _ProxyFailed(Exception):
+    """The proxy failing the caption request, out of the executor thread: why, in our words."""
+
+
 def _get_captions_sync(video_id: str) -> list[dict] | None:
     """
-    The video's captions, or None if it has none; _LibraryRefused if YouTube refuses.
+    The video's captions, or None if it has none; _LibraryRefused if YouTube
+    refuses; _ProxyFailed if the proxy itself failed (#153).
 
     Through the proxy when one is set (#150): a refusal met through it is read
     and recorded exactly as one met without it.
@@ -205,6 +237,12 @@ def _get_captions_sync(video_id: str) -> list[dict] | None:
     except Exception as e:
         if youtube_refusal.is_refusal(e):
             raise _LibraryRefused(type(e).__name__) from e
+        # Asked before "no captions", which would fall through to Whisper and
+        # spend the video's attempt on our broken proxy (#153). Not chained:
+        # the library's words name the proxy.
+        proxy_failed = youtube_refusal.proxy_failed(e)
+        if proxy_failed:
+            raise _ProxyFailed(proxy_failed) from None
         # The library's words can name the proxy, credentials and all (#150).
         log.debug("No captions for %s: %s", video_id, youtube_proxy.scrub(str(e)))
         return None
@@ -235,6 +273,10 @@ async def fetch_captions(video_id: str) -> list[dict] | None:
             )
         except _LibraryRefused as e:
             raise await _refused(video_id, str(e)) from e
+        except _ProxyFailed as e:
+            # Not YouTube's answer: nothing is recorded against it, and a run
+            # of refusals is neither extended nor ended by it (#153).
+            raise ProxyFailed(video_id, str(e)) from e
     if cooldown is not None and cooldown.consecutive > 0:
         await refusal_store.let_through(refusal_store.YOUTUBE)
     return captions
@@ -290,6 +332,9 @@ async def _segments_for_video(video_id: str) -> tuple[list[dict], str]:
         result = await transcription_service.transcribe_youtube_video(video_url)
     except transcription_service.DownloadRefused as e:
         raise await _refused(video_id, str(e)) from e
+    except transcription_service.DownloadProxyFailed as e:
+        # Our proxy, not YouTube's answer and not the video's (#153).
+        raise ProxyFailed(video_id, str(e)) from e
     except transcription_service.WhisperGaveNothing as e:
         # Whether this is the video's own, final problem is read in the one
         # place that reads YouTube's words, which answers no for a refusal (#137).
@@ -324,7 +369,7 @@ async def video_transcript_messages(
     NoTranscript when it has no captions and no Whisper result, or neither has
     any text (#126); NeverTranscribable when no attempt could produce one
     (#137); ExtractorOutOfDate when our yt-dlp is what failed (#139);
-    YouTubeRefused when YouTube is refusing caption requests: the video is
+    ProxyFailed when the YouTube proxy is (#153); YouTubeRefused when YouTube is refusing caption requests: the video is
     waited for (#125).
 
     The caller says whose evidence this is; `metadata` is merged under the

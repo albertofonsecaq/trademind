@@ -205,8 +205,8 @@ class YouTubeConnector(BaseConnector):
     def _unfetched_video(self, video: dict, failure: ContentUnavailable) -> RawMessage:
         """
         A video whose transcript could not be had — YouTube refused its captions
-        (#125), it has none (#126), it can never have one (#137), or our own
-        yt-dlp is out of date (#139) — handed on in its transcript's place: the
+        (#125), it has none (#126), it can never have one (#137), our own
+        yt-dlp is out of date (#139), or our proxy failed (#153) — handed on in its transcript's place: the
         pipeline records it as a failed message, and fetch_again hands back its
         transcript once there is one.
         """

@@ -56,6 +56,16 @@ has none; when none is, nothing changes.
   network stack name the proxy they could not reach, so any text from such an
   error — the captions library's, or yt-dlp's — is scrubbed of the URL, and of
   its user, password and host, before it is logged or kept.
+- **A broken proxy is our failure** (#153). The proxy down, unreachable or
+  rejecting our credentials (407), on the caption request or the audio
+  download, is neither YouTube refusing us nor anything about the video. It is
+  treated as ADR 0011 treats our own stale tooling: the message counts no
+  attempt and is not given up, no refusal is recorded or extended, and it waits
+  an hour at a time with a reason that names the setting to fix — never the URL
+  or any part of it. Fixing the proxy is enough for an ordinary retry to pick
+  every such message up. It is told apart in the one place YouTube's errors are
+  read, after a refusal is asked about, and only while a proxy is set: without
+  one there is nothing of ours in between to fail.
 
 ## Consequences
 
@@ -66,10 +76,25 @@ has none; when none is, nothing changes.
   new video, and retries are held to the cool-down — so the cost is bounded
   by the number of videos, not by polling.
 - A new way to fail arrives with it: the proxy itself down, unreachable, or
-  rejecting our credentials. Until that is told apart (#153) it reads as a
-  video with no captions, as any other non-refusal error from the library does,
-  and costs attempts. That is the reading ADR 0011 was written against for our
-  own tooling, and #153 gives a broken proxy the same treatment.
+  rejecting our credentials. Read as a video with no captions, as any other
+  non-refusal error from the library is, it would fall through to Whisper, fail
+  again and cost an attempt, and three fetches of a broken proxy would give up
+  the backlog; read as a refusal, it would hold every request to YouTube up for
+  something YouTube never said. So it is its own verdict, and a broken proxy
+  costs a delay, not content — the same bargain ADR 0011 made for our tooling,
+  with the same cost: nothing gives up a message waiting on it, so a proxy left
+  broken leaves them waiting, visible on their sources.
+- yt-dlp does not say plainly that the proxy failed. It warns of the proxy for
+  each page it could not fetch and then fails in the words of a stale
+  extractor, which read alone would send a person to upgrade a tool that is
+  fine. So what it warns of on the way is kept and read too; it is never
+  logged, because it names the proxy. A video's own final answer — a live event
+  that has ended — reached through a proxy that stumbled on the way is still
+  the video's.
+- Telling a broken proxy apart is by words, as the other verdicts are: what
+  requests and yt-dlp say when they cannot connect to the proxy, and the 407
+  "Proxy Authentication Required". A failure of the proxy they word some other
+  way — a timeout through it — still reads as the video's own.
 - Videos with no captions have their audio downloaded for Whisper through the
   proxy as well (#152), so a video that needs Whisper gets past the block too.
   An audio download is far larger than a caption request, so it is most of

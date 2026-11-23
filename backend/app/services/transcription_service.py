@@ -7,7 +7,8 @@ video's failed message (#126).
 
 The audio is downloaded from YouTube through the proxy when one is set, as the
 captions are (#152, ADR 0014), and yt-dlp's words are scrubbed of it before
-they reach a log line or a reason.
+they reach a log line or a reason. The proxy itself failing is told apart
+before they are, as DownloadProxyFailed (#153).
 """
 from __future__ import annotations
 import asyncio
@@ -27,6 +28,38 @@ class WhisperGaveNothing(Exception):
 
 class DownloadRefused(Exception):
     """YouTube refused the audio download: the same refusal as for captions (#130)."""
+
+
+class DownloadProxyFailed(Exception):
+    """
+    The proxy in YOUTUBE_PROXY_URL failed the audio download (#153): why, in
+    our own words, which name the setting and nothing of the URL.
+    """
+
+
+class _Heard:
+    """
+    yt-dlp's logger: keeps what it warns of, says nothing.
+
+    Through a broken proxy yt-dlp says so only in its warnings, and then fails
+    as if its extractor were stale (#153). They are kept to be read, never
+    logged: they name the proxy, credentials and all.
+    """
+
+    def __init__(self):
+        self.warnings: list[str] = []
+
+    def debug(self, message: str) -> None:
+        pass
+
+    def info(self, message: str) -> None:
+        pass
+
+    def warning(self, message: str) -> None:
+        self.warnings.append(message)
+
+    def error(self, message: str) -> None:
+        pass
 
 
 # Whisper API pricing: $0.006 / minute (as of 2024)
@@ -51,7 +84,7 @@ async def transcribe_youtube_video(video_url: str) -> tuple[list[dict], Decimal]
             async with youtube_pace.turn():
                 audio_path = await loop.run_in_executor(None, _download_sync, video_url, tmpdir)
             return await loop.run_in_executor(None, _transcribe_sync, audio_path)
-    except (WhisperGaveNothing, DownloadRefused):
+    except (WhisperGaveNothing, DownloadRefused, DownloadProxyFailed):
         raise
     except Exception as e:
         # yt-dlp's words can name the proxy, credentials and all (#152); the
@@ -72,7 +105,8 @@ def _download_audio(video_url: str, into: dict) -> None:
 def _download_sync(video_url: str, tmpdir: str) -> str:
     """
     The path of the video's audio, an mp3 in `tmpdir`; DownloadRefused if
-    YouTube refuses. Through the proxy when one is set (#152).
+    YouTube refuses, DownloadProxyFailed if the proxy itself fails (#153).
+    Through the proxy when one is set (#152).
     """
     ydl_opts = {
         "format": "bestaudio/best",
@@ -85,9 +119,11 @@ def _download_sync(video_url: str, tmpdir: str) -> str:
         "quiet": True,
         "no_warnings": True,
     }
+    heard = _Heard()
     proxy = youtube_proxy.url()
     if proxy:
         ydl_opts["proxy"] = proxy
+        ydl_opts["logger"] = heard
 
     try:
         _download_audio(video_url, ydl_opts)
@@ -96,6 +132,11 @@ def _download_sync(video_url: str, tmpdir: str) -> str:
         # refusal. One met through the proxy is still a refusal (ADR 0009, 0014).
         if youtube_refusal.is_refusal(e):
             raise DownloadRefused(youtube_proxy.scrub(str(e))) from None
+        # Read here, with what yt-dlp warned of, before its words are
+        # scrubbed and the proxy's failure can no longer be told apart (#153).
+        proxy_failed = youtube_refusal.proxy_failed(e, heard.warnings)
+        if proxy_failed:
+            raise DownloadProxyFailed(proxy_failed) from None
         raise
 
     mp3_files = [f for f in os.listdir(tmpdir) if f.endswith(".mp3")]
