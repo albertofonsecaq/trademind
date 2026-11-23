@@ -11,7 +11,8 @@
     "confirm": "Confirmar",
     "status": "Estado",
     "saved": "Guardado",
-    "collapse": "Colapsar"
+    "collapse": "Colapsar",
+    "retry": "Reintentar"
   },
   "help": {
     "title": "Ayuda y documentación",
@@ -275,6 +276,7 @@
     "fetchFailed": "No se pudo iniciar la obtención de esta fuente.",
     "addSource": "Agregar canal",
     "noSources": "Aún no hay fuentes. Conecta una cuenta de Telegram o agrega un canal de YouTube.",
+    "loadError": "No se pudieron cargar las fuentes de este espacio de trabajo, así que esta página no puede mostrar cuáles tiene. No se ha eliminado nada.",
     "connections": "Cuentas de Telegram",
     "connectTelegram": "Conectar cuenta de Telegram",
     "sourceType": "Tipo de fuente",
