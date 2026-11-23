@@ -17,6 +17,8 @@ from typing import Awaitable, Callable
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +36,12 @@ def migration_scripts() -> ScriptDirectory:
     config = Config(str(BACKEND / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND / "alembic"))
     return ScriptDirectory.from_config(config)
+
+
+async def read_database_revision(session: AsyncSession) -> str | None:
+    """The migration the database is on, or None if none is recorded. Read-only."""
+    result = await session.execute(text("SELECT version_num FROM alembic_version"))
+    return result.scalars().first()
 
 
 async def warn_if_schema_is_behind(read_database_revision: ReadRevision) -> None:

@@ -99,6 +99,12 @@ class TestADatabaseAtHead:
         assert len(confirmations) == 1
 
 
+@pytest.mark.db
+async def test_the_application_role_can_read_the_databases_revision(db_session):
+    """The real read, as trademind_app: a read it can already do (ADR 0004)."""
+    assert await schema_revision.read_database_revision(db_session) == _head()
+
+
 class TestARevisionThatCannotBeRead:
     """No version table, permission refused: startup carries on and says it could not check."""
 
