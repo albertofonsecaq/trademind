@@ -115,7 +115,28 @@ class NeverTranscribable(ContentUnavailable):
         return True
 
 
-class ExtractorOutOfDate(ContentUnavailable):
+class _OurOwnFailure(ContentUnavailable):
+    """
+    A failure of our own setup rather than of the video or the platform: it
+    counts no attempt and is never given up, because fixing the setup makes it
+    work, and it waits a flat hour at a time until then (ADR 0011).
+    """
+
+    # Long enough that a broken setup is not asked about every video on every
+    # poll tick — which for the 25 failures of one source is the flood ADR 0007
+    # was written about — and short enough that a fix is noticed the same
+    # hour, without anybody sending anything back.
+    WAIT = timedelta(hours=1)
+
+    def wait_after(self, attempts: int) -> timedelta | None:
+        # Whatever the attempts, because this failure spends none of them.
+        return self.WAIT
+
+    def counts_an_attempt(self) -> bool:
+        return False
+
+
+class ExtractorOutOfDate(_OurOwnFailure):
     """
     Our yt-dlp can no longer read YouTube's player, so nothing can be
     downloaded for Whisper until it is upgraded (#139).
@@ -129,24 +150,11 @@ class ExtractorOutOfDate(ContentUnavailable):
     (ADR 0011).
     """
 
-    # Long enough that a stale tool is not asked about every video on every
-    # poll tick — which for the 25 failures of one source is the flood ADR 0007
-    # was written about — and short enough that an upgrade is noticed the same
-    # hour, without anybody sending anything back.
-    WAIT = timedelta(hours=1)
-
     def __init__(self, video_id: str, why: str):
         super().__init__(f"Video {video_id} is waiting for an up-to-date yt-dlp: {why}")
 
-    def wait_after(self, attempts: int) -> timedelta | None:
-        # Whatever the attempts, because this failure spends none of them.
-        return self.WAIT
 
-    def counts_an_attempt(self) -> bool:
-        return False
-
-
-class ProxyFailed(ContentUnavailable):
+class ProxyFailed(_OurOwnFailure):
     """
     The proxy in YOUTUBE_PROXY_URL is down, unreachable or rejects our
     credentials (407), on the caption request or on the audio download (#153).
@@ -160,17 +168,8 @@ class ProxyFailed(ContentUnavailable):
     Fixing the proxy is enough for an ordinary retry to pick the video up.
     """
 
-    WAIT = ExtractorOutOfDate.WAIT
-
     def __init__(self, video_id: str, why: str):
         super().__init__(f"Video {video_id} is waiting for the YouTube proxy: {why}")
-
-    def wait_after(self, attempts: int) -> timedelta | None:
-        # Whatever the attempts, because this failure spends none of them.
-        return self.WAIT
-
-    def counts_an_attempt(self) -> bool:
-        return False
 
 
 class _LibraryRefused(Exception):
@@ -328,8 +327,9 @@ async def video_transcript_messages(
     NoTranscript when it has no captions and no Whisper result, or neither has
     any text (#126); NeverTranscribable when no attempt could produce one
     (#137); ExtractorOutOfDate when our yt-dlp is what failed (#139);
-    ProxyFailed when the YouTube proxy is (#153); YouTubeRefused when YouTube is refusing caption requests: the video is
-    waited for (#125).
+    ProxyFailed when the proxy in YOUTUBE_PROXY_URL is what failed (#153);
+    YouTubeRefused when YouTube is refusing our requests: the video is waited
+    for (#125).
 
     The caller says whose evidence this is; `metadata` is merged under the
     chunk's own fields. Whisper cost rides on the first message only — the

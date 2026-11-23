@@ -197,14 +197,14 @@ def ytdlp(monkeypatch):
     """
     state = {"given": []}
 
-    def _writes_an_mp3(video_url, into):
-        Path(into["outtmpl"] % {"ext": "mp3"}).write_bytes(b"audio")
+    def _writes_an_mp3(video_url, options):
+        Path(options["outtmpl"] % {"ext": "mp3"}).write_bytes(b"audio")
 
     state["download"] = _writes_an_mp3
 
-    def _download_audio(video_url, into):
-        state["given"].append(into)
-        state["download"](video_url, into)
+    def _download_audio(video_url, options):
+        state["given"].append(options)
+        state["download"](video_url, options)
 
     class _Heard:
         segments = []
@@ -235,7 +235,7 @@ class TestTheAudioForWhisper:
 
 def _ytdlp_says(words):
     """A download that fails with yt-dlp's `words`, as its DownloadError would say them."""
-    def _fails(video_url, into):
+    def _fails(video_url, options):
         raise RuntimeError(words)
     return _fails
 

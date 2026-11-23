@@ -206,9 +206,9 @@ class YouTubeConnector(BaseConnector):
         """
         A video whose transcript could not be had — YouTube refused its captions
         (#125), it has none (#126), it can never have one (#137), our own
-        yt-dlp is out of date (#139), or our proxy failed (#153) — handed on in its transcript's place: the
-        pipeline records it as a failed message, and fetch_again hands back its
-        transcript once there is one.
+        yt-dlp is out of date (#139), or our proxy failed (#153) — handed on in
+        its transcript's place: the pipeline records it as a failed message,
+        and fetch_again hands back its transcript once there is one.
         """
         fields = self._transcript_fields(video)
         fields["metadata"] = {**fields["metadata"], "video_id": video["video_id"]}

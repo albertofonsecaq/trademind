@@ -38,7 +38,7 @@ class DownloadProxyFailed(Exception):
     """
 
 
-class _Heard:
+class _WarningsKept:
     """
     yt-dlp's logger: keeps what it warns of, says nothing.
 
@@ -48,7 +48,7 @@ class _Heard:
     """
 
     def __init__(self):
-        self.warnings: list[str] = []
+        self.kept: list[str] = []
 
     def debug(self, message: str) -> None:
         pass
@@ -57,7 +57,7 @@ class _Heard:
         pass
 
     def warning(self, message: str) -> None:
-        self.warnings.append(message)
+        self.kept.append(message)
 
     def error(self, message: str) -> None:
         pass
@@ -106,11 +106,11 @@ def _cause(e: Exception) -> Exception | None:
     return None if youtube_proxy.url() else e
 
 
-def _download_audio(video_url: str, into: dict) -> None:
-    """The video's audio, downloaded by yt-dlp with the options `into` gives."""
+def _download_audio(video_url: str, options: dict) -> None:
+    """The video's audio, downloaded by yt-dlp with the `options` given."""
     import yt_dlp
 
-    with yt_dlp.YoutubeDL(into) as ydl:
+    with yt_dlp.YoutubeDL(options) as ydl:
         ydl.download([video_url])
 
 
@@ -131,11 +131,11 @@ def _download_sync(video_url: str, tmpdir: str) -> str:
         "quiet": True,
         "no_warnings": True,
     }
-    heard = _Heard()
+    warned = _WarningsKept()
     proxy = youtube_proxy.url()
     if proxy:
         ydl_opts["proxy"] = proxy
-        ydl_opts["logger"] = heard
+        ydl_opts["logger"] = warned
 
     try:
         _download_audio(video_url, ydl_opts)
@@ -146,7 +146,7 @@ def _download_sync(video_url: str, tmpdir: str) -> str:
             raise DownloadRefused(youtube_proxy.scrub(str(e))) from _cause(e)
         # Read here, with what yt-dlp warned of, before its words are
         # scrubbed and the proxy's failure can no longer be told apart (#153).
-        proxy_failed = youtube_refusal.proxy_failed(e, heard.warnings)
+        proxy_failed = youtube_refusal.proxy_failed(e, warned.kept)
         if proxy_failed:
             raise DownloadProxyFailed(proxy_failed) from None
         raise
@@ -171,7 +171,7 @@ def _ask_whisper(audio_path: str):
         )
 
 
-def _transcribe_sync(audio_path: str) -> tuple[list[dict], Decimal] | None:
+def _transcribe_sync(audio_path: str) -> tuple[list[dict], Decimal]:
     file_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
 
     # OpenAI Whisper API has a 25 MB limit

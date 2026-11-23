@@ -189,9 +189,9 @@ class TestTheAudioForWhisperTakesItsTurnToo:
         Whisper configured: its download noting when YouTube was asked, and
         OpenAI's transcription after it taking ten minutes on the pace's clock.
         """
-        def _download(video_url, into):
+        def _download(video_url, options):
             youtube.append(youtube_pace.now)
-            Path(into["outtmpl"] % {"ext": "mp3"}).write_bytes(b"audio")
+            Path(options["outtmpl"] % {"ext": "mp3"}).write_bytes(b"audio")
 
         class _Heard:
             segments = []

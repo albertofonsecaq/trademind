@@ -64,9 +64,9 @@ class Settings(BaseSettings):
     YOUTUBE_REQUEST_GAP_SECONDS: float = 5.0
     YOUTUBE_REQUEST_JITTER_SECONDS: float = 3.0
 
-    # Optional proxy every caption request to YouTube goes through, for when
-    # YouTube blocks this machine's address (#150, ADR 0014). Empty: none, as
-    # before. It carries the proxy's credentials, so it is a secret: never
+    # Optional proxy every transcript request to YouTube goes through —
+    # captions (#150), and the audio download for Whisper (#152) — for when
+    # YouTube blocks this machine's address (ADR 0014). Empty: none, as before. It carries the proxy's credentials, so it is a secret: never
     # logged, never shown in a reason.
     YOUTUBE_PROXY_URL: SecretStr = SecretStr("")
 

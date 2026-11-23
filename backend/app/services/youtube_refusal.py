@@ -95,7 +95,7 @@ def never_transcribable(exc: BaseException) -> str | None:
     """
     if is_refusal(exc):
         return None
-    return _said(exc, _NEVER)
+    return _said(str(exc), _NEVER)
 
 
 def extractor_out_of_date(exc: BaseException) -> str | None:
@@ -111,15 +111,11 @@ def extractor_out_of_date(exc: BaseException) -> str | None:
     """
     if is_refusal(exc):
         return None
-    return _said(exc, _OUT_OF_DATE)
+    return _said(str(exc), _OUT_OF_DATE)
 
 
-def _said(exc: BaseException, verdicts: tuple[tuple[str, str], ...]) -> str | None:
-    """What one of these verdicts says about this error, if any of them does."""
-    return _said_in(str(exc), verdicts)
-
-
-def _said_in(text: str, verdicts: tuple[tuple[str, str], ...]) -> str | None:
+def _said(text: str, verdicts: tuple[tuple[str, str], ...]) -> str | None:
+    """What one of these verdicts says about what a tool said, if any of them does."""
     return next((why for words, why in verdicts if words in text), None)
 
 
@@ -145,7 +141,7 @@ def proxy_failed(exc: BaseException, warned: Iterable[str] = ()) -> str | None:
     if proxy is None:
         return None
     for said in (str(exc), *warned):
-        why = _said_in(said, _PROXY_FAILED)
+        why = _said(said, _PROXY_FAILED)
         if why:
             return why
     return _UNREACHABLE if _proxy_failed_by_type(exc, proxy) else None

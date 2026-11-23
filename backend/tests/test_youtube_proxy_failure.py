@@ -317,9 +317,9 @@ def audio(library, monkeypatch):
     """
     state = {"warns": [], "fails_with": _STALE_WORDS}
 
-    def _download_audio(video_url, into):
+    def _download_audio(video_url, options):
         for warning in state["warns"]:
-            into["logger"].warning(warning)
+            options["logger"].warning(warning)
         raise RuntimeError(state["fails_with"])
 
     library["captions"] = _raises(TranscriptsDisabled("v1"))
