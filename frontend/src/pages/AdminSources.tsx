@@ -789,6 +789,9 @@ export function AdminSources() {
 
   const loadPage = async () => {
     setLoadStatus("loading");
+    // No workspace yet (the user is still being fetched): nothing is known, so
+    // it stays loading rather than reading as an empty workspace.
+    if (!workspaceId) return;
     try {
       await load();
       setLoadStatus("loaded");
@@ -966,13 +969,6 @@ export function AdminSources() {
           <HelpLink section="sources" />
         </div>
 
-        {workspace && (
-          <WorkspaceIngestion
-            workspace={workspace} busy={workspaceBusy} error={workspaceError || undefined}
-            onToggle={toggleWorkspaceIngestion}
-          />
-        )}
-
         {/* Nothing below is shown until the loads succeed: each section has an
             empty state, and every one of them would be a claim the page cannot
             make — including the paths to add a first source. */}
@@ -984,11 +980,18 @@ export function AdminSources() {
         {loadStatus === "failed" && (
           <div style={sec} role="alert">
             <p style={{ color: "#c0392b", fontSize: "0.875rem", margin: "0 0 0.75rem" }}>{t("sources.loadError")}</p>
-            <button style={btn()} onClick={loadPage}>{t("sources.loadRetry")}</button>
+            <button style={btn()} onClick={loadPage}>{t("common.retry")}</button>
           </div>
         )}
 
         {loadStatus === "loaded" && (<>
+        {workspace && (
+          <WorkspaceIngestion
+            workspace={workspace} busy={workspaceBusy} error={workspaceError || undefined}
+            onToggle={toggleWorkspaceIngestion}
+          />
+        )}
+
         {/* Telegram Connections */}
         <div style={sec}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem" }}>
