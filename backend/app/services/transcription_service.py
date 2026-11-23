@@ -13,7 +13,7 @@ import tempfile
 from decimal import Decimal
 
 from app.core.config import settings
-from app.services import youtube_refusal
+from app.services import youtube_pace, youtube_refusal
 
 log = logging.getLogger(__name__)
 
@@ -39,9 +39,11 @@ async def transcribe_youtube_video(video_url: str) -> tuple[list[dict], Decimal]
         raise WhisperGaveNothing("Whisper is not configured (OPENAI_API_KEY is empty)")
 
     try:
-        return await asyncio.get_event_loop().run_in_executor(
-            None, _transcribe_sync, video_url
-        )
+        # The download is a request to YouTube like the captions are (#151).
+        async with youtube_pace.turn():
+            return await asyncio.get_event_loop().run_in_executor(
+                None, _transcribe_sync, video_url
+            )
     except (WhisperGaveNothing, DownloadRefused):
         raise
     except Exception as e:

@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     # up to the ceiling; a request YouTube answers returns it to this (#140).
     YOUTUBE_REFUSAL_COOLDOWN_MINUTES: int = 60
     YOUTUBE_REFUSAL_COOLDOWN_MAX_MINUTES: int = 1440  # a day: long blocks have lasted a week
+    # Every transcript request to YouTube — captions, or audio for Whisper —
+    # waits this long after the one before it, plus up to the jitter, across
+    # every fetch in the process: a backfill arrives at a steady pace, not in a
+    # burst (#151). One video per poll never notices it.
+    YOUTUBE_REQUEST_GAP_SECONDS: float = 5.0
+    YOUTUBE_REQUEST_JITTER_SECONDS: float = 3.0
 
     # Phase 11: Stripe billing
     # Create a Product + Price in your Stripe Dashboard and paste the Price ID here.

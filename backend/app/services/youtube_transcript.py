@@ -24,7 +24,7 @@ from app.core.clock import now_utc
 from app.core.config import settings
 from app.core.content_unavailable import ContentUnavailable
 from app.core.platform_refusal import Cooldown, PlatformRefused
-from app.services import refusal_store, transcription_service, youtube_refusal
+from app.services import refusal_store, transcription_service, youtube_pace, youtube_refusal
 from app.services.usage_service import log_usage_event
 
 log = logging.getLogger(__name__)
@@ -218,18 +218,28 @@ async def fetch_captions(video_id: str) -> list[dict] | None:
     escalated from (#140). Only when there is a run to end: a platform that has
     never refused us has nothing to reset.
     """
-    cooldown = await refusal_store.current(refusal_store.YOUTUBE)
-    if cooldown is not None and now_utc() < cooldown.until:
-        raise _refusal(cooldown)
-    try:
-        captions = await asyncio.get_event_loop().run_in_executor(
-            None, _get_captions_sync, video_id
-        )
-    except _LibraryRefused as e:
-        raise await _refused(video_id, str(e)) from e
+    await _not_refused()
+    # Spaced out from every other transcript request (#151), and checked again
+    # once its turn comes: one queued behind a request YouTube refused is not made.
+    async with youtube_pace.turn():
+        cooldown = await _not_refused()
+        try:
+            captions = await asyncio.get_event_loop().run_in_executor(
+                None, _get_captions_sync, video_id
+            )
+        except _LibraryRefused as e:
+            raise await _refused(video_id, str(e)) from e
     if cooldown is not None and cooldown.consecutive > 0:
         await refusal_store.let_through(refusal_store.YOUTUBE)
     return captions
+
+
+async def _not_refused() -> Cooldown | None:
+    """The recorded cool-down, once it has passed; YouTubeRefused while it has not."""
+    cooldown = await refusal_store.current(refusal_store.YOUTUBE)
+    if cooldown is not None and now_utc() < cooldown.until:
+        raise _refusal(cooldown)
+    return cooldown
 
 
 async def _refused(video_id: str, reason: str) -> YouTubeRefused:
