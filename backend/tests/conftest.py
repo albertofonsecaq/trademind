@@ -111,6 +111,42 @@ def _restore_the_machines_time_zone():
         time.tzset()
 
 
+class FakePaceClock:
+    """
+    The clock YouTube's pace reads (#151), moved only by waiting on it: a test
+    that waits the gap returns at once, with the clock that much later.
+    """
+
+    def __init__(self):
+        self.now = 1000.0
+        self.waited: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.waited.append(seconds)
+        self.now += seconds
+
+
+@pytest.fixture(autouse=True)
+def youtube_pace(monkeypatch):
+    """
+    A pace of its own for every test, on a clock that never really sleeps.
+
+    The pace is shared by the whole process, so without this one test's last
+    request would make the next test's first one wait, and every test asking
+    YouTube twice would sleep the real gap.
+    """
+    from app.services import youtube_pace as pace_module
+
+    clock = FakePaceClock()
+    monkeypatch.setattr(
+        pace_module, "_pace", pace_module.Pace(clock=clock.monotonic, sleep=clock.sleep)
+    )
+    return clock
+
+
 @pytest.fixture
 async def db_session():
     """
