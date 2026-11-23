@@ -25,6 +25,7 @@ machine* below before choosing one.
 can run by hand, which is not a backup arrangement:
 
 ```bash
+backend/scripts/choose-backup-destination.sh      # pick one, prove it, install
 backend/scripts/install-backup-schedule.sh --mirror ~/path/to/a/synced/folder
 backend/scripts/install-backup-schedule.sh --uninstall
 ```
@@ -62,6 +63,15 @@ on this disk and is not the off-machine copy #51 asks for;
 `backup-mirror/README.md` says what it does and does not protect against.
 
 ### A destination that is actually off this machine
+
+```bash
+backend/scripts/choose-backup-destination.sh
+```
+
+That walks the choice — a synced folder, an external disk, or object storage —
+and **refuses to install a destination it has not watched a file leave on**. It
+is the same six steps this section describes, in the order that catches the
+failure below before it becomes the arrangement.
 
 A path is not a destination until something has been seen to leave on it. On
 2026-10-25 iCloud Drive was chosen, prepared, and then rejected on the
