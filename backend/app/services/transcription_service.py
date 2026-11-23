@@ -91,11 +91,19 @@ async def transcribe_youtube_video(video_url: str) -> tuple[list[dict], Decimal]
     except (WhisperGaveNothing, DownloadRefused, DownloadProxyFailed, YouTubeRefused):
         raise
     except Exception as e:
-        # yt-dlp's words can name the proxy, credentials and all (#152); the
-        # original is not chained on, so no traceback says it either.
+        # yt-dlp's words can name the proxy, credentials and all (#152).
         said = youtube_proxy.scrub(str(e))
         log.warning("Whisper transcription failed for %s: %s", video_url, said)
-        raise WhisperGaveNothing(f"Whisper failed: {said}") from None
+        raise WhisperGaveNothing(f"Whisper failed: {said}") from _cause(e)
+
+
+def _cause(e: Exception) -> Exception | None:
+    """
+    What to chain an error passed on from yt-dlp to: the original, for its
+    traceback, unless a proxy is set — then its words may name the proxy,
+    credentials and all, and no traceback is to say them (#152).
+    """
+    return None if youtube_proxy.url() else e
 
 
 def _download_audio(video_url: str, into: dict) -> None:
@@ -135,7 +143,7 @@ def _download_sync(video_url: str, tmpdir: str) -> str:
         # Only the download goes through YouTube; OpenAI's errors are not its
         # refusal. One met through the proxy is still a refusal (ADR 0009, 0014).
         if youtube_refusal.is_refusal(e):
-            raise DownloadRefused(youtube_proxy.scrub(str(e))) from None
+            raise DownloadRefused(youtube_proxy.scrub(str(e))) from _cause(e)
         # Read here, with what yt-dlp warned of, before its words are
         # scrubbed and the proxy's failure can no longer be told apart (#153).
         proxy_failed = youtube_refusal.proxy_failed(e, heard.warnings)
