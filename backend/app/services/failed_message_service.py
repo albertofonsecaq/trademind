@@ -266,11 +266,12 @@ def is_stuck(row: FailedMessage, *, cooldown: timedelta) -> bool:
 
     What it cannot know, and so does not claim:
 
-    - **Which kind of wait holds this message.** Two failures count no
-      attempt, and both belong here: a platform refusing us (ADR 0007) and our
-      own tooling being stale (#139, ADR 0011). A stale tool waits a flat hour
-      at a time, which is the base or less, so while refusals have escalated
-      the wait in force, a message waiting on our tooling is measured against
+    - **Which kind of wait holds this message.** Three failures count no
+      attempt, and all belong here: a platform refusing us (ADR 0007), our
+      own tooling being stale (#139, ADR 0011) and the YouTube proxy failing
+      (#153, ADR 0014). The last two wait a flat hour at a time, which is the
+      base or less, so while refusals have escalated the wait in force, a
+      message waiting on our tooling or proxy is measured against
       the longer of the two and reads as stuck later than it is. It says what
       is holding it in its reason either way; that it is held at all is what
       this answers.

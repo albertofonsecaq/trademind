@@ -94,20 +94,20 @@ class TestWithoutAProxy:
 _SECRET_PARTS = [_PROXY, "trader-user", "s3cret-pass", "proxy.example.net"]
 
 
-def _proxy_failed(video_id):
-    # What requests says when the proxy cannot be reached: the proxy's own
-    # address, and with it the credentials, inside the error's text.
-    raise requests.exceptions.ProxyError(
-        "HTTPSConnectionPool(host='www.youtube.com', port=443): Max retries exceeded "
-        f"(Caused by ProxyError('Unable to connect to proxy {_PROXY}', "
-        "NewConnectionError('proxy.example.net:8080: Failed to establish a new connection')))"
+def _names_the_proxy(video_id):
+    # An error from the network library with the proxy's own address, and with
+    # it the credentials, inside its text. Not the proxy failing — that is
+    # said in our own words (#153) — so it is read as no captions, and logged.
+    raise requests.exceptions.ReadTimeout(
+        "HTTPSConnectionPool(host='www.youtube.com', port=443): Read timed out. "
+        f"(read timeout=None, through {_PROXY})"
     )
 
 
 class TestTheProxyUrlIsNeverSaid:
     async def test_not_in_the_log_when_the_library_puts_it_in_its_error(self, library, monkeypatch, caplog):
         _set_proxy(monkeypatch, _PROXY)
-        library["list"] = _proxy_failed
+        library["list"] = _names_the_proxy
 
         with caplog.at_level(logging.DEBUG):
             await youtube_transcript.fetch_captions("v1")
@@ -244,11 +244,12 @@ class TestTheProxyUrlIsNeverSaidByTheDownload:
     async def test_not_in_the_reason_or_the_log_when_yt_dlp_puts_it_in_its_error(
         self, ytdlp, monkeypatch, caplog
     ):
+        # Not the proxy failing — that is said in our own words (#153) — but
+        # yt-dlp's words passed on, which name the proxy here.
         _set_proxy(monkeypatch, _PROXY)
         ytdlp["download"] = _ytdlp_says(
             "ERROR: [youtube] v1: Unable to download webpage: "
-            f"('Unable to connect to proxy', OSError('Tunnel connection failed: 407 "
-            f"Proxy Authentication Required')) (caused by ProxyError({_PROXY!r}))"
+            f"HTTP Error 500: Internal Server Error (through {_PROXY})"
         )
 
         with caplog.at_level(logging.DEBUG):
@@ -256,7 +257,7 @@ class TestTheProxyUrlIsNeverSaidByTheDownload:
                 await transcription_service.transcribe_youtube_video(_VIDEO)
 
         assert caplog.records, "the failure is still logged, without the proxy"
-        assert "Unable to connect to proxy" in str(raised.value)
+        assert "Internal Server Error" in str(raised.value)
         for part in _SECRET_PARTS:
             assert part not in str(raised.value)
             assert part not in caplog.text
