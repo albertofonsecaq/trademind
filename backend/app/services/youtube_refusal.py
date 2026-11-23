@@ -17,10 +17,18 @@ ADR 0012).
 And read once more again, it tells both of those from a failure that is neither
 the platform's nor the video's but ours: a yt-dlp whose extractor no longer
 matches YouTube's player. That one costs the video nothing and is waited out
-until somebody upgrades the tool (#139). Every verdict here asks `is_refusal`
-first, so none of them can widen what a refusal is.
+until somebody upgrades the tool (#139). The same goes for the proxy requests
+leave through when one is set, down or rejecting our credentials: ours, waited
+out until somebody fixes it (#153, ADR 0014). Every verdict here asks
+`is_refusal` first, so none of them can widen what a refusal is.
 """
+from collections.abc import Iterable
+from urllib.parse import urlsplit
+
+import requests
 from youtube_transcript_api import RequestBlocked
+
+from app.services import youtube_proxy
 
 # What yt-dlp says when YouTube is refusing us. Not "Sign in to confirm" alone:
 # "Sign in to confirm your age" is one video's age check.
@@ -48,6 +56,28 @@ _OUT_OF_DATE = (
 )
 
 
+# What requests and yt-dlp say when the proxy in YOUTUBE_PROXY_URL is what
+# failed, and what to tell a person: the setting to fix, never the URL (#153).
+# A 407 and a tunnel refused are asked first: urllib3 says both as being
+# "unable to connect to proxy", yet the proxy that answered them was reached.
+_FIX_IT = (
+    "; fix the proxy or the setting and the videos it failed are picked up by an "
+    "ordinary retry"
+)
+_UNREACHABLE = "the proxy in YOUTUBE_PROXY_URL could not be reached" + _FIX_IT
+_PROXY_FAILED = (
+    ("Proxy Authentication Required",
+     "the proxy in YOUTUBE_PROXY_URL rejected our credentials (407)" + _FIX_IT),
+    ("Tunnel connection failed",
+     "the proxy in YOUTUBE_PROXY_URL answered our request for a connection to "
+     "YouTube with an error of its own" + _FIX_IT),
+    ("Missing dependencies for SOCKS support",
+     "the proxy in YOUTUBE_PROXY_URL is a SOCKS proxy, which needs "
+     "`pip install requests[socks]`" + _FIX_IT),
+    ("Unable to connect to proxy", _UNREACHABLE),
+)
+
+
 def is_refusal(exc: BaseException) -> bool:
     if isinstance(exc, RequestBlocked):          # the library's IpBlocked, for a 429, is one
         return True
@@ -65,7 +95,7 @@ def never_transcribable(exc: BaseException) -> str | None:
     """
     if is_refusal(exc):
         return None
-    return _said(exc, _NEVER)
+    return _said(str(exc), _NEVER)
 
 
 def extractor_out_of_date(exc: BaseException) -> str | None:
@@ -81,9 +111,55 @@ def extractor_out_of_date(exc: BaseException) -> str | None:
     """
     if is_refusal(exc):
         return None
-    return _said(exc, _OUT_OF_DATE)
+    return _said(str(exc), _OUT_OF_DATE)
 
 
-def _said(exc: BaseException, verdicts: tuple[tuple[str, str], ...]) -> str | None:
-    """What one of these verdicts says about this error, if any of them does."""
-    return next((why for words, why in verdicts if words in str(exc)), None)
+def _said(text: str, verdicts: tuple[tuple[str, str], ...]) -> str | None:
+    """What one of these verdicts says about what a tool said, if any of them does."""
+    return next((why for words, why in verdicts if words in text), None)
+
+
+def proxy_failed(exc: BaseException, warned: Iterable[str] = ()) -> str | None:
+    """
+    Why the proxy in YOUTUBE_PROXY_URL, rather than YouTube or this video, is
+    what failed — saying the setting to fix and nothing of the URL — or None
+    when it is not (#153).
+
+    `warned` is what the tool said on the way to `exc`. yt-dlp needs it: when
+    it cannot get through the proxy it warns so for each page and then fails in
+    the words of a stale extractor, which, read alone, would send a person to
+    upgrade a tool that is fine.
+
+    Only possible while a proxy is set: without one, nothing of ours stands
+    between us and YouTube to fail. A refusal is asked first, and so is a video
+    that can never be transcribed — a proxy that stumbled on the way to that
+    answer did not stop it being given.
+    """
+    if is_refusal(exc) or never_transcribable(exc):
+        return None
+    proxy = youtube_proxy.url()
+    if proxy is None:
+        return None
+    for said in (str(exc), *warned):
+        why = _said(said, _PROXY_FAILED)
+        if why:
+            return why
+    return _UNREACHABLE if _proxy_failed_by_type(exc, proxy) else None
+
+
+def _proxy_failed_by_type(exc: BaseException, proxy: str) -> bool:
+    """
+    Whether requests, on the caption request, says by the error's type alone
+    that the proxy failed, whatever its words.
+
+    Through an HTTP proxy it raises a ProxyError: the captions library (1.2.4)
+    turns only HTTP errors into its own, so the proxy's reaches us as it is. A
+    SOCKS proxy raises none: every connection is opened through it, and failing
+    to open one is a plain ConnectionError. Through an HTTP proxy that same
+    error is a connection broken once the tunnel is up, which is not the
+    proxy's to own.
+    """
+    if isinstance(exc, requests.exceptions.ProxyError):
+        return True
+    socks = urlsplit(proxy).scheme.startswith("socks")
+    return socks and isinstance(exc, requests.exceptions.ConnectionError)

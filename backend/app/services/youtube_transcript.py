@@ -20,11 +20,13 @@ from decimal import Decimal
 from youtube_transcript_api import NoTranscriptFound, YouTubeTranscriptApi
 
 from app.connectors.base import RawMessage
-from app.core.clock import now_utc
 from app.core.config import settings
 from app.core.content_unavailable import ContentUnavailable
-from app.core.platform_refusal import Cooldown, PlatformRefused
-from app.services import refusal_store, transcription_service, youtube_refusal
+from app.services import (
+    refusal_store, transcription_service, youtube_cooldown, youtube_pace, youtube_proxy,
+    youtube_refusal,
+)
+from app.services.youtube_cooldown import YouTubeRefused
 from app.services.usage_service import log_usage_event
 
 log = logging.getLogger(__name__)
@@ -79,16 +81,6 @@ def _chunk_end(chunk: list[dict]) -> float:
     return float(last.get("start", 0)) + float(last.get("duration", 0))
 
 
-class YouTubeRefused(PlatformRefused):
-    """
-    YouTube refusing us — its captions, or the audio Whisper needs (a 429, our
-    address blocked, a demand to prove we are not a bot).
-
-    Not the same as a video without captions: every video after this one
-    would be refused too, and it says nothing about the video (#124, #125, #130).
-    """
-
-
 class NoTranscript(ContentUnavailable):
     """
     The video has no captions and Whisper gave nothing: an ordinary failed
@@ -123,7 +115,28 @@ class NeverTranscribable(ContentUnavailable):
         return True
 
 
-class ExtractorOutOfDate(ContentUnavailable):
+class _OurOwnFailure(ContentUnavailable):
+    """
+    A failure of our own setup rather than of the video or the platform: it
+    counts no attempt and is never given up, because fixing the setup makes it
+    work, and it waits a flat hour at a time until then (ADR 0011).
+    """
+
+    # Long enough that a broken setup is not asked about every video on every
+    # poll tick — which for the 25 failures of one source is the flood ADR 0007
+    # was written about — and short enough that a fix is noticed the same
+    # hour, without anybody sending anything back.
+    WAIT = timedelta(hours=1)
+
+    def wait_after(self, attempts: int) -> timedelta | None:
+        # Whatever the attempts, because this failure spends none of them.
+        return self.WAIT
+
+    def counts_an_attempt(self) -> bool:
+        return False
+
+
+class ExtractorOutOfDate(_OurOwnFailure):
     """
     Our yt-dlp can no longer read YouTube's player, so nothing can be
     downloaded for Whisper until it is upgraded (#139).
@@ -137,54 +150,46 @@ class ExtractorOutOfDate(ContentUnavailable):
     (ADR 0011).
     """
 
-    # Long enough that a stale tool is not asked about every video on every
-    # poll tick — which for the 25 failures of one source is the flood ADR 0007
-    # was written about — and short enough that an upgrade is noticed the same
-    # hour, without anybody sending anything back.
-    WAIT = timedelta(hours=1)
-
     def __init__(self, video_id: str, why: str):
         super().__init__(f"Video {video_id} is waiting for an up-to-date yt-dlp: {why}")
 
-    def wait_after(self, attempts: int) -> timedelta | None:
-        # Whatever the attempts, because this failure spends none of them.
-        return self.WAIT
 
-    def counts_an_attempt(self) -> bool:
-        return False
-
-
-def _refusal(cooldown: Cooldown) -> YouTubeRefused:
+class ProxyFailed(_OurOwnFailure):
     """
-    The refusal to raise for a cool-down, saying which refusal in a row earned
-    it and until when.
+    The proxy in YOUTUBE_PROXY_URL is down, unreachable or rejects our
+    credentials (407), on the caption request or on the audio download (#153).
 
-    This reason is what the source page shows for every message the wait holds
-    up, so it says both halves ADR 0010 asks for, not only the log line's: the
-    day as well as the hour, because an escalating wait can outlast one, and
-    how many refusals in a row there have been, because "until tomorrow" alone
-    says nothing about how long YouTube has been refusing us.
-
-    Nothing is claimed about a run when the platform has answered us since
-    (`consecutive` is 0): the recorded end still holds and is still waited out,
-    but there is no run of refusals to count.
+    Our own setup's failure, like a stale yt-dlp (ADR 0011, 0014): read as "no
+    captions" it fell through to Whisper, failed again and spent one of the
+    video's three attempts, so a proxy left broken for three fetches gave up
+    the backlog; read as a refusal it would arm YouTube's cool-down for
+    something YouTube never said. So it counts no attempt, records no refusal,
+    and waits an hour at a time, saying the setting to fix — never the URL.
+    Fixing the proxy is enough for an ordinary retry to pick the video up.
     """
-    in_a_row = f" ({cooldown.consecutive} in a row)" if cooldown.consecutive else ""
-    return YouTubeRefused(
-        f"YouTube is refusing our requests{in_a_row} "
-        f"until {cooldown.until:%Y-%m-%d %H:%M} UTC",
-        until=cooldown.until,
-    )
+
+    def __init__(self, video_id: str, why: str):
+        super().__init__(f"Video {video_id} is waiting for the YouTube proxy: {why}")
 
 
 class _LibraryRefused(Exception):
     """The library's refusal, out of the executor thread."""
 
 
+class _ProxyFailed(Exception):
+    """The proxy failing the caption request, out of the executor thread: why, in our words."""
+
+
 def _get_captions_sync(video_id: str) -> list[dict] | None:
-    """The video's captions, or None if it has none; _LibraryRefused if YouTube refuses."""
+    """
+    The video's captions, or None if it has none; _LibraryRefused if YouTube
+    refuses; _ProxyFailed if the proxy itself failed (#153).
+
+    Through the proxy when one is set (#150): a refusal met through it is read
+    and recorded exactly as one met without it.
+    """
     try:
-        transcript_list = YouTubeTranscriptApi().list(video_id)
+        transcript_list = YouTubeTranscriptApi(proxy_config=youtube_proxy.for_captions()).list(video_id)
         # Prefer manually created, then auto-generated; prefer EN/ES
         try:
             t = transcript_list.find_manually_created_transcript(["en", "es"])
@@ -200,7 +205,14 @@ def _get_captions_sync(video_id: str) -> list[dict] | None:
     except Exception as e:
         if youtube_refusal.is_refusal(e):
             raise _LibraryRefused(type(e).__name__) from e
-        log.debug("No captions for %s: %s", video_id, e)
+        # Asked before "no captions", which would fall through to Whisper and
+        # spend the video's attempt on our broken proxy (#153). Not chained:
+        # the library's words name the proxy.
+        proxy_failed = youtube_refusal.proxy_failed(e)
+        if proxy_failed:
+            raise _ProxyFailed(proxy_failed) from None
+        # The library's words can name the proxy, credentials and all (#150).
+        log.debug("No captions for %s: %s", video_id, youtube_proxy.scrub(str(e)))
         return None
 
 
@@ -218,15 +230,19 @@ async def fetch_captions(video_id: str) -> list[dict] | None:
     escalated from (#140). Only when there is a run to end: a platform that has
     never refused us has nothing to reset.
     """
-    cooldown = await refusal_store.current(refusal_store.YOUTUBE)
-    if cooldown is not None and now_utc() < cooldown.until:
-        raise _refusal(cooldown)
-    try:
-        captions = await asyncio.get_event_loop().run_in_executor(
-            None, _get_captions_sync, video_id
-        )
-    except _LibraryRefused as e:
-        raise await _refused(video_id, str(e)) from e
+    # Spaced out from every other request to YouTube (#151), and not made, nor
+    # waited for, while a refusal's cool-down is in force: the turn asks.
+    async with youtube_pace.turn() as cooldown:
+        try:
+            captions = await asyncio.get_event_loop().run_in_executor(
+                None, _get_captions_sync, video_id
+            )
+        except _LibraryRefused as e:
+            raise await _refused(video_id, str(e)) from e
+        except _ProxyFailed as e:
+            # Not YouTube's answer: nothing is recorded against it, and a run
+            # of refusals is neither extended nor ended by it (#153).
+            raise ProxyFailed(video_id, str(e)) from e
     if cooldown is not None and cooldown.consecutive > 0:
         await refusal_store.let_through(refusal_store.YOUTUBE)
     return captions
@@ -254,7 +270,7 @@ async def _refused(video_id: str, reason: str) -> YouTubeRefused:
         "YouTube refused us for %s (%s), %s in a row: no requests to it until %s UTC",
         video_id, reason, cooldown.consecutive, f"{cooldown.until:%Y-%m-%d %H:%M}",
     )
-    return _refusal(cooldown)
+    return youtube_cooldown.refusal(cooldown)
 
 
 async def _segments_for_video(video_id: str) -> tuple[list[dict], str]:
@@ -274,6 +290,9 @@ async def _segments_for_video(video_id: str) -> tuple[list[dict], str]:
         result = await transcription_service.transcribe_youtube_video(video_url)
     except transcription_service.DownloadRefused as e:
         raise await _refused(video_id, str(e)) from e
+    except transcription_service.DownloadProxyFailed as e:
+        # Our proxy, not YouTube's answer and not the video's (#153).
+        raise ProxyFailed(video_id, str(e)) from e
     except transcription_service.WhisperGaveNothing as e:
         # Whether this is the video's own, final problem is read in the one
         # place that reads YouTube's words, which answers no for a refusal (#137).
@@ -308,8 +327,9 @@ async def video_transcript_messages(
     NoTranscript when it has no captions and no Whisper result, or neither has
     any text (#126); NeverTranscribable when no attempt could produce one
     (#137); ExtractorOutOfDate when our yt-dlp is what failed (#139);
-    YouTubeRefused when YouTube is refusing caption requests: the video is
-    waited for (#125).
+    ProxyFailed when the proxy in YOUTUBE_PROXY_URL is what failed (#153);
+    YouTubeRefused when YouTube is refusing our requests: the video is waited
+    for (#125).
 
     The caller says whose evidence this is; `metadata` is merged under the
     chunk's own fields. Whisper cost rides on the first message only — the

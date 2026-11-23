@@ -22,7 +22,7 @@ from youtube_transcript_api import (
 
 from app.core.config import settings
 from app.core.platform_refusal import Cooldown
-from app.services import refusal_store, youtube_transcript
+from app.services import refusal_store, youtube_cooldown, youtube_transcript
 from app.services.youtube_transcript import YouTubeRefused, fetch_captions
 from tests.conftest import fake_refusal_store
 
@@ -54,6 +54,10 @@ def youtube(monkeypatch):
     state = {"listed": [], "error": None, "asked": 0}
 
     class _Api:
+        def __init__(self, proxy_config=None):
+            # Which proxy, if any, is test_youtube_proxy.py's to check (#150).
+            pass
+
         def list(self, video_id):
             state["asked"] += 1
             if state["error"]:
@@ -68,7 +72,7 @@ def youtube(monkeypatch):
     monkeypatch.setattr(youtube_transcript, "YouTubeTranscriptApi", _Api)
     # Each test starts with YouTube not refusing, at a moment it controls.
     clock = {"now": datetime(2026, 10, 31, 9, 0, tzinfo=timezone.utc)}
-    monkeypatch.setattr(youtube_transcript, "now_utc", lambda: clock["now"])
+    monkeypatch.setattr(youtube_cooldown, "now_utc", lambda: clock["now"])
     state["clock"] = clock
     # The store escalates from the same clock the fetch reads (#140).
     state["refusals"] = fake_refusal_store(monkeypatch, now=lambda: clock["now"])
