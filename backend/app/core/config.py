@@ -1,3 +1,4 @@
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Literal, List
 
@@ -62,6 +63,12 @@ class Settings(BaseSettings):
     # burst (#151). One video per poll never notices it.
     YOUTUBE_REQUEST_GAP_SECONDS: float = 5.0
     YOUTUBE_REQUEST_JITTER_SECONDS: float = 3.0
+
+    # Optional proxy every caption request to YouTube goes through, for when
+    # YouTube blocks this machine's address (#150, ADR 0014). Empty: none, as
+    # before. It carries the proxy's credentials, so it is a secret: never
+    # logged, never shown in a reason.
+    YOUTUBE_PROXY_URL: SecretStr = SecretStr("")
 
     # Phase 11: Stripe billing
     # Create a Product + Price in your Stripe Dashboard and paste the Price ID here.

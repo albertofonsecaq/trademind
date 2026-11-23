@@ -30,6 +30,9 @@ def youtube(monkeypatch, youtube_pace):
     asked: list[float] = []
 
     class _Api:
+        def __init__(self, proxy_config=None):
+            pass
+
         def list(self, video_id):
             asked.append(youtube_pace.now)
             raise TranscriptsDisabled(video_id)
@@ -87,6 +90,9 @@ class TestACoolDownIsNotPacedOut:
     def refusing(self, youtube, monkeypatch):
         """YouTube refusing every request from now on."""
         class _Refusing:
+            def __init__(self, proxy_config=None):
+                pass
+
             def list(self, video_id):
                 youtube.append(video_id)
                 raise IpBlocked(video_id)

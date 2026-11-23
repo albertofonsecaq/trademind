@@ -24,7 +24,7 @@ from app.core.clock import now_utc
 from app.core.config import settings
 from app.core.content_unavailable import ContentUnavailable
 from app.core.platform_refusal import Cooldown, PlatformRefused
-from app.services import refusal_store, transcription_service, youtube_pace, youtube_refusal
+from app.services import refusal_store, transcription_service, youtube_pace, youtube_proxy, youtube_refusal
 from app.services.usage_service import log_usage_event
 
 log = logging.getLogger(__name__)
@@ -182,9 +182,14 @@ class _LibraryRefused(Exception):
 
 
 def _get_captions_sync(video_id: str) -> list[dict] | None:
-    """The video's captions, or None if it has none; _LibraryRefused if YouTube refuses."""
+    """
+    The video's captions, or None if it has none; _LibraryRefused if YouTube refuses.
+
+    Through the proxy when one is set (#150): a refusal met through it is read
+    and recorded exactly as one met without it.
+    """
     try:
-        transcript_list = YouTubeTranscriptApi().list(video_id)
+        transcript_list = YouTubeTranscriptApi(proxy_config=youtube_proxy.for_captions()).list(video_id)
         # Prefer manually created, then auto-generated; prefer EN/ES
         try:
             t = transcript_list.find_manually_created_transcript(["en", "es"])
@@ -200,7 +205,8 @@ def _get_captions_sync(video_id: str) -> list[dict] | None:
     except Exception as e:
         if youtube_refusal.is_refusal(e):
             raise _LibraryRefused(type(e).__name__) from e
-        log.debug("No captions for %s: %s", video_id, e)
+        # The library's words can name the proxy, credentials and all (#150).
+        log.debug("No captions for %s: %s", video_id, youtube_proxy.scrub(str(e)))
         return None
 
 
