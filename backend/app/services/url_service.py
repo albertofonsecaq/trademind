@@ -56,7 +56,9 @@ def _extract_sync(url: str) -> dict | None:
         if "text/html" not in content_type and "application/xhtml" not in content_type:
             return None
 
-        raw_bytes = resp.raw.read(_MAX_CONTENT_BYTES)
+        # The raw stream is the body as sent: without decode_content a gzip page
+        # was decoded as text byte for byte and stored as junk (#94).
+        raw_bytes = resp.raw.read(_MAX_CONTENT_BYTES, decode_content=True)
         html = raw_bytes.decode("utf-8", errors="replace")
 
     except Exception as e:
@@ -99,6 +101,19 @@ def _bs4_extract(html: str) -> tuple[str, str]:
         return title, body
     except Exception:
         return "", ""
+
+
+# Binary decoded as text is mostly replacement characters and control bytes; an
+# article in any language has next to none, so a tenth is far from both.
+_GARBLED_SHARE = 0.10
+
+
+def looks_garbled(text: str) -> bool:
+    """True for a page's bytes read as text without decompressing them (#94, #97)."""
+    if not text:
+        return False
+    junk = sum(1 for c in text if c == "\ufffd" or (c < " " and c not in "\t\n\r"))
+    return junk / len(text) > _GARBLED_SHARE
 
 
 async def extract(url: str) -> dict | None:

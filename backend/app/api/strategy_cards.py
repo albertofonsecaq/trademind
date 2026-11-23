@@ -11,14 +11,19 @@ from sqlalchemy import select, func
 from pydantic import BaseModel, field_validator
 
 from app.core.clock import with_aware_snapshot_times
-from app.core.database import get_db, AsyncSessionLocal
+from app.api.analysis_runs import AnalysisRunOut, already_running
+from app.core.database import get_db
+from app.models.analysis_run import MINING
+from app.services.analysis_run_service import RunAlreadyGoing, carry_out, start_run
 from app.core.dependencies import get_current_user
 from app.models.user import User
 from app.models.workspace_member import WorkspaceMember
 from app.models.strategy_card import StrategyCard
 from app.models.trade_idea import TradeIdea
 from app.models.evidence_item import EvidenceItem
+from app.models.evidence_image import EvidenceImage
 from app.models.outcome_check import OutcomeCheck
+from app.services.trade_idea_chart import can_be_charted
 
 router = APIRouter(prefix="/workspaces", tags=["strategy-cards"])
 
@@ -75,11 +80,6 @@ class StrategyCardOut(BaseModel):
     created_at: datetime
 
 
-class MiningResult(BaseModel):
-    cards_touched: int
-    message: str
-
-
 @router.get("/{workspace_id}/strategy-cards", response_model=list[StrategyCardOut])
 async def list_strategy_cards(
     workspace_id: uuid.UUID,
@@ -119,19 +119,25 @@ async def get_strategy_card(
     return card
 
 
-@router.post("/{workspace_id}/mining/run", response_model=MiningResult, status_code=202)
+@router.post("/{workspace_id}/mining/run", response_model=AnalysisRunOut, status_code=202)
 async def trigger_mining(
     workspace_id: uuid.UUID,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Mine the workspace's trade ideas into strategy cards, in the background.
+    Answers with the run it started, which runs/latest then follows; refuses
+    with 409 while the workspace has a run of either kind going (#86).
+    """
     await _assert_member(db, workspace_id, current_user.id)
-    background_tasks.add_task(_run_mining_bg, workspace_id=workspace_id)
-    return MiningResult(
-        cards_touched=0,
-        message="Pattern mining started in background. Check strategy cards in a few seconds.",
-    )
+    try:
+        run = await start_run(db, workspace_id, MINING, current_user.id)
+    except RunAlreadyGoing as refused:
+        raise already_running(refused)
+    background_tasks.add_task(carry_out, run_id=run.id, workspace_id=workspace_id, kind=MINING)
+    return run
 
 
 class CitedExample(BaseModel):
@@ -150,6 +156,9 @@ class CitedExample(BaseModel):
     source_type: str | None
     source_metadata: dict | None    # includes video_url (YouTube) or message_id (Telegram)
     outcome: str | None             # from outcome_check if available
+    evidence_id: uuid.UUID
+    has_image: bool                 # the picture it was read from is kept (#108)
+    has_chart: bool                 # it can be drawn against prices (#109)
 
 
 class OutcomeSummary(BaseModel):
@@ -199,13 +208,15 @@ async def get_strategy_card_detail(
     examples: list[CitedExample] = []
     if sample_ids:
         rows = await db.execute(
-            select(TradeIdea, EvidenceItem, OutcomeCheck)
+            # The picture's id only: whether there is one, not its bytes.
+            select(TradeIdea, EvidenceItem, OutcomeCheck, EvidenceImage.id)
             .join(EvidenceItem, EvidenceItem.id == TradeIdea.evidence_item_id)
             .outerjoin(OutcomeCheck, OutcomeCheck.trade_idea_id == TradeIdea.id)
+            .outerjoin(EvidenceImage, EvidenceImage.evidence_item_id == EvidenceItem.id)
             .where(TradeIdea.id.in_(sample_ids))
             .order_by(TradeIdea.message_timestamp.desc())
         )
-        for idea, evidence, outcome in rows.all():
+        for idea, evidence, outcome, image_id in rows.all():
             examples.append(CitedExample(
                 id=idea.id,
                 symbol=idea.symbol,
@@ -221,6 +232,9 @@ async def get_strategy_card_detail(
                 source_type=evidence.source_type if evidence else None,
                 source_metadata=evidence.source_metadata if evidence else None,
                 outcome=outcome.outcome if outcome else None,
+                evidence_id=idea.evidence_item_id,
+                has_image=image_id is not None,
+                has_chart=can_be_charted(idea),
             ))
 
     # Outcome summary across ALL supporting_evidence (not just the sample)
@@ -280,13 +294,3 @@ async def get_my_execution(
     from app.services.journal_validation_service import get_execution_stats
     stats = await get_execution_stats(db, current_user.id, card_id)
     return ExecutionStats(**stats)
-
-
-async def _run_mining_bg(workspace_id: uuid.UUID):
-    from app.services.pattern_mining_service import run_pattern_mining
-    async with AsyncSessionLocal() as db:
-        try:
-            await run_pattern_mining(db, workspace_id)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error("Background mining failed for %s: %s", workspace_id, e)

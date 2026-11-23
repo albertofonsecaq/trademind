@@ -7,6 +7,7 @@ from app.models.platform_connection import PlatformConnection
 from app.models.source_config import SourceConfig
 from app.models.backfill_job import BackfillJob
 from app.models.evidence_item import EvidenceItem
+from app.models.evidence_image import EvidenceImage
 from app.models.trade_idea import TradeIdea
 from app.models.embedding_row import EmbeddingRow
 from app.models.strategy_card import StrategyCard
@@ -17,12 +18,15 @@ from app.models.journal_entry import JournalEntry
 from app.models.journal_outcome import JournalOutcome
 from app.models.admin_audit_log import AdminAuditLog
 from app.models.ask_record import AskRecord
+from app.models.analysis_run import AnalysisRun
+from app.models.failed_message import FailedMessage
+from app.models.platform_refusal import PlatformRefusal
 
 __all__ = [
     "User", "Workspace", "WorkspaceMember", "Subscription", "UsageEvent",
     "PlatformConnection", "SourceConfig", "BackfillJob",
-    "EvidenceItem", "TradeIdea", "EmbeddingRow",
+    "EvidenceItem", "EvidenceImage", "TradeIdea", "EmbeddingRow",
     "StrategyCard", "PlanItem", "OutcomeCheck",
     "BrokerOrder", "JournalEntry", "JournalOutcome",
-    "AdminAuditLog", "AskRecord",
+    "AdminAuditLog", "AskRecord", "AnalysisRun", "FailedMessage", "PlatformRefusal",
 ]

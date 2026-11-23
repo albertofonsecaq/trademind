@@ -9,6 +9,7 @@ from typing import AsyncIterator
 import uuid
 
 from app.core.clock import as_utc
+from app.core.content_unavailable import ContentUnavailable
 
 
 # Reading a value *in* as aware UTC is the same operation wherever it happens,
@@ -67,6 +68,10 @@ class RawMessage:
     pre_pipeline_cost_usd: str = "0"        # Decimal as string to avoid dataclass/Decimal issues
     pre_pipeline_task_type: str | None = None
     pre_pipeline_model: str | None = None
+    # Why the connector could not fetch this message's content — a video YouTube
+    # refused captions for (#125), or one with no transcript (#126). The
+    # pipeline records the message as failed with it, without processing it.
+    fetch_failure: ContentUnavailable | None = None
 
 
 class BaseConnector(ABC):
@@ -92,6 +97,27 @@ class BaseConnector(ABC):
         connector whose position is a bound can never be in this state.
         """
         return None
+
+    @abstractmethod
+    async def fetch_one(self, stable_id: str) -> RawMessage | None:
+        """The message with this stable_id, fetched from the platform again.
+
+        How a failed message is retried (ADR 0005): the message as it is now,
+        not a copy kept from the attempt that failed. None when the platform no
+        longer has it, which gives the failure up — so None must mean gone, not
+        "could not ask": a failure to ask raises, and counts as an attempt.
+        """
+        ...
+
+    async def fetch_again(self, stable_id: str) -> list[RawMessage] | None:
+        """
+        Everything a failed message stands for, fetched again: itself, as
+        fetch_one has it, unless the platform hands it over in parts — a video
+        refused captions comes back as its transcript's chunks (#125). None,
+        as for fetch_one, when the platform no longer has it.
+        """
+        msg = await self.fetch_one(stable_id)
+        return None if msg is None else [msg]
 
     @abstractmethod
     async def latest_stable_id(self) -> str | None:

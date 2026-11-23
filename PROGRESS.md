@@ -77,6 +77,7 @@ Reference: `trading-knowledge-base-spec.md` for the full spec.
 - [x] RawMessage extended: `source_type`, `content_type`, `pre_pipeline_cost_usd`
 - [x] Pipeline dispatch generalized — `_build_connector()` factory handles both sources
 - [x] Backfill runner updated to use generic connector factory
+- [x] Note: yt-dlp is pinned in `backend/requirements.txt`, which says how to refresh it. YouTube changes its player and a stale extractor then fails every Whisper download; those videos wait, unattempted, until it is refreshed (#139)
 
 ## Phase 4 — Media extraction (images, video, URLs)
 **Status:** COMPLETE

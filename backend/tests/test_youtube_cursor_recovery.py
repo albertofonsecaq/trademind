@@ -163,7 +163,10 @@ class _PipelineSession:
 
     async def execute(self, stmt):
         self.statements.append(str(stmt).lower())
-        return SimpleNamespace(scalar_one_or_none=lambda: self._source, scalar=lambda: None)
+        # No failed messages to retry (#96): a list query finds no rows.
+        return SimpleNamespace(
+            scalar_one_or_none=lambda: self._source, scalar=lambda: None, scalars=lambda: [],
+        )
 
     async def commit(self):
         pass

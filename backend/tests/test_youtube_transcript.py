@@ -7,14 +7,16 @@ that shares a video link (#70) needs the same thing for one video: captions
 first, Whisper when there are none, chunked, the Whisper cost carried once, and
 the same stable ids — so the two paths recognise each other's videos.
 """
+import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
 
 from app.core.config import settings
-from app.services import transcription_service, youtube_transcript
+from app.services import refusal_store, transcription_service, youtube_transcript
+from tests.conftest import fake_refusal_store
 
 _WHEN = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 
@@ -41,6 +43,7 @@ def youtube(monkeypatch):
     monkeypatch.setattr(youtube_transcript, "fetch_captions", _captions)
     monkeypatch.setattr(transcription_service, "transcribe_youtube_video", _whisper)
     monkeypatch.setattr(settings, "YOUTUBE_CHUNK_SECONDS", 300)
+    state["refusals"] = fake_refusal_store(monkeypatch)
     return state
 
 
@@ -95,9 +98,213 @@ class TestWhisperWhenThereAreNoCaptions:
         assert msgs[0].pre_pipeline_model == settings.WHISPER_MODEL
         assert [m.pre_pipeline_task_type for m in msgs[1:]] == [None, None]
 
-    async def test_no_captions_and_no_whisper_is_nothing(self, youtube):
-        assert await _messages() == []
+    async def test_no_captions_and_no_whisper_is_a_failure_that_says_why(self, youtube):
+        # #126: a video with no transcript is a failed message, not nothing.
+        with pytest.raises(youtube_transcript.NoTranscript) as raised:
+            await _messages()
         assert youtube["whisper_calls"] == 1
+        assert str(raised.value) == "Video dQw4w9WgXcQ has no captions, and Whisper produced nothing"
+
+    async def test_whisper_says_why_it_gave_nothing(self, youtube, monkeypatch):
+        async def _whisper(video_url):
+            raise transcription_service.WhisperGaveNothing("Whisper is not configured (OPENAI_API_KEY is empty)")
+
+        monkeypatch.setattr(transcription_service, "transcribe_youtube_video", _whisper)
+
+        with pytest.raises(youtube_transcript.NoTranscript) as raised:
+            await _messages()
+        assert str(raised.value) == (
+            "Video dQw4w9WgXcQ has no captions, and Whisper is not configured (OPENAI_API_KEY is empty)"
+        )
+
+    async def test_captions_with_no_text_are_no_transcript(self, youtube):
+        youtube["captions"] = [{"text": "  ", "start": 0.0, "duration": 60.0}]
+
+        with pytest.raises(youtube_transcript.NoTranscript):
+            await _messages()
+        assert youtube["whisper_calls"] == 0
+
+
+class TestAVideoThatCanNeverBeTranscribed:
+    """
+    #137: an outcome no attempt can change — a live event that has ended, a
+    video with no downloadable audio — is given up at once, with its reason,
+    rather than spending three attempts over a day on a platform already
+    refusing us.
+    """
+
+    @pytest.fixture
+    def whisper_said(self, youtube, monkeypatch):
+        def _said(error: str):
+            async def _whisper(video_url):
+                raise transcription_service.WhisperGaveNothing(error)
+
+            monkeypatch.setattr(transcription_service, "transcribe_youtube_video", _whisper)
+        return _said
+
+    @pytest.mark.parametrize("error, says", [
+        ("Whisper failed: ERROR: [youtube] dQw4w9WgXcQ: This live event has ended", "live event"),
+        ("Whisper failed: ERROR: [youtube] dQw4w9WgXcQ: Requested format is not available. "
+         "Use --list-formats for a list of available formats", "audio"),
+    ])
+    async def test_is_given_up_at_once_saying_which_case_it_was(self, whisper_said, error, says):
+        whisper_said(error)
+
+        with pytest.raises(youtube_transcript.NeverTranscribable) as raised:
+            await _messages()
+
+        assert raised.value.can_never_succeed()
+        assert raised.value.wait_after(1) is None
+        assert str(raised.value).startswith("Video dQw4w9WgXcQ can never be transcribed:")
+        assert says in str(raised.value)
+
+    async def test_a_video_with_no_captions_yet_is_still_retried(self, whisper_said):
+        # ADR 0005: YouTube often adds automatic captions hours after an upload.
+        whisper_said("Whisper failed: ERROR: [youtube] dQw4w9WgXcQ: HTTP Error 500: Internal Server Error")
+
+        with pytest.raises(youtube_transcript.NoTranscript) as raised:
+            await _messages()
+
+        assert not raised.value.can_never_succeed()
+        assert raised.value.wait_after(1) == timedelta(hours=1)
+        assert raised.value.wait_after(2) == timedelta(hours=23)
+
+
+class TestAnExtractorThatNoLongerMatchesYouTube:
+    """
+    #139: a yt-dlp whose extractor YouTube has outgrown is our failure, not the
+    video's. It was wrapped as "Whisper failed" and spent one of the video's
+    three attempts, so a stale tool quietly gave up the backlog an upgrade
+    would have fetched.
+    """
+
+    # What the channel source met on sW1axKLV-t4.
+    _STALE = (
+        "Whisper failed: ERROR: [youtube] sW1axKLV-t4: Failed to extract any player response; "
+        "please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out "
+        "the appropriate issue template. Confirm you are on the latest version using yt-dlp -U"
+    )
+
+    @pytest.fixture
+    def whisper_said(self, youtube, monkeypatch):
+        def _said(error: str):
+            async def _whisper(video_url):
+                raise transcription_service.WhisperGaveNothing(error)
+
+            monkeypatch.setattr(transcription_service, "transcribe_youtube_video", _whisper)
+        return _said
+
+    async def test_costs_the_video_no_attempt_and_says_what_to_run(self, whisper_said):
+        whisper_said(self._STALE)
+
+        with pytest.raises(youtube_transcript.ExtractorOutOfDate) as raised:
+            await _messages()
+
+        assert not raised.value.counts_an_attempt()
+        assert "pip install -U yt-dlp" in str(raised.value)
+
+    async def test_is_waited_for_rather_than_given_up(self, whisper_said):
+        # It succeeds once the tool is refreshed, so giving it up (#137) would
+        # need a person to send it back by hand.
+        whisper_said(self._STALE)
+
+        with pytest.raises(youtube_transcript.ExtractorOutOfDate) as raised:
+            await _messages()
+
+        assert not raised.value.can_never_succeed()
+        assert raised.value.wait_after(1) == timedelta(hours=1)
+
+    async def test_holds_no_other_request_to_youtube_up(self, whisper_said, youtube):
+        # ADR 0009: our stale tool says nothing about YouTube, which is still
+        # serving captions to every other video of the source.
+        whisper_said(self._STALE)
+
+        with pytest.raises(youtube_transcript.ExtractorOutOfDate):
+            await _messages()
+
+        assert youtube["refusals"] == {}
+
+
+class TestYouTubeRefusingWhispersDownload:
+    """#130: YouTube blocking the audio download is the same refusal as for captions."""
+
+    async def test_is_waited_out_with_the_captions(self, youtube, monkeypatch):
+        monkeypatch.setattr(settings, "YOUTUBE_REFUSAL_COOLDOWN_MINUTES", 60)
+
+        async def _whisper(video_url):
+            raise transcription_service.DownloadRefused("HTTP Error 429: Too Many Requests")
+
+        monkeypatch.setattr(transcription_service, "transcribe_youtube_video", _whisper)
+
+        with pytest.raises(youtube_transcript.YouTubeRefused) as raised:
+            await _messages()
+        assert youtube["refusals"][refusal_store.YOUTUBE].until == raised.value.until
+
+
+class TestWhisperSaysWhyItGaveNothing:
+    async def test_without_an_openai_key(self, monkeypatch):
+        monkeypatch.setattr(settings, "OPENAI_API_KEY", "")
+
+        with pytest.raises(transcription_service.WhisperGaveNothing) as raised:
+            await transcription_service.transcribe_youtube_video("https://www.youtube.com/watch?v=x")
+        assert str(raised.value) == "Whisper is not configured (OPENAI_API_KEY is empty)"
+
+    @pytest.mark.parametrize("error", [
+        "ERROR: [youtube] dQw4w9WgXcQ: Unable to download webpage: HTTP Error 429: Too Many Requests",
+        "ERROR: [youtube] dQw4w9WgXcQ: Sign in to confirm you\u2019re not a bot. Use --cookies-from-browser",
+    ])
+    async def test_when_youtube_refuses_the_download(self, monkeypatch, error):
+        monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-test")
+
+        def _refused(video_url, into):
+            raise RuntimeError(error)
+
+        monkeypatch.setattr(transcription_service, "_download_audio", _refused)
+
+        with pytest.raises(transcription_service.DownloadRefused):
+            await transcription_service.transcribe_youtube_video("https://www.youtube.com/watch?v=x")
+
+    async def test_an_age_restricted_video_is_not_youtube_refusing_us(self, monkeypatch):
+        # Read as a refusal, it would hold all of YouTube up, never count an
+        # attempt, and never be given up.
+        monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-test")
+
+        def _age_restricted(video_url, into):
+            raise RuntimeError("ERROR: [youtube] dQw4w9WgXcQ: Sign in to confirm your age. This video may be inappropriate")
+
+        monkeypatch.setattr(transcription_service, "_download_audio", _age_restricted)
+
+        with pytest.raises(transcription_service.WhisperGaveNothing):
+            await transcription_service.transcribe_youtube_video("https://www.youtube.com/watch?v=x")
+
+    async def test_when_it_fails(self, monkeypatch):
+        monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-test")
+
+        def _fails(video_url):
+            raise RuntimeError("yt-dlp: HTTP Error 500")
+
+        monkeypatch.setattr(transcription_service, "_transcribe_sync", _fails)
+
+        with pytest.raises(transcription_service.WhisperGaveNothing) as raised:
+            await transcription_service.transcribe_youtube_video("https://www.youtube.com/watch?v=x")
+        assert str(raised.value) == "Whisper failed: yt-dlp: HTTP Error 500"
+
+    async def test_youtube_refusing_captions_is_waited_out_not_paid_for(self, youtube, monkeypatch, caplog):
+        # #125: Whisper would be paid for a video YouTube will hand over later,
+        # and "No transcript available" would say something untrue about it.
+        until = datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)
+
+        async def _refused(video_id):
+            raise youtube_transcript.YouTubeRefused("refused", until=until)
+
+        monkeypatch.setattr(youtube_transcript, "fetch_captions", _refused)
+        youtube["whisper"] = (_segments(1), Decimal("0.006"))
+
+        with caplog.at_level(logging.INFO, logger=youtube_transcript.__name__):
+            with pytest.raises(youtube_transcript.YouTubeRefused):
+                await _messages()
+        assert youtube["whisper_calls"] == 0
+        assert "No transcript available" not in caplog.text
 
 
 class TestTheCallerSaysWhoseEvidenceItIs:
@@ -148,11 +355,12 @@ class TestWhatWhisperCostIsNeverLost:
         assert msgs[0].pre_pipeline_task_type == "transcription"
         assert usage_log.added == []           # carried, so logged downstream, once
 
-    async def test_a_transcript_with_no_text_at_all_is_still_recorded(self, youtube, usage_log):
+    async def test_a_transcript_with_no_text_at_all_is_paid_for_and_is_no_transcript(self, youtube, usage_log):
         youtube["whisper"] = ([{"text": "", "start": 0.0, "duration": 60.0}], Decimal("0.006"))
         workspace_id = uuid.uuid4()
 
-        assert await _messages(workspace_id=workspace_id) == []
+        with pytest.raises(youtube_transcript.NoTranscript):
+            await _messages(workspace_id=workspace_id)
 
         [event] = usage_log.added
         assert event.task_type == "transcription"

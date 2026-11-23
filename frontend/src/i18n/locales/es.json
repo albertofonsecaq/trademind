@@ -33,7 +33,7 @@
       "library": {
         "title": "Biblioteca de estrategias — Patrones de trading descubiertos",
         "summary": "La biblioteca muestra los patrones de trading validados que el sistema ha extraído de tus fuentes conectadas.",
-        "body": "Cada tarjeta de estrategia es generada por el motor de minería de patrones, que agrupa ideas de trading similares por símbolo, tipo de setup y combinación de indicadores en todas las fuentes.\n\nUna tarjeta muestra: tipo de setup, descripción en tu idioma, tasa de aciertos con intervalo de confianza al 95% (una vez validada), comprobación walk-forward (marca posible sobreajuste) y un diagrama de flujo de cómo operar el setup.\n\nHaz clic en 'Cómo operarlo' para abrir la vista de detalle completa — que también muestra ejemplos citados de las fuentes originales, un desglose de resultados (ganadas/perdidas/abiertas) y tu historial de ejecución personal para ese setup.\n\nNiveles de confianza:\n• Aprendiendo — pocos ejemplos, trátalo como exploratorio\n• En desarrollo — acumulando evidencia, algunos datos de validación\n• Establecida — bien respaldada, resultados de validación consistentes\n\nUsa 'Ejecutar minería de patrones' después de ingerir contenido nuevo para actualizar tarjetas. La minería se ejecuta automáticamente cada domingo."
+        "body": "Cada tarjeta de estrategia es generada por el motor de minería de patrones, que agrupa ideas de trading similares por símbolo, tipo de setup y combinación de indicadores en todas las fuentes.\n\nUna tarjeta muestra: tipo de setup, descripción en tu idioma, tasa de aciertos con intervalo de confianza al 95% (una vez validada), comprobación walk-forward (marca posible sobreajuste) y un diagrama de flujo de cómo operar el setup.\n\nHaz clic en 'Cómo operarlo' para abrir la vista de detalle completa — que también muestra ejemplos citados de las fuentes originales, un desglose de resultados (ganadas/perdidas/abiertas) y tu historial de ejecución personal para ese setup.\n\nNiveles de confianza:\n• Aprendiendo — pocos ejemplos, trátalo como exploratorio\n• En desarrollo — acumulando evidencia, algunos datos de validación\n• Establecida — bien respaldada, resultados de validación consistentes\n\nUsa 'Ejecutar minería de patrones' después de ingerir contenido nuevo para actualizar tarjetas. La minería se ejecuta automáticamente cada domingo.\n\nMientras la minería o la validación están en curso, la Biblioteca lo indica, y al terminar muestra lo que hizo la ejecución — tarjetas creadas, actualizadas o revisadas — y lo que falló, con el motivo. Todos los miembros del espacio de trabajo ven las mismas ejecuciones."
       },
       "plan": {
         "title": "Mi plan — Curación personal de estrategias",
@@ -114,7 +114,6 @@
     "title": "Biblioteca de estrategias",
     "runMining": "Ejecutar minería de patrones",
     "mining": "Procesando...",
-    "miningStarted": "Minería iniciada — actualiza en unos segundos.",
     "noCards": "Aún no hay tarjetas de estrategia. Agrega fuentes, obtén contenido y ejecuta la minería de patrones.",
     "filterSymbol": "Filtrar por símbolo",
     "filterSetup": "Filtrar por tipo de setup",
@@ -138,12 +137,25 @@
     "noValidation": "Sin validar",
     "runValidation": "Ejecutar validación",
     "validating": "Validando...",
-    "validationStarted": "Validación iniciada — actualiza las tarjetas en breve.",
     "overfitWarning": "Posible sobreajuste — el rendimiento fuera de muestra cae significativamente",
     "walkForward": "Walk-forward",
     "inSample": "Muestra de entrenamiento",
     "outSample": "Muestra de prueba",
-    "validatedAt": "Validado"
+    "validatedAt": "Validado",
+    "run": {
+      "mining": "La minería de patrones",
+      "validation": "La validación",
+      "running": "{{kind}} está en curso — iniciada a las {{time}}. Las tarjetas se actualizarán al terminar.",
+      "miningDone": "La minería de patrones terminó a las {{time}}: {{created}} tarjetas creadas, {{updated}} actualizadas.",
+      "validationDone": "La validación terminó a las {{time}}: {{updated}} tarjetas revisadas.",
+      "failedCount_one": "{{count}} falló — ver por qué",
+      "failedCount_other": "{{count}} fallaron — ver por qué",
+      "stopped": "{{kind}} se detuvo a las {{time}}: {{reason}}",
+      "alreadyRunning": "{{kind}} ya está en curso para este espacio de trabajo.",
+      "scheduled": "(ejecución semanal)",
+      "beforeStopping": "Antes de detenerse: {{created}} tarjetas creadas, {{updated}} actualizadas.",
+      "couldNotStart": "No se pudo iniciar {{kind}}. Inténtalo de nuevo en un momento."
+    }
   },
   "changelog": {
     "title": "Historial de cambios",
@@ -352,7 +364,36 @@
     "itemsFailed_one": "1 con error",
     "itemsFailed_other": "{{count}} con error",
     "from": "desde",
-    "fetchInProgress": "Obteniendo en segundo plano — se actualizará al terminar..."
+    "fetchInProgress": "Obteniendo en segundo plano — se actualizará al terminar...",
+    "failedTab": "Mensajes fallidos ({{count}})",
+    "failedHint": "Mensajes cuyo procesamiento falló. Cada ingesta los reintenta primero; tras 3 intentos fallidos un mensaje se da por perdido y queda aquí con el último motivo, para que lo revises. Un mensaje en espera no se reintenta antes de la hora que muestra: la plataforma nos rechazó por un tiempo, o los subtítulos de un vídeo pueden llegar más tarde.",
+    "failedNone": "No hay mensajes fallidos.",
+    "failedRetrying_one": "1 fallido, reintentando",
+    "failedRetrying_other": "{{count}} fallidos, reintentando",
+    "failedGivenUp_one": "1 dado por perdido",
+    "failedGivenUp_other": "{{count}} dados por perdidos",
+    "failedWaiting_one": "1 en espera",
+    "failedWaiting_other": "{{count}} en espera",
+    "failedStuck_one": "1 atascado",
+    "failedStuck_other": "{{count}} atascados",
+    "failedStuckHint_one": "1 mensaje está atascado: lleva esperando más de un periodo de enfriamiento y nunca se le ha contado un intento, porque lo que falló no tenía que ver con el mensaje — la plataforma nos está rechazando, o una herramienta nuestra necesita un arreglo. Un mensaje así no se da nunca por perdido y reintentarlo no cambia nada: entrará en la siguiente ingesta cuando se acabe lo que lo retiene. El motivo de abajo dice qué es.",
+    "failedStuckHint_other": "{{count}} mensajes están atascados: llevan esperando más de un periodo de enfriamiento y nunca se les ha contado un intento, porque lo que falló no tenía que ver con los mensajes — la plataforma nos está rechazando, o una herramienta nuestra necesita un arreglo. Un mensaje así no se da nunca por perdido y reintentarlo no cambia nada: entrarán en la siguiente ingesta cuando se acabe lo que los retiene. Los motivos de abajo dicen qué es.",
+    "failedStuckSince": "esperando desde {{when}}, sin ningún intento",
+    "failedRetryAfter": "se reintenta después de {{when}}",
+    "failedPosted": "publicado {{when}}",
+    "failedAttempts_one": "1 intento",
+    "failedAttempts_other": "{{count}} intentos",
+    "failedStatus": {
+      "retrying": "Reintentando",
+      "waiting": "En espera",
+      "stuck": "Atascado",
+      "givenUp": "Dado por perdido"
+    },
+    "failedLoadError": "No se pudieron cargar los mensajes fallidos. Inténtalo de nuevo en un momento.",
+    "failedRetry": "Reintentar",
+    "failedRetryAll_one": "Reintentar el mensaje dado por perdido",
+    "failedRetryAll_other": "Reintentar los {{count}} dados por perdidos",
+    "failedRetryError": "No se pudo reintentar. Vuelve a probar en un momento."
   },
   "trading": {
     "title": "Trading en papel",
@@ -536,5 +577,29 @@
     "alreadyAuthorizedHint": "¿No recibes el código? Si conectaste antes, tu sesión puede estar activa.",
     "checkExistingSession": "Usar sesión existente",
     "notAuthorizedYet": "La sesión aún no está autorizada. Solicita un nuevo código."
+  },
+  "evidenceImage": {
+    "alt": "El gráfico tal como se publicó",
+    "enlarge": "Ver a tamaño completo"
+  },
+  "tradeChart": {
+    "show": "Ver en el gráfico de precios",
+    "hide": "Ocultar el gráfico de precios",
+    "loading": "Cargando precios…",
+    "failed": "No se pudieron cargar los precios.",
+    "noPrices": "No hay datos de precios de {{symbol}} en torno a esta fecha.",
+    "caption": "{{symbol}}, diario, desde un mes antes de la idea hasta el final de su ventana de resultado",
+    "entry": "Entrada",
+    "target": "Objetivo",
+    "stop": "Stop",
+    "proposed": "Propuesta",
+    "standsIn": "Los precios son futuros {{pricedAs}}, en lugar del precio al contado: un nivel a pocos dólares del precio puede haberse alcanzado de otra forma al contado.",
+    "windowEnds": "Fin de la ventana",
+    "window": "Su comprobación de resultado abarcó del {{start}} al {{end}}.",
+    "inconclusive": "Su resultado no es concluyente: la comprobación tenía demasiado poco en qué basarse, así que no hay nada que marcar.",
+    "adverse": "Adversa",
+    "favorable": "Favorable",
+    "excursions": "Las líneas punteadas marcan su excursión adversa y favorable: lo más lejos que fue el precio en contra y a favor.",
+    "notChecked": "Aún no hay comprobación de resultado: ejecuta la validación para ver cómo se resolvió esta idea."
   }
 }

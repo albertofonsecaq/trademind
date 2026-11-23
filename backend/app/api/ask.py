@@ -25,6 +25,8 @@ from app.models.workspace_member import WorkspaceMember  # noqa: F401 (used in _
 from app.models.subscription import Subscription
 from app.models.usage_event import UsageEvent
 from app.models.ask_record import AskRecord
+from app.models.evidence_image import EvidenceImage
+from app.models.evidence_item import EvidenceItem
 from app.services import embedding_service, retrieval_service, query_synthesis_service
 from app.services.usage_service import log_usage_event
 from app.core.config import settings
@@ -73,6 +75,32 @@ class AskRecordOut(AskRecordSummary):
     answer: str
     sources: list[dict]
     language: str
+
+
+async def _beside_their_evidence(db: AsyncSession, workspace_id: uuid.UUID, sources: list[dict]) -> list[dict]:
+    """
+    The cited sources, each saying which evidence it is and whether that has a
+    picture to show (#110).
+
+    Every source has always been kept with its evidence's stable id, so this is
+    a lookup, made when an answer is served: an answer asked before pictures
+    were kept (#108) shows them too, and what is stored never changes. A source
+    whose evidence is not in this workspace any more names none.
+    """
+    stable_ids = [s.get("stable_id") for s in sources if s.get("stable_id")]
+    found: dict[str, tuple[str, bool]] = {}
+    if stable_ids:
+        rows = await db.execute(
+            select(EvidenceItem.stable_id, EvidenceItem.id, EvidenceImage.id)
+            .outerjoin(EvidenceImage, EvidenceImage.evidence_item_id == EvidenceItem.id)
+            .where(EvidenceItem.workspace_id == workspace_id, EvidenceItem.stable_id.in_(stable_ids))
+        )
+        found = {stable_id: (str(item_id), image_id is not None) for stable_id, item_id, image_id in rows}
+    served = []
+    for source in sources:
+        evidence_id, has_image = found.get(source.get("stable_id"), (None, False))
+        served.append({**source, "evidence_id": evidence_id, "has_image": has_image})
+    return served
 
 
 async def _get_workspace_and_assert_member(
@@ -222,6 +250,10 @@ async def ask(
             sub.current_period_overage_usd += cost * Decimal(str(sub.overage_rate_multiplier))
 
     try:
+        # Before the commit: a lookup that failed after it would leave an answer
+        # kept that the caller never received. Inside the try, because the
+        # synthesis it follows is owed a usage event however this ends (#27).
+        served_sources = await _beside_their_evidence(db, workspace_id, sources)
         await db.commit()
     finally:
         # In its own transaction, after this one, and in a `finally` because the
@@ -244,7 +276,7 @@ async def ask(
         )
 
     return AskResponse(
-        answer=answer, sources=sources, id=record.id, created_at=record.created_at
+        answer=answer, sources=served_sources, id=record.id, created_at=record.created_at,
     )
 
 
@@ -416,4 +448,9 @@ async def read_ask_record(
         # Not a 403. Whether this id exists at all is not something a caller who
         # does not own it gets to learn, and 403 would answer exactly that.
         raise HTTPException(status_code=404, detail="Ask record not found")
-    return record
+    # As stored, with whether each source has a picture looked up beside it.
+    return AskRecordOut(
+        id=record.id, question=record.question, created_at=record.created_at,
+        answer=record.answer, language=record.language,
+        sources=await _beside_their_evidence(db, workspace_id, record.sources),
+    )

@@ -239,9 +239,7 @@ class TelegramConnector(BaseConnector):
         min_id = 0
         if since_id:
             try:
-                # stable_id may have suffixes (:image, :url:N, :video) — extract base msg id
-                base = since_id.split(":")[2]
-                min_id = int(base)
+                min_id = _message_id(since_id)
             except (ValueError, IndexError):
                 min_id = 0
 
@@ -252,6 +250,22 @@ class TelegramConnector(BaseConnector):
             ):
                 async for raw in self._yield_all_types(client, msg):
                     yield raw
+
+    async def fetch_one(self, stable_id: str) -> RawMessage | None:
+        # The message is fetched whole, and the one part asked for is handed back.
+        msg_id = _message_id(stable_id)
+        entity = self._resolve_identifier()
+        found: RawMessage | None = None
+        async with self._client() as client:
+            msg = await client.get_messages(entity, ids=msg_id)
+            if msg is None:
+                return None
+            async for raw in self._yield_all_types(client, msg):
+                if raw.stable_id == stable_id:
+                    found = raw
+                else:
+                    _delete_download(raw)
+        return found
 
     async def latest_stable_id(self) -> str | None:
         """Newest message id only — iter_messages is newest-first, so one item."""
@@ -282,6 +296,21 @@ class TelegramConnector(BaseConnector):
                     break
                 async for raw in self._yield_all_types(client, msg):
                     yield raw
+
+
+def _message_id(stable_id: str) -> int:
+    """The message id in "telegram:{channel}:{msg_id}[:image|:url:N|:video]"."""
+    return int(stable_id.split(":")[2])
+
+
+def _delete_download(raw: RawMessage) -> None:
+    """A video downloaded for a part nobody asked for is not left behind."""
+    path = (raw.metadata or {}).get("video_path")
+    if path and os.path.exists(path):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 # ── dialog listing ────────────────────────────────────────────────────────────

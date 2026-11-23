@@ -24,8 +24,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.clock import now_utc
 from app.connectors.base import FetchPosition, RawMessage
 from app.core.llm_errors import is_fatal_for_run
+from app.core.platform_refusal import PlatformRefused
 from app.services.connection_health import credentials_rejected, mark_rejected
 from app.models.evidence_item import EvidenceItem
+from app.models.evidence_image import EvidenceImage
 from app.models.trade_idea import TradeIdea
 from app.models.embedding_row import EmbeddingRow
 from app.models.source_config import SourceConfig
@@ -38,6 +40,7 @@ from app.services import (
     url_service,
     keyframe_service,
     youtube_transcript,
+    failed_message_service,
 )
 from app.services.usage_service import log_usage_event
 from app.core.config import settings
@@ -260,11 +263,43 @@ async def _process_image(db: AsyncSession, msg: RawMessage, topic_scope: str) ->
     db.add(item)
     await db.flush()
 
+    await keep_picture(db, item, image_bytes, mime)
+
     if not is_on_topic:
         return item
 
     await _distill_and_embed(db, item, msg, content, item.original_language)
     return item
+
+
+# What a picture is kept for (ADR 0006): evidence not clearly judged off topic.
+# The same rule as a query, for finding evidence that should have one (#111).
+KEEPS_A_PICTURE = EvidenceItem.is_on_topic.is_distinct_from(False)
+
+
+async def keep_picture(db: AsyncSession, item: EvidenceItem, image_bytes: bytes, mime: str) -> bool:
+    """
+    Keep or let go of the picture image evidence was read from, by its verdict (#108).
+
+    The picture is what a member looks at. A clear off-topic rejection is never
+    shown, so its picture is not kept; an unreadable verdict may yet be replayed
+    on-topic, so its picture is. Ingestion and the replay both come through
+    here, so a verdict that changes on replay changes what is kept. Says
+    whether the evidence has its picture now.
+    """
+    kept = (await db.execute(
+        select(EvidenceImage).where(EvidenceImage.evidence_item_id == item.id)
+    )).scalar_one_or_none()
+    if item.is_on_topic is False:
+        if kept is not None:
+            await db.delete(kept)
+        return False
+    if kept is None:
+        db.add(EvidenceImage(
+            evidence_item_id=item.id, workspace_id=item.workspace_id,
+            mime_type=mime, data=image_bytes,
+        ))
+    return True
 
 
 async def _process_url(db: AsyncSession, msg: RawMessage, topic_scope: str) -> EvidenceItem | None:
@@ -303,6 +338,15 @@ async def _process_url(db: AsyncSession, msg: RawMessage, topic_scope: str) -> E
     db.add(item)
     await db.flush()
 
+    await judge_link(db, item, msg, topic_scope)
+    return item
+
+
+async def judge_link(
+    db: AsyncSession, item: EvidenceItem, msg: RawMessage, topic_scope: str, *, distill: bool = True
+) -> None:
+    """Relevance-check a link's stored page text, and distill it if on topic."""
+    text = item.content
     on_topic, reason, rel_usage = await relevance_service.is_on_topic(text[:2000], topic_scope)
     item.is_on_topic = on_topic
     item.relevance_reason = reason
@@ -316,11 +360,10 @@ async def _process_url(db: AsyncSession, msg: RawMessage, topic_scope: str) -> E
         cost_usd=_compute_cost(settings.RELEVANCE_MODEL, rel_usage["input_tokens"], rel_usage["output_tokens"]),
     )
 
-    if not on_topic:
-        return item
+    if not on_topic or not distill:
+        return
 
-    await _distill_and_embed(db, item, msg, text, lang)
-    return item
+    await _distill_and_embed(db, item, msg, text, item.original_language)
 
 
 async def _process_youtube_link(
@@ -370,84 +413,98 @@ async def _process_youtube_link(
 async def _process_video(db: AsyncSession, msg: RawMessage, topic_scope: str) -> EvidenceItem | None:
     """
     Telegram video: extract key frames → Claude Vision per frame → combine on-topic frames.
-    Temp video file is cleaned up after processing.
+    The downloaded file is deleted by process_message, whatever happens here.
     """
-    meta = msg.metadata or {}
-    video_path = meta.get("video_path")
+    video_path = (msg.metadata or {}).get("video_path")
+    if not video_path or not os.path.exists(video_path):
+        return None
 
-    try:
-        if not video_path or not os.path.exists(video_path):
-            return None
+    fields = await analyse_video(msg, video_path)
+    item = _video_evidence(msg, **fields)
+    db.add(item)
+    await db.flush()
 
-        frames = await keyframe_service.extract_keyframes(video_path)
-        if not frames:
-            return None
+    if item.is_on_topic:
+        await _distill_and_embed(db, item, msg, item.content, item.original_language)
 
-        descriptions: list[str] = []
-        total_vision_input = 0
-        total_vision_output = 0
-        unreadable_frames = 0
+    return item
 
-        for frame_bytes in frames:
-            result, usage = await vision_service.extract_image(frame_bytes)
-            total_vision_input += usage["input_tokens"]
-            total_vision_output += usage["output_tokens"]
-            # Each frame is its own call, so each is logged as it returns: one
-            # event for the whole video lost every earlier frame's cost when a
-            # later one failed (#27).
-            await log_usage_event(
-                workspace_id=msg.workspace_id,
-                task_type="vision",
-                provider_model=settings.DISTILLATION_MODEL,
-                input_units=usage["input_tokens"],
-                output_units=usage["output_tokens"],
-                cost_usd=vision_service.vision_cost(
-                    usage["input_tokens"], usage["output_tokens"]
-                ),
-            )
-            if result.get("needs_reprocessing"):
-                unreadable_frames += 1
-            if result.get("is_on_topic") and result.get("description"):
-                descriptions.append(result["description"])
 
-        is_on_topic = len(descriptions) > 0
-        content = "\n\n".join(descriptions) if descriptions else "No trading content detected in video frames."
-        lang = _detect_lang(content)
-
-        item = EvidenceItem(
-            workspace_id=msg.workspace_id,
-            source_config_id=msg.source_config_id,
-            stable_id=msg.stable_id,
-            source_type=msg.source_type,
-            type="video_transcript",
-            content=content,
-            confidence=0.8,
-            original_language=lang,
-            is_on_topic=is_on_topic,
-            # Any unreadable frame means the video was judged on partial evidence.
-            needs_reprocessing=unreadable_frames > 0,
-            relevance_reason=(
-                f"{len(descriptions)}/{len(frames)} frames had trading content"
-                + (f"; {unreadable_frames} frame(s) unreadable" if unreadable_frames else "")
-            ),
-            source_metadata={"author": msg.author, "channel": msg.channel, **{k: v for k, v in meta.items() if k != "video_path"}},
-            message_timestamp=msg.timestamp,
+async def analyse_video(msg: RawMessage, video_path: str) -> dict:
+    """
+    Key frames → Claude Vision per frame → what the video's evidence says.
+    Shared by ingestion and by the replay of a video flagged for reprocessing (#97).
+    """
+    frames = await keyframe_service.extract_keyframes(video_path)
+    if not frames:
+        # Nothing was looked at, so nothing was judged: kept and flagged for a
+        # replay, not dropped while the fetch position moves past it (#95).
+        reason = (
+            "No key frames extracted: ffmpeg is not installed"
+            if not keyframe_service.ffmpeg_available()
+            else "No key frames could be extracted from the video"
         )
-        db.add(item)
-        await db.flush()
+        return dict(
+            content="Video not analysed: no key frames could be extracted.",
+            confidence=0.0,
+            original_language=None,
+            is_on_topic=None,
+            needs_reprocessing=True,
+            relevance_reason=reason,
+        )
 
-        if is_on_topic:
-            await _distill_and_embed(db, item, msg, content, lang)
+    descriptions: list[str] = []
+    unreadable_frames = 0
 
-        return item
+    for frame_bytes in frames:
+        result, usage = await vision_service.extract_image(frame_bytes)
+        # Each frame is its own call, so each is logged as it returns: one
+        # event for the whole video lost every earlier frame's cost when a
+        # later one failed (#27).
+        await log_usage_event(
+            workspace_id=msg.workspace_id,
+            task_type="vision",
+            provider_model=settings.DISTILLATION_MODEL,
+            input_units=usage["input_tokens"],
+            output_units=usage["output_tokens"],
+            cost_usd=vision_service.vision_cost(
+                usage["input_tokens"], usage["output_tokens"]
+            ),
+        )
+        if result.get("needs_reprocessing"):
+            unreadable_frames += 1
+        if result.get("is_on_topic") and result.get("description"):
+            descriptions.append(result["description"])
 
-    finally:
-        # Always clean up the temp video file
-        if video_path and os.path.exists(video_path):
-            try:
-                os.unlink(video_path)
-            except OSError:
-                pass
+    content = "\n\n".join(descriptions) if descriptions else "No trading content detected in video frames."
+    return dict(
+        content=content,
+        confidence=0.8,
+        original_language=_detect_lang(content),
+        is_on_topic=len(descriptions) > 0,
+        # Any unreadable frame means the video was judged on partial evidence.
+        needs_reprocessing=unreadable_frames > 0,
+        relevance_reason=(
+            f"{len(descriptions)}/{len(frames)} frames had trading content"
+            + (f"; {unreadable_frames} frame(s) unreadable" if unreadable_frames else "")
+        ),
+    )
+
+
+def _video_evidence(msg: RawMessage, **fields) -> EvidenceItem:
+    """A Telegram video's evidence: what is the same whether or not it was analysed."""
+    # The temp file is deleted once the video is processed: its path means nothing later.
+    meta = {k: v for k, v in (msg.metadata or {}).items() if k != "video_path"}
+    return EvidenceItem(
+        workspace_id=msg.workspace_id,
+        source_config_id=msg.source_config_id,
+        stable_id=msg.stable_id,
+        source_type=msg.source_type,
+        type="video_transcript",
+        source_metadata={"author": msg.author, "channel": msg.channel, **meta},
+        message_timestamp=msg.timestamp,
+        **fields,
+    )
 
 
 # ── main entry point ──────────────────────────────────────────────────────────
@@ -462,6 +519,29 @@ async def process_message(
     Returns the created EvidenceItem, or None if skipped.
     Does NOT commit — caller is responsible.
     """
+    try:
+        if msg.fetch_failure is not None:
+            # Its connector could not fetch its content: recorded by the caller
+            # as a failed message, which a refusal makes wait (#125, #126).
+            raise msg.fetch_failure
+        return await _route(db, msg, topic_scope)
+    finally:
+        # The connector downloaded it before the pipeline saw it: a duplicate
+        # skipped here used to leave its file behind, once per backfilled video (#97).
+        discard_download(msg)
+
+
+def discard_download(msg: RawMessage) -> None:
+    """Delete the temp file a connector downloaded a video to, if there is one."""
+    video_path = (msg.metadata or {}).get("video_path")
+    if video_path and os.path.exists(video_path):
+        try:
+            os.unlink(video_path)
+        except OSError:
+            pass
+
+
+async def _route(db: AsyncSession, msg: RawMessage, topic_scope: str) -> EvidenceItem | None:
     # Pre-pipeline cost (Whisper, in the YouTube connector) is logged before
     # anything can return: the call already happened upstream to produce this
     # message, so it is owed even if the message turns out to be a duplicate we
@@ -536,7 +616,10 @@ def _build_connector(source: SourceConfig):
 
 def _content_type_allowed(msg: RawMessage, filters: dict) -> bool:
     """Check whether the message content_type is enabled in the source's filters."""
-    mapping = {"text": "text", "video_transcript": "video", "image": "image", "url": "url", "video": "video"}
+    mapping = {
+        "text": "text", "video_transcript": "video", "youtube_video": "video",
+        "image": "image", "url": "url", "video": "video",
+    }
     return filters.get(mapping.get(msg.content_type, "text"), True)
 
 
@@ -583,6 +666,12 @@ async def run_fetch_pipeline(
     position = initial_position
 
     try:
+        # What failed before comes first, so a fixed bug's casualties are picked
+        # back up before anything new is fetched (#96, ADR 0005).
+        retried, retry_failed = await _retry_failed_messages(db, connector, source_id, topic_scope)
+        count += retried
+        failed += retry_failed
+
         async for msg in connector.fetch_new(position):
             # The position advances for everything we have seen, not only what we
             # store: content that fails a filter or the relevance check is still
@@ -604,7 +693,7 @@ async def run_fetch_pipeline(
                 log.info("Skipping already-ingested %s", msg.stable_id)
             except Exception as e:
                 failed += 1
-                log.error("Pipeline error for %s: %s", msg.stable_id, e, exc_info=True)
+                _log_failure("Pipeline error for %s", msg.stable_id, e)
                 if is_fatal_for_run(e):
                     # Nothing after this can succeed either, so stop rather than
                     # spend the rest of the tick proving it. Raising is how the
@@ -618,7 +707,9 @@ async def run_fetch_pipeline(
                         db, source_id, position, initial_position, touch_fetched_at=False
                     )
                     raise
-                continue
+                # The position still moves past it, even as the last message of
+                # the fetch; this is what remembers it (#126).
+                await failed_message_service.record_failure(db, msg, e)
             else:
                 await db.commit()
             position = FetchPosition(stable_id=msg.stable_id, item_at=msg.timestamp)
@@ -653,6 +744,89 @@ async def run_fetch_pipeline(
             "Fetch for source %s: %d ingested, %d failed", source_id, count, failed
         )
     return FetchOutcome(ingested=count, failed=failed)
+
+
+async def _retry_failed_messages(
+    db: AsyncSession, connector, source_id: uuid.UUID, topic_scope: str
+) -> tuple[int, int]:
+    """
+    Fetch each of a source's recorded failures again and process it.
+
+    A success forgets the failure, a failure counts another attempt, and a
+    message the platform no longer has is given up. A failure that would repeat
+    for everything left raises, without counting against the message.
+    """
+    ingested = failed = 0
+    refused: PlatformRefused | None = None
+    for row in await failed_message_service.to_retry(db, source_id):
+        if refused is not None and row.retry_after is not None:
+            # The platform refused again: the others that were waiting for it
+            # wait for the same end, without being asked (ADR 0007). A failure
+            # of any other kind is retried as usual.
+            failed += 1
+            await failed_message_service.wait_out(db, row, refused)
+            continue
+        try:
+            msgs = await connector.fetch_again(row.stable_id)
+        except Exception as e:
+            # A rejected session or an exhausted account is the run's problem,
+            # not this message's. Anything else is one failed attempt at it:
+            # it must not keep the source from fetching what is new.
+            if credentials_rejected(e) or is_fatal_for_run(e):
+                raise
+            _log_failure("Could not fetch %s again", row.stable_id, e)
+            failed += 1
+            refused = _refusal_in(e) or refused
+            await failed_message_service.count_attempt(db, row, e)
+            continue
+        if msgs is None:
+            await failed_message_service.give_up(db, row, failed_message_service.GONE_FROM_SOURCE)
+            continue
+        row_failed = False
+        for msg in msgs:
+            try:
+                async with db.begin_nested():
+                    item = await process_message(db, msg, topic_scope)
+            except IntegrityError:
+                # Stored by something else between the duplicate check and the insert.
+                continue
+            except Exception as e:
+                _log_failure("Retry failed for %s", msg.stable_id, e)
+                if is_fatal_for_run(e):
+                    raise
+                failed += 1
+                refused = _refusal_in(e) or refused
+                if msg.stable_id == row.stable_id:
+                    row_failed = True
+                    await failed_message_service.count_attempt(db, row, e)
+                else:
+                    # One part of what it came back as: remembered on its own,
+                    # as it would have been fetched as part of a fetch (#125).
+                    await failed_message_service.record_failure(db, msg, e)
+            else:
+                await db.commit()
+                # None is a duplicate or an item judged not worth keeping: done either way.
+                if item:
+                    ingested += 1
+        if not row_failed:
+            await failed_message_service.resolve(db, row)
+    return ingested, failed
+
+
+def _refusal_in(exc: BaseException) -> PlatformRefused | None:
+    return exc if isinstance(exc, PlatformRefused) else None
+
+
+def _log_failure(what: str, stable_id: str, exc: BaseException) -> None:
+    """
+    A message's failure in the log. A platform's refusal was already said once,
+    where it began, so it is not repeated with a traceback for every message
+    it holds up (#125).
+    """
+    if isinstance(exc, PlatformRefused):
+        log.debug(what + ": %s", stable_id, exc)
+    else:
+        log.error(what + ": %s", stable_id, exc, exc_info=True)
 
 
 async def _store_position(

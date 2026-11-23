@@ -30,6 +30,7 @@ from app.connectors.market_data import MarketDataConnector
 from app.models.trade_idea import TradeIdea
 from app.models.strategy_card import StrategyCard
 from app.models.outcome_check import OutcomeCheck
+from app.models.analysis_run import RunOutcome
 from app.services.confidence_tier import compute_confidence_tier
 
 log = logging.getLogger(__name__)
@@ -214,6 +215,9 @@ async def check_idea_outcome(
                 window_days=window_days,
             )
 
+    # What the bars came from, or would have: a stand-in decides differently (#115).
+    priced_as = market.price_source(idea.symbol).priced_as if idea.symbol else None
+
     if existing:
         existing.outcome                  = outcome_data["outcome"]
         existing.outcome_date             = outcome_data["outcome_date"]
@@ -222,6 +226,7 @@ async def check_idea_outcome(
         existing.max_favorable_excursion  = outcome_data["max_favorable_excursion"]
         existing.checked_at               = now_utc()
         existing.data_source              = market.data_source_name()
+        existing.priced_as                = priced_as
         return existing
 
     check = OutcomeCheck(
@@ -239,6 +244,7 @@ async def check_idea_outcome(
         max_adverse_excursion   = outcome_data["max_adverse_excursion"],
         max_favorable_excursion = outcome_data["max_favorable_excursion"],
         data_source             = market.data_source_name(),
+        priced_as               = priced_as,
         window_days             = window_days,
     )
     db.add(check)
@@ -334,10 +340,11 @@ async def validate_strategy_card(
 
 # ── workspace-level runner ────────────────────────────────────────────────────
 
-async def run_validation(db: AsyncSession, workspace_id: uuid.UUID) -> int:
+async def run_validation(db: AsyncSession, workspace_id: uuid.UUID) -> RunOutcome:
     """
     Validate all strategy cards in a workspace.
-    Returns count of cards processed.
+    Returns what the run did: the cards it checked, and each one whose check
+    failed, by symbol scope and setup type, with the reason.
     """
     market = MarketDataConnector()
     window = settings.VALIDATION_WINDOW_DAYS
@@ -347,12 +354,15 @@ async def run_validation(db: AsyncSession, workspace_id: uuid.UUID) -> int:
     )
     cards = result.scalars().all()
 
+    outcome = RunOutcome()
     for card in cards:
         try:
             await validate_strategy_card(db, card, market, window)
+            outcome.cards_updated += 1
         except Exception as e:
             log.error("Validation failed for card %s: %s", card.id, e)
+            outcome.failures.append({"subject": f"{card.symbol_scope}/{card.setup_type}", "reason": str(e)})
 
     await db.commit()
     log.info("Validation complete: %d cards for workspace %s", len(cards), workspace_id)
-    return len(cards)
+    return outcome

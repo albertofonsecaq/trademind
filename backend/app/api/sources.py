@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import func, select
 from pydantic import BaseModel, field_validator
 
 from sqlalchemy.orm import selectinload
@@ -18,8 +18,9 @@ from app.models.workspace_member import WorkspaceMember
 from app.models.source_config import SourceConfig
 from app.models import backfill_job as job_status
 from app.models.backfill_job import BackfillJob
+from app.models.failed_message import FailedMessage
 from app.models.platform_connection import PlatformConnection
-from app.services import source_resume_service as resume_service
+from app.services import failed_message_service, source_resume_service as resume_service
 from app.core.clock import as_utc, now_utc
 from app.core.llm_errors import is_fatal_for_run, safe_failure_summary
 from app.services.connection_health import (
@@ -203,6 +204,44 @@ class SourceOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class SourceListOut(SourceOut):
+    # Only the list carries these: the Sources page reads every source from it,
+    # and a single-source answer would otherwise claim a 0 it never counted (#96).
+    failed_retrying: int = 0
+    # Not given up, and not retried before a time still ahead: a refusal being
+    # waited out, or a video with no transcript between its retries (#132).
+    failed_waiting: int = 0
+    # Those of the waiting whose wait is going nowhere — a subset of
+    # `failed_waiting`, not a fourth state, so the total still adds up (#141).
+    # `failed_message_service.is_stuck` is what "stuck" means.
+    failed_stuck: int = 0
+    failed_given_up: int = 0
+
+
+class FailedMessageOut(BaseModel):
+    # The row's own id addresses it: a stable id may hold a "/" (a private
+    # Telegram channel is "{id}/{hash}"), which a path cannot carry.
+    id: uuid.UUID
+    stable_id: str
+    message_at: datetime | None
+    error: str
+    attempts: int
+    first_failed_at: datetime
+    last_failed_at: datetime
+    given_up_at: datetime | None
+    # Not retried before this; None, at the next fetch (#125, #132).
+    retry_after: datetime | None = None
+    # Waiting, but its wait is going nowhere (#141). Not a column: the rule is
+    # `failed_message_service.is_stuck`, applied to the row as it is read.
+    stuck: bool = False
+
+    model_config = {"from_attributes": True}
+
+
+class SentBackOut(BaseModel):
+    sent_back: int
+
+
 class ResumeRequest(BaseModel):
     # No default: a resume that picks for the user is the thing #12 exists to
     # prevent, so an omitted mode is a 422, not a guess.
@@ -266,7 +305,7 @@ async def add_source(
     return source
 
 
-@router.get("/{workspace_id}/sources", response_model=list[SourceOut])
+@router.get("/{workspace_id}/sources", response_model=list[SourceListOut])
 async def list_sources(
     workspace_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
@@ -276,7 +315,110 @@ async def list_sources(
     result = await db.execute(
         select(SourceConfig).where(SourceConfig.workspace_id == workspace_id)
     )
-    return result.scalars().all()
+    sources = result.scalars().all()
+    waiting = func.coalesce(FailedMessage.retry_after > now_utc(), False)
+    counts = await db.execute(
+        select(
+            FailedMessage.source_config_id,
+            func.count().filter(FailedMessage.given_up_at.is_(None), ~waiting),
+            func.count().filter(FailedMessage.given_up_at.is_(None), waiting),
+            func.count().filter(FailedMessage.given_up_at.is_not(None)),
+        )
+        .where(FailedMessage.workspace_id == workspace_id)
+        .group_by(FailedMessage.source_config_id)
+    )
+    failed = {source_id: tuple(rest) for source_id, *rest in counts.all()}
+    stuck = await failed_message_service.stuck_per_source(db, workspace_id)
+    listed = []
+    for source in sources:
+        retrying, waiting_n, given_up = failed.get(source.id, (0, 0, 0))
+        listed.append(SourceListOut.model_validate(source).model_copy(
+            update={
+                "failed_retrying": retrying,
+                "failed_waiting": waiting_n,
+                "failed_stuck": stuck.get(source.id, 0),
+                "failed_given_up": given_up,
+            }
+        ))
+    return listed
+
+
+async def _source_in_workspace(db: AsyncSession, workspace_id: uuid.UUID, source_id: uuid.UUID) -> None:
+    found = (await db.execute(
+        select(SourceConfig.id).where(SourceConfig.id == source_id, SourceConfig.workspace_id == workspace_id)
+    )).scalar_one_or_none()
+    if found is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+
+
+@router.post(
+    "/{workspace_id}/sources/{source_id}/failed-messages/{failed_message_id}/send-back",
+    response_model=FailedMessageOut,
+)
+async def send_back_failed_message(
+    workspace_id: uuid.UUID,
+    source_id: uuid.UUID,
+    failed_message_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Send a given-up message back to be retried by the next fetch (#102). Not
+    fetched here: the fetch already checks every gate — a paused source or
+    workspace, a lapsed bill, a rejected connection — and this would need its own.
+    """
+    await _assert_member(db, workspace_id, current_user.id)
+    await _source_in_workspace(db, workspace_id, source_id)
+    row = (await db.execute(
+        select(FailedMessage).where(
+            FailedMessage.id == failed_message_id, FailedMessage.source_config_id == source_id
+        )
+    )).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Failed message not found")
+    return await failed_message_service.send_back(db, row)
+
+
+@router.post("/{workspace_id}/sources/{source_id}/failed-messages/send-back-given-up", response_model=SentBackOut)
+async def send_back_given_up(
+    workspace_id: uuid.UUID,
+    source_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send every given-up message of a source back to be retried (#102)."""
+    await _assert_member(db, workspace_id, current_user.id)
+    await _source_in_workspace(db, workspace_id, source_id)
+    return SentBackOut(sent_back=await failed_message_service.send_back_given_up(db, source_id))
+
+
+@router.get("/{workspace_id}/sources/{source_id}/failed-messages", response_model=list[FailedMessageOut])
+async def list_failed_messages(
+    workspace_id: uuid.UUID,
+    source_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Which of a source's messages failed, why, and whether they are still
+    retried (#96) — and which of those waiting are stuck (#141).
+    """
+    await _assert_member(db, workspace_id, current_user.id)
+    await _source_in_workspace(db, workspace_id, source_id)
+    rows = await db.execute(
+        select(FailedMessage)
+        .where(FailedMessage.source_config_id == source_id)
+        .order_by(FailedMessage.last_failed_at.desc(), FailedMessage.stable_id)
+    )
+    # The same cool-down for every row: the rule measures a wait against the
+    # one in force, and asking once is what the whole list is shown against.
+    cooldown = await failed_message_service.cooldown_in_force()
+    return [
+        FailedMessageOut.model_validate(row).model_copy(
+            update={"stuck": failed_message_service.is_stuck(row, cooldown=cooldown)}
+        )
+        for row in rows.scalars()
+    ]
 
 
 class SourceUpdateRequest(_ReadsTimestampsAsUtc):
@@ -518,7 +660,7 @@ async def _run_backfill_bg(job_id: uuid.UUID):
     import logging
     log = logging.getLogger(__name__)
     from sqlalchemy.orm import selectinload
-    from app.services.ingestion_pipeline import process_message, _build_connector, _content_type_allowed
+    from app.services.ingestion_pipeline import process_message, _build_connector, _content_type_allowed, _log_failure
 
     async with AsyncSessionLocal() as db:
         job_result = await db.execute(select(BackfillJob).where(BackfillJob.id == job_id))
@@ -589,14 +731,15 @@ async def _run_backfill_bg(job_id: uuid.UUID):
                         item = await process_message(db, msg, topic_scope)
                     if item:
                         count += 1
+                        # Stored now: a failure recorded for it earlier, given up
+                        # or not, is over (#96).
+                        await failed_message_service.forget(db, msg.source_config_id, msg.stable_id)
                     await db.commit()
                 except Exception as e:
                     failed += 1
                     if first_failure is None:
                         first_failure = safe_failure_summary(e)
-                    log.error(
-                        "Backfill pipeline error on %s: %s", msg.stable_id, e, exc_info=True
-                    )
+                    _log_failure("Backfill pipeline error on %s", msg.stable_id, e)
                     if is_fatal_for_run(e):
                         # Every remaining message hits the same wall, so walking
                         # the rest of the range buys nothing but wall-clock time
@@ -604,6 +747,9 @@ async def _run_backfill_bg(job_id: uuid.UUID):
                         fatal = e
                         stopped_at = msg.timestamp
                         break
+                    # Counted on the job, and remembered so the source's next
+                    # fetch retries it (#96, ADR 0005).
+                    await failed_message_service.record_failure(db, msg, e)
 
             # A row has to be readable on its own: "completed" used to be written
             # whether a run lost nothing or lost most of what it saw (#9).

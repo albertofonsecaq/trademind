@@ -13,36 +13,22 @@ way a YouTube source does — and skips a video the workspace already holds,
 before anything is paid to transcribe it again.
 """
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 
 from app.connectors.base import RawMessage
 from app.models.evidence_item import EvidenceItem
-from app.services import ingestion_pipeline, transcription_service, usage_service, youtube_transcript
+from app.services import ingestion_pipeline, transcription_service, youtube_transcript
 from tests.conftest import FakeSession
 
 _ARTICLE = "EURUSD broke above the weekly range on the ECB decision. " * 5
 
 
-@pytest.fixture
-def usage_log():
-    return FakeSession()
-
-
 @pytest.fixture(autouse=True)
-def offline(monkeypatch, usage_log):
+def usage_log(offline_pipeline):
     """Every paid or networked call this path can make, answered locally."""
-    monkeypatch.setattr(usage_service, "AsyncSessionLocal", lambda: usage_log)
-
-    async def _on_topic(text, topic_scope):
-        return True, "about a currency pair", {"input_tokens": 10, "output_tokens": 2}
-
-    async def _distill(db, item, msg, text, lang):
-        return None
-
-    monkeypatch.setattr(ingestion_pipeline.relevance_service, "is_on_topic", _on_topic)
-    monkeypatch.setattr(ingestion_pipeline, "_distill_and_embed", _distill)
-    monkeypatch.setattr(ingestion_pipeline, "_detect_lang", lambda text: "en")
+    return offline_pipeline
 
 
 @pytest.fixture(autouse=True)
@@ -166,7 +152,10 @@ class TestAYouTubeLinkIsNotScrapedAsAPage:
         known[url] = {"url": url, "title": "YouTube", "text": _ARTICLE}
         db = FakeWorkspace()
 
-        await ingestion_pipeline.process_message(db, _link(url), "forex")
+        # Without a transcript the link is a failed message (#126); either
+        # way, the watch page is never scraped as an article.
+        with pytest.raises(youtube_transcript.NoTranscript):
+            await ingestion_pipeline.process_message(db, _link(url), "forex")
 
         assert fetched == []
         assert [e.type for e in db.added if isinstance(e, EvidenceItem)] == []
@@ -204,6 +193,26 @@ class TestAYouTubeLinkIsNotScrapedAsAPage:
 
 _VIDEO = "dQw4w9WgXcQ"
 _WATCH = f"https://www.youtube.com/watch?v={_VIDEO}"
+
+
+_UNTIL = datetime(2026, 10, 31, 10, 0, tzinfo=timezone.utc)
+
+
+def _the_video(fetch_failure) -> RawMessage:
+    """A video a YouTube source could not get the transcript of, as its connector hands it on (#125, #126)."""
+    return RawMessage(
+        stable_id=f"youtube:{_VIDEO}",
+        source_config_id=uuid.uuid4(),
+        workspace_id=uuid.uuid4(),
+        text=None,
+        author="A trader",
+        channel="UCchan",
+        timestamp=datetime(2026, 10, 29, 9, 0, tzinfo=timezone.utc),
+        source_type="youtube",
+        content_type="youtube_video",
+        metadata={"title": "a lesson", "video_id": _VIDEO},
+        fetch_failure=fetch_failure,
+    )
 
 
 def _captions(minutes: int) -> list[dict]:
@@ -251,11 +260,39 @@ class TestAYouTubeLinkBecomesTranscriptEvidence:
         assert len(transcription) == 1
         assert transcription[0].cost_usd == Decimal("0.072")
 
-    async def test_no_captions_and_no_whisper_is_nothing_and_no_error(self, videos):
+    async def test_no_captions_and_no_whisper_is_raised_to_be_recorded_for_the_link(self, videos):
+        # #126: raised, so the link is recorded as a failed message.
         db = FakeWorkspace()
 
-        assert await ingestion_pipeline.process_message(db, _link(_WATCH), "forex") is None
+        with pytest.raises(youtube_transcript.NoTranscript):
+            await ingestion_pipeline.process_message(db, _link(_WATCH), "forex")
         assert db.held == []
+
+
+class TestYouTubeRefusingCaptions:
+    """#125: a refusal is raised out of the message, to be recorded and waited out."""
+
+    @pytest.fixture
+    def refusing(self, videos, monkeypatch):
+        async def _refused(video_id):
+            videos["asked"].append(("captions", video_id))
+            raise youtube_transcript.YouTubeRefused("refused", until=_UNTIL)
+
+        monkeypatch.setattr(youtube_transcript, "fetch_captions", _refused)
+        return videos
+
+    async def test_a_link_to_a_video_raises_it_for_the_link_alone(self, refusing):
+        with pytest.raises(youtube_transcript.YouTubeRefused):
+            await ingestion_pipeline.process_message(FakeWorkspace(), _link(_WATCH), "forex")
+        assert ("whisper", _WATCH) not in refusing["asked"]
+
+    async def test_a_message_its_connector_was_refused_for_raises_it_unasked(self, refusing):
+        refused = youtube_transcript.YouTubeRefused("refused", until=_UNTIL)
+
+        with pytest.raises(youtube_transcript.YouTubeRefused) as raised:
+            await ingestion_pipeline.process_message(FakeWorkspace(), _the_video(refused), "forex")
+        assert raised.value is refused
+        assert refusing["asked"] == []
 
 
 class TestAVideoTheWorkspaceAlreadyHoldsIsSkipped:
@@ -378,7 +415,9 @@ class TestTheHeldCheckAgainstARealDatabase:
         source = await make_source(db_session)
         await self._hold(db_session, source, "youtube:abXcdefghij:full")
 
-        await ingestion_pipeline.process_message(db_session, self._link_for(source), "forex")
+        # Not skipped: the video was looked for (no captions, so Whisper too,
+        # and then a failure to record, #126).
+        with pytest.raises(youtube_transcript.NoTranscript):
+            await ingestion_pipeline.process_message(db_session, self._link_for(source), "forex")
 
-        # Not skipped: the video was looked for (no captions, so Whisper too).
         assert videos["asked"][0] == ("captions", self._ID)

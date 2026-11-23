@@ -38,8 +38,10 @@ def _extract_sync(
     interval_seconds: int,
     max_frames: int,
 ) -> list[bytes]:
-    if not _ffmpeg_available():
-        log.warning("ffmpeg not found in PATH — skipping key-frame extraction")
+    if not ffmpeg_available():
+        # Said once at startup (warn_if_ffmpeg_missing), and on the video's own
+        # evidence — not again per video, where 63 warnings hid it (#95).
+        log.debug("ffmpeg not found in PATH — skipping key-frame extraction")
         return []
 
     file_size = os.path.getsize(video_path)
@@ -72,7 +74,16 @@ def _extract_sync(
         return frames
 
 
-def _ffmpeg_available() -> bool:
+def warn_if_ffmpeg_missing() -> None:
+    """Called once when the backend starts."""
+    if not ffmpeg_available():
+        log.warning(
+            "ffmpeg not found in PATH — videos will be kept unanalysed and flagged "
+            "for reprocessing until it is installed"
+        )
+
+
+def ffmpeg_available() -> bool:
     try:
         subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5)
         return True

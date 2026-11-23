@@ -78,6 +78,18 @@ _Avoid_: Resume strategy, catch-up policy, skip
 How far through a source's content the system has already got, stored per source and advanced only forward. A platform gives it one of two shapes: a _bound_, which says "everything after this point" and survives the content it names being deleted (Telegram's message id), or a _marker_, which has to be found again in the platform's current window and is lost if that item disappears (YouTube's video id). A marker that cannot be found falls back to the timestamp of the newest evidence already stored, so a source never stalls on a deleted item.
 _Avoid_: Cursor, offset, watermark, last seen
 
+**Failed message**:
+A message whose processing raised during a fetch or a backfill, recorded against its source so it is not lost when the fetch position moves past it. Each fetch of the source retries it first; after three failed attempts it is _given up_ — no longer retried, but kept and shown on the source with the last reason, until a person deals with it: by _sending it back_, which gives it a fresh three attempts from the next fetch, or by a backfill that stores it. A failure that would repeat for everything left in the run is not the message's fault and is not recorded. A video with no transcript is retried an hour later and then a day later, since YouTube often adds captions hours after an upload — unless no attempt could ever transcribe it (a live event that has ended, a video YouTube offers no audio for), which is given up on its first failure with the reason in words a person reads. A platform _refusing_ us for a while (YouTube's 429) is different: the message is recorded without counting an attempt, and waits until the refusal ends before it is retried. A failure of our own tooling — a yt-dlp whose extractor no longer matches YouTube's player — counts no attempt either, and waits an hour at a time with the command that fixes it as its reason, so an upgrade is enough for the next fetch to pick every one of them up. See ADR 0005, ADR 0007 and ADR 0011.
+_Avoid_: Error, dead letter, poison message, skipped
+
+**Stuck**:
+A _waiting_ failed message whose wait is going nowhere: no attempt has ever been counted against it, and the whole of its wait — from its first failure to the end of the wait it is in now — is longer than the cool-down holding it, so more than one cool-down has held it. A message refused for the first time waits exactly one of them, however long that one is; one whose wait reaches further back than the wait it is in was already waiting when that wait began. Said of a message and counted per source on the source page, apart from the ordinary waits, because the two failures that count no attempt are the two nothing ever gives a message up for — a platform refusing us, and our own tooling being stale — so such a message moves when the refusal ends or the tool is fixed, and not for anything done to it. Not a state stored anywhere — `failed_message_service.is_stuck` is the rule, read off the row as it is shown (#141).
+_Avoid_: Stale, hung, abandoned, zombie
+
+**Refusal**:
+A platform turning our requests away for a while, which says nothing about the message asked for: YouTube answering caption requests with 429, or blocking our address. A refusal is waited out — what it held up becomes a failed message that counts no attempt and is not retried before the refusal ends, and the platform is not asked again by any fetch until a _cool-down_ passes. The cool-down is an hour for the first refusal and doubles for each further one met while we were only just let back in, up to a day; a request the platform answers returns it to the hour. YouTube refusing the audio download for Whisper is the same refusal. It never stops a fetch. A 403 or any other error is not a refusal. See ADR 0007, ADR 0009 and ADR 0010.
+_Avoid_: Block, rate limit, ban, 429
+
 **Backlog**:
 The content a paused source has published since it was last fetched — what catching up would ingest. Measured from the fetch position, not from the pause.
 _Avoid_: Queue, pending items, lag
@@ -104,10 +116,14 @@ _Avoid_: Ticker, market, asset
 How far a strategy card has earned trust, from still learning through developing to established. Derived from how much validated evidence stands behind it, and it is the tier the user sees.
 _Avoid_: Score, rating, quality, maturity
 
+**Analysis run**:
+One pass of pattern mining or of validation over a workspace, started by a member or by the weekly schedule, and how it ended — in a backfill outcome's words: _completed_ lost nothing, _partial_ carried on past clusters or cards that failed and names each with the reason, _failed_ stopped on a failure that would repeat for everything left (a rejected API key) or was cut off by a restart. A workspace runs one at a time, of either kind, since both write its strategy cards; every member sees the same runs.
+_Avoid_: Job, task, batch, refresh
+
 ### Asking
 
 **Ask record**:
-One question a user asked of their workspace's knowledge base and the answer the system synthesized for it, with the sources that answer cited. Private to the user who asked it, like a plan item: another member of the same workspace never sees it. Kept so that a question already answered can be read again instead of asked again, which is why reading one costs nothing — the stored answer is served as it was, never re-synthesized. All of one user's records in one workspace are their **ask history**, which is the collection and never the name of a single record.
+One question a user asked of their workspace's knowledge base and the answer the system synthesized for it, with the sources that answer cited. Private to the user who asked it, like a plan item: another member of the same workspace never sees it. Kept so that a question already answered can be read again instead of asked again, which is why reading one costs nothing — the stored answer and its cited sources are served as they were kept, never re-synthesized. Beside each source, what its evidence has to show now — a picture kept since — is looked up when the record is read, so an old answer shows it too. All of one user's records in one workspace are their **ask history**, which is the collection and never the name of a single record.
 _Avoid_: Chat, conversation, message, thread
 
 ### Validation

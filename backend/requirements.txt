@@ -26,9 +26,16 @@ beautifulsoup4==4.12.3
 
 # Phase 3
 google-api-python-client==2.149.0
-youtube-transcript-api==0.6.3
+youtube-transcript-api==1.2.4
 openai==1.51.0
-yt-dlp==2024.10.7
+# Whisper's audio download. YouTube changes its player and an older yt-dlp then
+# fails every video with "Failed to extract any player response" — a failure of
+# ours, not of the videos (#139). Refresh it when that shows up on a source's
+# failed messages, or every few months:
+#     pip install -U yt-dlp && pip show yt-dlp | grep Version
+# then pin the version printed here and restart the backend. The videos it
+# failed are waiting, unattempted, and the next fetch picks them up.
+yt-dlp==2026.10.26
 
 # Phase 4
 Pillow==11.0.0
@@ -36,7 +43,7 @@ readability-lxml==0.8.1
 requests==2.32.3
 
 # Phase 6
-yfinance==0.2.44
+yfinance==1.7.0
 
 # Phase 11
 stripe==11.4.1

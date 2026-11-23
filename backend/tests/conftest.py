@@ -174,6 +174,13 @@ class FakeResult:
     def scalars(self):
         return self
 
+    def __iter__(self):
+        """
+        Iterating a query for rows is how a list query reads them; one that
+        nothing was registered for finds none, as a real one would (#96).
+        """
+        return iter([] if self._value is None else self.all())
+
     def all(self):
         return self._value if isinstance(self._value, list) else [self._value]
 
@@ -584,3 +591,143 @@ async def make_card(session, workspace=None):
     session.add(card)
     await session.flush()
     return card
+
+
+async def reread(session, row):
+    """The row as the database now holds it, not as this session remembers it."""
+    from sqlalchemy import select
+
+    model = type(row)
+    session.expunge(row)
+    return (await session.execute(select(model).where(model.id == row.id))).scalar_one()
+
+
+# ── a source, replayed ───────────────────────────────────────────────────────
+
+
+class FakeChannel:
+    """
+    A source as the replay asks it: one message at a time, by stable id.
+
+    Replaying flagged videos and replaying flagged images both need one, so it
+    lives here (#97, #108).
+    """
+
+    def __init__(self):
+        self.messages: list[RawMessage] = []
+        self.raises: dict[str, Exception] = {}
+        self.fetched: list[str] = []
+        self.ranges: list[tuple] = []
+
+    async def fetch_one(self, stable_id):
+        self.fetched.append(stable_id)
+        if stable_id in self.raises:
+            raise self.raises[stable_id]
+        return next((m for m in self.messages if m.stable_id == stable_id), None)
+
+    async def fetch_range(self, date_start, date_end):
+        # Walking a range downloaded every photo and video in it to find a few (#97).
+        self.ranges.append((date_start, date_end))
+        for msg in self.messages:
+            yield msg
+
+
+def fake_refusal_store(monkeypatch, now=None) -> dict:
+    """
+    The record of platforms refusing us (#130), kept in a dict rather than the
+    database: platform → the `Cooldown` recorded for it.
+
+    Only the storage is faked. How long a refusal waits is the real `escalate`
+    (#140), so a test that earns a longer wait earns the one the store would
+    give it, and the row's own write rules are kept here too — the later end
+    holds, and the count earned is the count kept. `now` is the test's clock,
+    for tests that move time by hand.
+    """
+    from dataclasses import replace
+
+    from app.core import platform_refusal
+    from app.core.clock import now_utc
+    from app.services import refusal_store
+
+    clock = now or now_utc
+    recorded: dict = {}
+
+    async def _current(platform):
+        return recorded.get(platform)
+
+    async def _refuse(platform, reason, *, base, ceiling):
+        was = recorded.get(platform)
+        wanted = platform_refusal.escalate(was, now=clock(), base=base, ceiling=ceiling)
+        if was is not None:
+            # As the row is written: the later of two ends holds, and the
+            # count earned is written as it stands, so a run of refusals that
+            # has been forgotten is not carried on the row either (#140).
+            wanted = platform_refusal.Cooldown(
+                until=max(was.until, wanted.until), consecutive=wanted.consecutive
+            )
+        recorded[platform] = wanted
+        return wanted
+
+    async def _let_through(platform):
+        was = recorded.get(platform)
+        if was is not None and was.consecutive > 0:
+            recorded[platform] = replace(was, consecutive=0)
+
+    monkeypatch.setattr(refusal_store, "current", _current)
+    monkeypatch.setattr(refusal_store, "refuse", _refuse)
+    monkeypatch.setattr(refusal_store, "let_through", _let_through)
+    return recorded
+
+
+def fake_youtube_window(monkeypatch, connector, window: list[dict]) -> None:
+    """
+    A YouTube connector's channel, answered from `window` (newest first): the
+    newest videos as a poll reads them, and any one of them by its id (#131).
+    """
+    async def _videos(since=None):
+        return window
+
+    async def _video(video_id):
+        return next((v for v in window if v["video_id"] == video_id), None)
+
+    monkeypatch.setattr(connector, "_get_videos", _videos)
+    monkeypatch.setattr(connector, "_get_video", _video)
+
+
+@pytest.fixture
+def channel(monkeypatch):
+    channel = FakeChannel()
+    from app.services import ingestion_pipeline
+
+    monkeypatch.setattr(ingestion_pipeline, "_build_connector", lambda source: channel)
+    return channel
+
+
+
+# ── the ingestion pipeline, offline ──────────────────────────────────────────
+
+
+@pytest.fixture
+def offline_pipeline(monkeypatch):
+    """
+    `process_message` with every paid call it can make answered locally: the
+    relevance check says on topic, distillation does nothing, the language is
+    English, and usage events land in the returned session's `added`.
+
+    Two test files had their own copy of this (found reviewing #94).
+    """
+    from app.services import ingestion_pipeline, usage_service
+
+    usage_log = FakeSession()
+    monkeypatch.setattr(usage_service, "AsyncSessionLocal", lambda: usage_log)
+
+    async def _on_topic(text, topic_scope):
+        return True, "about a currency pair", {"input_tokens": 10, "output_tokens": 2}
+
+    async def _distill(db, item, msg, text, lang):
+        return None
+
+    monkeypatch.setattr(ingestion_pipeline.relevance_service, "is_on_topic", _on_topic)
+    monkeypatch.setattr(ingestion_pipeline, "_distill_and_embed", _distill)
+    monkeypatch.setattr(ingestion_pipeline, "_detect_lang", lambda text: "en")
+    return usage_log
