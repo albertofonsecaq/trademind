@@ -9,8 +9,14 @@ or written into a reason, and a refusal met through the proxy is still a
 refusal (ADR 0007, 0009, 0010).
 
 Only the captions library is faked: what it was built with, and what it said.
+
+And #152: the audio Whisper needs is downloaded through the same proxy, for
+YouTube refuses that download for the same reason. There yt-dlp is faked where
+it is handed its options, and OpenAI where it is asked to transcribe.
 """
 import logging
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -19,7 +25,7 @@ from pydantic import SecretStr
 from youtube_transcript_api import IpBlocked
 
 from app.core.config import Settings, settings
-from app.services import refusal_store, youtube_proxy, youtube_transcript
+from app.services import refusal_store, transcription_service, youtube_proxy, youtube_transcript
 from tests.conftest import fake_refusal_store
 
 _PROXY = "http://trader-user:s3cret-pass@proxy.example.net:8080"
@@ -175,3 +181,138 @@ class TestTheSetting:
         example = Path(__file__).parents[1] / ".env.example"
 
         assert "\nYOUTUBE_PROXY_URL=\n" in example.read_text()
+
+
+# --- #152: the audio Whisper needs is downloaded through the same proxy ---------
+
+_VIDEO = "https://www.youtube.com/watch?v=v1"
+
+
+@pytest.fixture
+def ytdlp(monkeypatch):
+    """
+    yt-dlp, faked where it is handed its options: every set of options it was
+    given, and what downloading does — by default, an mp3 where it was told to
+    write one. Whisper is faked too, so nothing leaves the machine.
+    """
+    state = {"given": []}
+
+    def _writes_an_mp3(video_url, into):
+        Path(into["outtmpl"] % {"ext": "mp3"}).write_bytes(b"audio")
+
+    state["download"] = _writes_an_mp3
+
+    def _download_audio(video_url, into):
+        state["given"].append(into)
+        state["download"](video_url, into)
+
+    class _Heard:
+        segments = []
+        duration = 60.0
+
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(transcription_service, "_download_audio", _download_audio)
+    monkeypatch.setattr(transcription_service, "_ask_whisper", lambda audio_path: _Heard(), raising=False)
+    return state
+
+
+class TestTheAudioForWhisper:
+    async def test_is_downloaded_through_the_proxy_when_one_is_set(self, ytdlp, monkeypatch):
+        _set_proxy(monkeypatch, _PROXY)
+
+        await transcription_service.transcribe_youtube_video(_VIDEO)
+
+        assert [given.get("proxy") for given in ytdlp["given"]] == [_PROXY]
+
+    async def test_is_downloaded_as_before_when_none_is(self, ytdlp, monkeypatch):
+        _set_proxy(monkeypatch, "")
+
+        await transcription_service.transcribe_youtube_video(_VIDEO)
+
+        assert len(ytdlp["given"]) == 1
+        assert "proxy" not in ytdlp["given"][0]
+
+
+def _ytdlp_says(words):
+    """A download that fails with yt-dlp's `words`, as its DownloadError would say them."""
+    def _fails(video_url, into):
+        raise RuntimeError(words)
+    return _fails
+
+
+class TestTheProxyUrlIsNeverSaidByTheDownload:
+    async def test_not_in_the_reason_or_the_log_when_yt_dlp_puts_it_in_its_error(
+        self, ytdlp, monkeypatch, caplog
+    ):
+        _set_proxy(monkeypatch, _PROXY)
+        ytdlp["download"] = _ytdlp_says(
+            "ERROR: [youtube] v1: Unable to download webpage: "
+            f"('Unable to connect to proxy', OSError('Tunnel connection failed: 407 "
+            f"Proxy Authentication Required')) (caused by ProxyError({_PROXY!r}))"
+        )
+
+        with caplog.at_level(logging.DEBUG):
+            with pytest.raises(transcription_service.WhisperGaveNothing) as raised:
+                await transcription_service.transcribe_youtube_video(_VIDEO)
+
+        assert caplog.records, "the failure is still logged, without the proxy"
+        assert "Unable to connect to proxy" in str(raised.value)
+        for part in _SECRET_PARTS:
+            assert part not in str(raised.value)
+            assert part not in caplog.text
+
+
+class TestARefusalOfTheDownloadMetThroughTheProxy:
+    """ADR 0009: YouTube refusing the audio is the same refusal, wherever we asked from."""
+
+    _REFUSED = (
+        "ERROR: [youtube] v1: Sign in to confirm you’re not a bot. "
+        f"Requested through {_PROXY} (proxy.example.net)"
+    )
+
+    async def test_is_still_a_refusal_and_does_not_say_the_proxy(self, ytdlp, monkeypatch):
+        _set_proxy(monkeypatch, _PROXY)
+        ytdlp["download"] = _ytdlp_says(self._REFUSED)
+
+        with pytest.raises(transcription_service.DownloadRefused) as raised:
+            await transcription_service.transcribe_youtube_video(_VIDEO)
+
+        assert "not a bot" in str(raised.value)
+        for part in _SECRET_PARTS:
+            assert part not in str(raised.value)
+
+    async def test_is_recorded_and_waited_out_without_the_proxy_in_its_reason(
+        self, ytdlp, monkeypatch, caplog
+    ):
+        _set_proxy(monkeypatch, _PROXY)
+        monkeypatch.setattr(settings, "YOUTUBE_REFUSAL_COOLDOWN_MINUTES", 60)
+        refusals = fake_refusal_store(monkeypatch)
+        reasons = []
+        recorded = refusal_store.refuse
+
+        async def _refuse(platform, reason, **wait):
+            reasons.append(reason)
+            return await recorded(platform, reason, **wait)
+
+        monkeypatch.setattr(refusal_store, "refuse", _refuse)
+
+        async def _no_captions(video_id):
+            return None
+
+        monkeypatch.setattr(youtube_transcript, "fetch_captions", _no_captions)
+        ytdlp["download"] = _ytdlp_says(self._REFUSED)
+
+        with caplog.at_level(logging.DEBUG):
+            with pytest.raises(youtube_transcript.YouTubeRefused) as raised:
+                await youtube_transcript.video_transcript_messages(
+                    "v1", source_config_id=uuid.uuid4(), workspace_id=uuid.uuid4(),
+                    author=None, channel="@chan", timestamp=datetime.now(timezone.utc),
+                    source_type="youtube",
+                )
+
+        assert refusals[refusal_store.YOUTUBE].until == raised.value.until
+        assert len(reasons) == 1
+        for part in _SECRET_PARTS:
+            assert part not in reasons[0]
+            assert part not in str(raised.value)
+            assert part not in caplog.text

@@ -29,16 +29,22 @@ Data API with our key, which is not refused.
 
 ## Decision
 
-When a proxy is configured, every caption request to YouTube goes through it;
-when none is, nothing changes.
+When a proxy is configured, every request for a transcript to YouTube goes
+through it — the captions, and the audio downloaded for Whisper when a video
+has none; when none is, nothing changes.
 
 - **One optional setting, empty by default.** It holds the proxy's URL. Unset,
-  caption requests leave from this machine as before, so a deployment that is
-  not blocked needs nothing new.
+  caption requests and audio downloads leave from this machine as before, so a
+  deployment that is not blocked needs nothing new.
 - **Every caption request uses it**, whichever source reached the video — a
   YouTube source, or a YouTube link in a Telegram message — because both go
   through the same transcript code (#69, #70). Discovery through the Data API
   does not.
+- **So does every audio download for Whisper** (#152). YouTube refuses that
+  download for the same reason it refuses captions (ADR 0009), so getting the
+  captions past the block while the download still met it would leave every
+  video without captions refused. yt-dlp is given the proxy; the
+  transcription itself is OpenAI's and does not go through it.
 - **A refusal is still a refusal.** A proxy changes where we ask from, not what
   YouTube's answer means. A refusal met through it is read in the same place,
   recorded in the same row, and waited out with the same growing cool-down
@@ -48,8 +54,8 @@ when none is, nothing changes.
   secret setting, so printing the settings does not show it, and it is never
   logged and never written into a failed message's reason. Errors from the
   network stack name the proxy they could not reach, so any text from such an
-  error is scrubbed of the URL — and of its user, password and host — before it
-  is logged or kept.
+  error — the captions library's, or yt-dlp's — is scrubbed of the URL, and of
+  its user, password and host, before it is logged or kept.
 
 ## Consequences
 
@@ -64,10 +70,11 @@ when none is, nothing changes.
   video with no captions, as any other non-refusal error from the library does,
   and costs attempts. That is the reading ADR 0011 was written against for our
   own tooling, and #153 gives a broken proxy the same treatment.
-- Videos with no captions still have their audio downloaded for Whisper from
-  this machine's address, which YouTube refuses for the same reason (ADR 0009).
-  Until that download goes through the proxy too (#152), a video that needs
-  Whisper still meets the block.
+- Videos with no captions have their audio downloaded for Whisper through the
+  proxy as well (#152), so a video that needs Whisper gets past the block too.
+  An audio download is far larger than a caption request, so it is most of
+  what the proxy's traffic costs; it is still one per video without captions,
+  and a refused one is held to the same cool-down.
 - Scrubbing is by text. An error that says a part of the proxy URL in a form we
   do not look for — encoded some other way — would carry it through. The URL
   itself, its credentials and host, and their percent-decoded forms are what is

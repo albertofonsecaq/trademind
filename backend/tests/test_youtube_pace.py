@@ -11,6 +11,8 @@ The clock the pace reads is the fake one `conftest.youtube_pace` installs, so
 nothing here really sleeps.
 """
 import asyncio
+import threading
+from pathlib import Path
 
 import pytest
 from youtube_transcript_api import IpBlocked, TranscriptsDisabled
@@ -22,6 +24,7 @@ from app.services.youtube_transcript import YouTubeRefused, fetch_captions
 from tests.conftest import fake_refusal_store
 
 GAP = 5.0
+TRANSCRIBING = 600.0
 
 
 @pytest.fixture
@@ -124,13 +127,25 @@ class TestTheAudioForWhisperTakesItsTurnToo:
 
     @pytest.fixture
     def whisper(self, youtube, youtube_pace, monkeypatch):
-        """Whisper configured, its download noting when YouTube was asked."""
-        def _transcribe(video_url):
+        """
+        Whisper configured: its download noting when YouTube was asked, and
+        OpenAI's transcription after it taking ten minutes on the pace's clock.
+        """
+        def _download(video_url, into):
             youtube.append(youtube_pace.now)
-            return [{"text": "words", "start": 0.0, "duration": 1.0}], 0
+            Path(into["outtmpl"] % {"ext": "mp3"}).write_bytes(b"audio")
+
+        class _Heard:
+            segments = []
+            duration = 60.0
+
+        def _ask_whisper(audio_path):
+            youtube_pace.now += TRANSCRIBING
+            return _Heard()
 
         monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-test")
-        monkeypatch.setattr(transcription_service, "_transcribe_sync", _transcribe)
+        monkeypatch.setattr(transcription_service, "_download_audio", _download)
+        monkeypatch.setattr(transcription_service, "_ask_whisper", _ask_whisper)
         return youtube
 
     async def test_the_audio_is_asked_for_the_gap_after_the_captions(self, whisper):
@@ -138,6 +153,45 @@ class TestTheAudioForWhisperTakesItsTurnToo:
         await transcription_service.transcribe_youtube_video("https://www.youtube.com/watch?v=a")
 
         assert whisper[1] - whisper[0] >= GAP
+
+    async def test_the_next_request_is_spaced_from_the_download_not_the_transcription(
+        self, whisper, youtube_pace
+    ):
+        # Only the download asks YouTube. Holding the turn through OpenAI's
+        # transcription as well would keep every caption request waiting
+        # behind it, and space the next one from its end.
+        await transcription_service.transcribe_youtube_video("https://www.youtube.com/watch?v=a")
+        await fetch_captions("b")
+
+        assert youtube_pace.waited == []
+        assert whisper[1] - whisper[0] == TRANSCRIBING
+
+    async def test_a_caption_request_is_not_held_up_while_whisper_transcribes(
+        self, whisper, monkeypatch
+    ):
+        # The transcription is under way, and a caption request made meanwhile
+        # is answered before it ends.
+        transcribing = threading.Event()
+        captions_asked = threading.Event()
+
+        def _ask_whisper(audio_path):
+            transcribing.set()
+            assert captions_asked.wait(timeout=5), "the caption request waited behind the transcription"
+            return type("_Heard", (), {"segments": [], "duration": 60.0})()
+
+        monkeypatch.setattr(transcription_service, "_ask_whisper", _ask_whisper)
+
+        async def _captions_meanwhile():
+            await asyncio.get_running_loop().run_in_executor(None, transcribing.wait, 5)
+            await fetch_captions("b")
+            captions_asked.set()
+
+        await asyncio.gather(
+            transcription_service.transcribe_youtube_video("https://www.youtube.com/watch?v=a"),
+            _captions_meanwhile(),
+        )
+
+        assert len(whisper) == 2
 
     async def test_nothing_waits_when_whisper_will_not_ask_youtube(self, youtube, youtube_pace, monkeypatch):
         monkeypatch.setattr(settings, "OPENAI_API_KEY", "")

@@ -3,7 +3,8 @@ The proxy requests to YouTube go through, when one is set (#150, ADR 0014).
 
 YouTube has been blocking this machine's address, not for volume, so waiting
 longer does not end it (ADR 0010). With `YOUTUBE_PROXY_URL` set, caption
-requests leave through that proxy instead; unset, nothing changes.
+requests, and the audio downloads Whisper needs (#152), leave through that
+proxy instead; unset, nothing changes.
 
 The URL carries the proxy's credentials. Nothing here ever says it, and
 `scrub` takes it — and each part of it that would tell a reader where the proxy
