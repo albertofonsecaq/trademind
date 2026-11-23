@@ -275,6 +275,8 @@
     "fetchFailed": "Could not start a fetch for this source.",
     "addSource": "Add Channel",
     "noSources": "No sources yet. Connect a Telegram account or add a YouTube channel.",
+    "loadError": "Could not load this workspace's sources, so this page cannot say what it has. Nothing has been removed.",
+    "loadRetry": "Try again",
     "connections": "Telegram Accounts",
     "connectTelegram": "Connect Telegram Account",
     "sourceType": "Source type",
