@@ -4,6 +4,10 @@ Only called when youtube-transcript-api finds no captions for a video.
 Requires OPENAI_API_KEY and yt-dlp (for audio extraction). When it gives
 nothing it says why, as WhisperGaveNothing: the reason a person reads on the
 video's failed message (#126).
+
+The audio is downloaded from YouTube through the proxy when one is set, as the
+captions are (#152, ADR 0014), and yt-dlp's words are scrubbed of it before
+they reach a log line or a reason.
 """
 from __future__ import annotations
 import asyncio
@@ -13,7 +17,7 @@ import tempfile
 from decimal import Decimal
 
 from app.core.config import settings
-from app.services import youtube_pace, youtube_refusal
+from app.services import youtube_pace, youtube_proxy, youtube_refusal
 
 log = logging.getLogger(__name__)
 
@@ -38,17 +42,23 @@ async def transcribe_youtube_video(video_url: str) -> tuple[list[dict], Decimal]
     if not settings.OPENAI_API_KEY:
         raise WhisperGaveNothing("Whisper is not configured (OPENAI_API_KEY is empty)")
 
+    loop = asyncio.get_event_loop()
     try:
-        # The download is a request to YouTube like the captions are (#151).
-        async with youtube_pace.turn():
-            return await asyncio.get_event_loop().run_in_executor(
-                None, _transcribe_sync, video_url
-            )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # The download is a request to YouTube like the captions are
+            # (#151). The transcription after it is OpenAI's, so it is made
+            # once the turn is given back: caption requests do not wait behind it.
+            async with youtube_pace.turn():
+                audio_path = await loop.run_in_executor(None, _download_sync, video_url, tmpdir)
+            return await loop.run_in_executor(None, _transcribe_sync, audio_path)
     except (WhisperGaveNothing, DownloadRefused):
         raise
     except Exception as e:
-        log.warning("Whisper transcription failed for %s: %s", video_url, e)
-        raise WhisperGaveNothing(f"Whisper failed: {e}") from e
+        # yt-dlp's words can name the proxy, credentials and all (#152); the
+        # original is not chained on, so no traceback says it either.
+        said = youtube_proxy.scrub(str(e))
+        log.warning("Whisper transcription failed for %s: %s", video_url, said)
+        raise WhisperGaveNothing(f"Whisper failed: {said}") from None
 
 
 def _download_audio(video_url: str, into: dict) -> None:
@@ -59,64 +69,74 @@ def _download_audio(video_url: str, into: dict) -> None:
         ydl.download([video_url])
 
 
-def _transcribe_sync(video_url: str) -> tuple[list[dict], Decimal] | None:
+def _download_sync(video_url: str, tmpdir: str) -> str:
+    """
+    The path of the video's audio, an mp3 in `tmpdir`; DownloadRefused if
+    YouTube refuses. Through the proxy when one is set (#152).
+    """
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "outtmpl": os.path.join(tmpdir, "audio.%(ext)s"),
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "64",  # low quality enough for speech
+        }],
+        "quiet": True,
+        "no_warnings": True,
+    }
+    proxy = youtube_proxy.url()
+    if proxy:
+        ydl_opts["proxy"] = proxy
+
+    try:
+        _download_audio(video_url, ydl_opts)
+    except Exception as e:
+        # Only the download goes through YouTube; OpenAI's errors are not its
+        # refusal. One met through the proxy is still a refusal (ADR 0009, 0014).
+        if youtube_refusal.is_refusal(e):
+            raise DownloadRefused(youtube_proxy.scrub(str(e))) from None
+        raise
+
+    mp3_files = [f for f in os.listdir(tmpdir) if f.endswith(".mp3")]
+    if not mp3_files:
+        raise RuntimeError("yt-dlp did not produce an mp3 file")
+    return os.path.join(tmpdir, mp3_files[0])
+
+
+def _ask_whisper(audio_path: str):
+    """OpenAI's transcription of the audio at `audio_path`: its segments and duration."""
     from openai import OpenAI
 
     client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    with open(audio_path, "rb") as f:
+        return client.audio.transcriptions.create(
+            model=settings.WHISPER_MODEL,
+            file=f,
+            response_format="verbose_json",
+            timestamp_granularities=["segment"],
+        )
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        audio_path = os.path.join(tmpdir, "audio.mp3")
 
-        ydl_opts = {
-            "format": "bestaudio/best",
-            "outtmpl": os.path.join(tmpdir, "audio.%(ext)s"),
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "64",  # low quality enough for speech
-            }],
-            "quiet": True,
-            "no_warnings": True,
-        }
+def _transcribe_sync(audio_path: str) -> tuple[list[dict], Decimal] | None:
+    file_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
 
-        try:
-            _download_audio(video_url, ydl_opts)
-        except Exception as e:
-            # Only the download goes through YouTube; OpenAI's errors are not its refusal.
-            if youtube_refusal.is_refusal(e):
-                raise DownloadRefused(str(e)) from e
-            raise
+    # OpenAI Whisper API has a 25 MB limit
+    if file_size_mb > 25:
+        raise WhisperGaveNothing(f"its audio is {file_size_mb:.1f} MB, over Whisper's 25 MB limit")
 
-        # Find the downloaded mp3
-        mp3_files = [f for f in os.listdir(tmpdir) if f.endswith(".mp3")]
-        if not mp3_files:
-            raise RuntimeError("yt-dlp did not produce an mp3 file")
+    response = _ask_whisper(audio_path)
 
-        audio_path = os.path.join(tmpdir, mp3_files[0])
-        file_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
+    segments = []
+    for seg in (response.segments or []):
+        segments.append({
+            "text": seg.text.strip(),
+            "start": float(seg.start),
+            "duration": float(seg.end) - float(seg.start),
+        })
 
-        # OpenAI Whisper API has a 25 MB limit
-        if file_size_mb > 25:
-            raise WhisperGaveNothing(f"its audio is {file_size_mb:.1f} MB, over Whisper's 25 MB limit")
+    # Approximate cost: duration_minutes * rate
+    duration_minutes = Decimal(str(response.duration / 60)) if response.duration else Decimal("0")
+    cost = duration_minutes * WHISPER_COST_PER_MINUTE
 
-        with open(audio_path, "rb") as f:
-            response = client.audio.transcriptions.create(
-                model=settings.WHISPER_MODEL,
-                file=f,
-                response_format="verbose_json",
-                timestamp_granularities=["segment"],
-            )
-
-        segments = []
-        for seg in (response.segments or []):
-            segments.append({
-                "text": seg.text.strip(),
-                "start": float(seg.start),
-                "duration": float(seg.end) - float(seg.start),
-            })
-
-        # Approximate cost: duration_minutes * rate
-        duration_minutes = Decimal(str(response.duration / 60)) if response.duration else Decimal("0")
-        cost = duration_minutes * WHISPER_COST_PER_MINUTE
-
-        return segments, cost
+    return segments, cost

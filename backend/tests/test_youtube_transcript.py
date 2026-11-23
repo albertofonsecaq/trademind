@@ -280,10 +280,10 @@ class TestWhisperSaysWhyItGaveNothing:
     async def test_when_it_fails(self, monkeypatch):
         monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-test")
 
-        def _fails(video_url):
+        def _fails(video_url, into):
             raise RuntimeError("yt-dlp: HTTP Error 500")
 
-        monkeypatch.setattr(transcription_service, "_transcribe_sync", _fails)
+        monkeypatch.setattr(transcription_service, "_download_audio", _fails)
 
         with pytest.raises(transcription_service.WhisperGaveNothing) as raised:
             await transcription_service.transcribe_youtube_video("https://www.youtube.com/watch?v=x")
