@@ -12,9 +12,18 @@ configure_logging(settings.LOG_LEVEL)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from app.core.database import AsyncSessionLocal
+    from app.core.schema_revision import read_database_revision, warn_if_schema_is_behind
     from app.services.analysis_run_service import close_interrupted_runs
     from app.services.keyframe_service import warn_if_ffmpeg_missing
     from app.workers.poller import create_scheduler
+
+    # First, so a database behind the code is named before anything below trips
+    # over a missing column (#148). Warns only; migrating is the owner's job.
+    async def database_revision():
+        async with AsyncSessionLocal() as db:
+            return await read_database_revision(db)
+
+    await warn_if_schema_is_behind(database_revision)
 
     # Runs are carried out inside this process: one still marked running now
     # was cut off by the restart, and would refuse every run of its kind after it.
