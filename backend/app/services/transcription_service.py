@@ -19,6 +19,7 @@ from decimal import Decimal
 
 from app.core.config import settings
 from app.services import youtube_pace, youtube_proxy, youtube_refusal
+from app.services.youtube_cooldown import YouTubeRefused
 
 log = logging.getLogger(__name__)
 
@@ -70,7 +71,8 @@ async def transcribe_youtube_video(video_url: str) -> tuple[list[dict], Decimal]
     """
     Download audio with yt-dlp, transcribe with OpenAI Whisper API.
     Returns (segments, cost_usd) where segments = [{text, start, duration}, ...].
-    WhisperGaveNothing, saying why, if it is not configured or transcription fails.
+    WhisperGaveNothing, saying why, if it is not configured or transcription fails;
+    YouTubeRefused, with nothing downloaded, while YouTube's cool-down is in force.
     """
     if not settings.OPENAI_API_KEY:
         raise WhisperGaveNothing("Whisper is not configured (OPENAI_API_KEY is empty)")
@@ -79,12 +81,14 @@ async def transcribe_youtube_video(video_url: str) -> tuple[list[dict], Decimal]
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             # The download is a request to YouTube like the captions are
-            # (#151). The transcription after it is OpenAI's, so it is made
-            # once the turn is given back: caption requests do not wait behind it.
+            # (#151): not made, nor waited for, while a refusal's cool-down is
+            # in force — YouTubeRefused goes up as it is. The transcription
+            # after it is OpenAI's, so it is made once the turn is given back:
+            # caption requests do not wait behind it.
             async with youtube_pace.turn():
                 audio_path = await loop.run_in_executor(None, _download_sync, video_url, tmpdir)
             return await loop.run_in_executor(None, _transcribe_sync, audio_path)
-    except (WhisperGaveNothing, DownloadRefused, DownloadProxyFailed):
+    except (WhisperGaveNothing, DownloadRefused, DownloadProxyFailed, YouTubeRefused):
         raise
     except Exception as e:
         # yt-dlp's words can name the proxy, credentials and all (#152); the

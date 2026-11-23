@@ -113,13 +113,71 @@ class TestACoolDownIsNotPacedOut:
         assert youtube_pace.waited == []
         assert len(refusing) == 1
 
-    async def test_one_waiting_its_turn_behind_a_refused_request_is_not_made(self, refusing):
+    async def test_one_waiting_its_turn_behind_a_refused_request_is_not_made(
+        self, refusing, youtube_pace
+    ):
         results = await asyncio.gather(
             fetch_captions("a"), fetch_captions("b"), return_exceptions=True
         )
 
         assert all(isinstance(r, YouTubeRefused) for r in results)
         assert len(refusing) == 1
+        # Nor does it wait the gap first, only to find it will not be made.
+        assert youtube_pace.waited == []
+
+    async def test_a_download_waiting_its_turn_behind_a_refused_request_is_not_made(
+        self, refusing, youtube_pace, monkeypatch
+    ):
+        downloaded = []
+        monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-test")
+        monkeypatch.setattr(
+            transcription_service, "_download_audio",
+            lambda video_url, options: downloaded.append(video_url),
+        )
+
+        results = await asyncio.gather(
+            fetch_captions("a"),
+            transcription_service.transcribe_youtube_video("https://www.youtube.com/watch?v=b"),
+            return_exceptions=True,
+        )
+
+        assert all(isinstance(r, YouTubeRefused) for r in results)
+        assert downloaded == []
+        assert youtube_pace.waited == []
+
+
+class TestATurnNoRequestIsMadeIn:
+    """
+    A turn whose request turns out not to be made — the cool-down is found in
+    force once the gap has been waited — is not a request: the next one is
+    spaced from the last request that was made.
+    """
+
+    class _Held(Exception):
+        pass
+
+    async def test_the_next_turn_is_spaced_from_the_last_request_made(
+        self, youtube_pace, monkeypatch
+    ):
+        monkeypatch.setattr(settings, "YOUTUBE_REQUEST_GAP_SECONDS", GAP)
+        monkeypatch.setattr(settings, "YOUTUBE_REQUEST_JITTER_SECONDS", 0.0)
+        pace = youtube_pace_module.Pace(clock=youtube_pace.monotonic, sleep=youtube_pace.sleep)
+        checks = iter([None, None, self._Held(), None, None])
+
+        async def _ready():
+            found = next(checks)
+            if found is not None:
+                raise found
+
+        async with pace.turn(_ready):
+            pass                                    # a request made
+        with pytest.raises(self._Held):
+            async with pace.turn(_ready):          # waits the gap, then is held
+                pytest.fail("a request held up by a cool-down was made")
+        async with pace.turn(_ready):
+            pass
+
+        assert youtube_pace.waited == [GAP]
 
 
 class TestTheAudioForWhisperTakesItsTurnToo:

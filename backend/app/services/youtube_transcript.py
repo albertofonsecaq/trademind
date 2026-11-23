@@ -20,11 +20,13 @@ from decimal import Decimal
 from youtube_transcript_api import NoTranscriptFound, YouTubeTranscriptApi
 
 from app.connectors.base import RawMessage
-from app.core.clock import now_utc
 from app.core.config import settings
 from app.core.content_unavailable import ContentUnavailable
-from app.core.platform_refusal import Cooldown, PlatformRefused
-from app.services import refusal_store, transcription_service, youtube_pace, youtube_proxy, youtube_refusal
+from app.services import (
+    refusal_store, transcription_service, youtube_cooldown, youtube_pace, youtube_proxy,
+    youtube_refusal,
+)
+from app.services.youtube_cooldown import YouTubeRefused
 from app.services.usage_service import log_usage_event
 
 log = logging.getLogger(__name__)
@@ -77,16 +79,6 @@ def _chunk_start(chunk: list[dict]) -> float:
 def _chunk_end(chunk: list[dict]) -> float:
     last = chunk[-1]
     return float(last.get("start", 0)) + float(last.get("duration", 0))
-
-
-class YouTubeRefused(PlatformRefused):
-    """
-    YouTube refusing us — its captions, or the audio Whisper needs (a 429, our
-    address blocked, a demand to prove we are not a bot).
-
-    Not the same as a video without captions: every video after this one
-    would be refused too, and it says nothing about the video (#124, #125, #130).
-    """
 
 
 class NoTranscript(ContentUnavailable):
@@ -181,29 +173,6 @@ class ProxyFailed(ContentUnavailable):
         return False
 
 
-def _refusal(cooldown: Cooldown) -> YouTubeRefused:
-    """
-    The refusal to raise for a cool-down, saying which refusal in a row earned
-    it and until when.
-
-    This reason is what the source page shows for every message the wait holds
-    up, so it says both halves ADR 0010 asks for, not only the log line's: the
-    day as well as the hour, because an escalating wait can outlast one, and
-    how many refusals in a row there have been, because "until tomorrow" alone
-    says nothing about how long YouTube has been refusing us.
-
-    Nothing is claimed about a run when the platform has answered us since
-    (`consecutive` is 0): the recorded end still holds and is still waited out,
-    but there is no run of refusals to count.
-    """
-    in_a_row = f" ({cooldown.consecutive} in a row)" if cooldown.consecutive else ""
-    return YouTubeRefused(
-        f"YouTube is refusing our requests{in_a_row} "
-        f"until {cooldown.until:%Y-%m-%d %H:%M} UTC",
-        until=cooldown.until,
-    )
-
-
 class _LibraryRefused(Exception):
     """The library's refusal, out of the executor thread."""
 
@@ -262,11 +231,9 @@ async def fetch_captions(video_id: str) -> list[dict] | None:
     escalated from (#140). Only when there is a run to end: a platform that has
     never refused us has nothing to reset.
     """
-    await _not_refused()
-    # Spaced out from every other transcript request (#151), and checked again
-    # once its turn comes: one queued behind a request YouTube refused is not made.
-    async with youtube_pace.turn():
-        cooldown = await _not_refused()
+    # Spaced out from every other request to YouTube (#151), and not made, nor
+    # waited for, while a refusal's cool-down is in force: the turn asks.
+    async with youtube_pace.turn() as cooldown:
         try:
             captions = await asyncio.get_event_loop().run_in_executor(
                 None, _get_captions_sync, video_id
@@ -280,14 +247,6 @@ async def fetch_captions(video_id: str) -> list[dict] | None:
     if cooldown is not None and cooldown.consecutive > 0:
         await refusal_store.let_through(refusal_store.YOUTUBE)
     return captions
-
-
-async def _not_refused() -> Cooldown | None:
-    """The recorded cool-down, once it has passed; YouTubeRefused while it has not."""
-    cooldown = await refusal_store.current(refusal_store.YOUTUBE)
-    if cooldown is not None and now_utc() < cooldown.until:
-        raise _refusal(cooldown)
-    return cooldown
 
 
 async def _refused(video_id: str, reason: str) -> YouTubeRefused:
@@ -312,7 +271,7 @@ async def _refused(video_id: str, reason: str) -> YouTubeRefused:
         "YouTube refused us for %s (%s), %s in a row: no requests to it until %s UTC",
         video_id, reason, cooldown.consecutive, f"{cooldown.until:%Y-%m-%d %H:%M}",
     )
-    return _refusal(cooldown)
+    return youtube_cooldown.refusal(cooldown)
 
 
 async def _segments_for_video(video_id: str) -> tuple[list[dict], str]:
