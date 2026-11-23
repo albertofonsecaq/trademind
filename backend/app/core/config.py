@@ -1,3 +1,4 @@
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Literal, List
 
@@ -56,6 +57,11 @@ class Settings(BaseSettings):
     # up to the ceiling; a request YouTube answers returns it to this (#140).
     YOUTUBE_REFUSAL_COOLDOWN_MINUTES: int = 60
     YOUTUBE_REFUSAL_COOLDOWN_MAX_MINUTES: int = 1440  # a day: long blocks have lasted a week
+    # Optional proxy every caption request to YouTube goes through, for when
+    # YouTube blocks this machine's address (#150, ADR 0014). Empty: none, as
+    # before. It carries the proxy's credentials, so it is a secret: never
+    # logged, never shown in a reason.
+    YOUTUBE_PROXY_URL: SecretStr = SecretStr("")
 
     # Phase 11: Stripe billing
     # Create a Product + Price in your Stripe Dashboard and paste the Price ID here.

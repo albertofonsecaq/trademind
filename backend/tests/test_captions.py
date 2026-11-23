@@ -54,6 +54,10 @@ def youtube(monkeypatch):
     state = {"listed": [], "error": None, "asked": 0}
 
     class _Api:
+        def __init__(self, proxy_config=None):
+            # Which proxy, if any, is test_youtube_proxy.py's to check (#150).
+            pass
+
         def list(self, video_id):
             state["asked"] += 1
             if state["error"]:
