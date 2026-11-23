@@ -19,6 +19,7 @@ from decimal import Decimal
 
 from app.core.config import settings
 from app.services import youtube_pace, youtube_proxy, youtube_refusal
+from app.services.youtube_cooldown import YouTubeRefused
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ class DownloadProxyFailed(Exception):
     """
 
 
-class _Heard:
+class _WarningsKept:
     """
     yt-dlp's logger: keeps what it warns of, says nothing.
 
@@ -47,7 +48,7 @@ class _Heard:
     """
 
     def __init__(self):
-        self.warnings: list[str] = []
+        self.kept: list[str] = []
 
     def debug(self, message: str) -> None:
         pass
@@ -56,7 +57,7 @@ class _Heard:
         pass
 
     def warning(self, message: str) -> None:
-        self.warnings.append(message)
+        self.kept.append(message)
 
     def error(self, message: str) -> None:
         pass
@@ -70,7 +71,8 @@ async def transcribe_youtube_video(video_url: str) -> tuple[list[dict], Decimal]
     """
     Download audio with yt-dlp, transcribe with OpenAI Whisper API.
     Returns (segments, cost_usd) where segments = [{text, start, duration}, ...].
-    WhisperGaveNothing, saying why, if it is not configured or transcription fails.
+    WhisperGaveNothing, saying why, if it is not configured or transcription fails;
+    YouTubeRefused, with nothing downloaded, while YouTube's cool-down is in force.
     """
     if not settings.OPENAI_API_KEY:
         raise WhisperGaveNothing("Whisper is not configured (OPENAI_API_KEY is empty)")
@@ -79,26 +81,36 @@ async def transcribe_youtube_video(video_url: str) -> tuple[list[dict], Decimal]
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             # The download is a request to YouTube like the captions are
-            # (#151). The transcription after it is OpenAI's, so it is made
-            # once the turn is given back: caption requests do not wait behind it.
+            # (#151): not made, nor waited for, while a refusal's cool-down is
+            # in force — YouTubeRefused goes up as it is. The transcription
+            # after it is OpenAI's, so it is made once the turn is given back:
+            # caption requests do not wait behind it.
             async with youtube_pace.turn():
                 audio_path = await loop.run_in_executor(None, _download_sync, video_url, tmpdir)
             return await loop.run_in_executor(None, _transcribe_sync, audio_path)
-    except (WhisperGaveNothing, DownloadRefused, DownloadProxyFailed):
+    except (WhisperGaveNothing, DownloadRefused, DownloadProxyFailed, YouTubeRefused):
         raise
     except Exception as e:
-        # yt-dlp's words can name the proxy, credentials and all (#152); the
-        # original is not chained on, so no traceback says it either.
+        # yt-dlp's words can name the proxy, credentials and all (#152).
         said = youtube_proxy.scrub(str(e))
         log.warning("Whisper transcription failed for %s: %s", video_url, said)
-        raise WhisperGaveNothing(f"Whisper failed: {said}") from None
+        raise WhisperGaveNothing(f"Whisper failed: {said}") from _cause(e)
 
 
-def _download_audio(video_url: str, into: dict) -> None:
-    """The video's audio, downloaded by yt-dlp with the options `into` gives."""
+def _cause(e: Exception) -> Exception | None:
+    """
+    What to chain an error passed on from yt-dlp to: the original, for its
+    traceback, unless a proxy is set — then its words may name the proxy,
+    credentials and all, and no traceback is to say them (#152).
+    """
+    return None if youtube_proxy.url() else e
+
+
+def _download_audio(video_url: str, options: dict) -> None:
+    """The video's audio, downloaded by yt-dlp with the `options` given."""
     import yt_dlp
 
-    with yt_dlp.YoutubeDL(into) as ydl:
+    with yt_dlp.YoutubeDL(options) as ydl:
         ydl.download([video_url])
 
 
@@ -119,11 +131,11 @@ def _download_sync(video_url: str, tmpdir: str) -> str:
         "quiet": True,
         "no_warnings": True,
     }
-    heard = _Heard()
+    warned = _WarningsKept()
     proxy = youtube_proxy.url()
     if proxy:
         ydl_opts["proxy"] = proxy
-        ydl_opts["logger"] = heard
+        ydl_opts["logger"] = warned
 
     try:
         _download_audio(video_url, ydl_opts)
@@ -131,10 +143,10 @@ def _download_sync(video_url: str, tmpdir: str) -> str:
         # Only the download goes through YouTube; OpenAI's errors are not its
         # refusal. One met through the proxy is still a refusal (ADR 0009, 0014).
         if youtube_refusal.is_refusal(e):
-            raise DownloadRefused(youtube_proxy.scrub(str(e))) from None
+            raise DownloadRefused(youtube_proxy.scrub(str(e))) from _cause(e)
         # Read here, with what yt-dlp warned of, before its words are
         # scrubbed and the proxy's failure can no longer be told apart (#153).
-        proxy_failed = youtube_refusal.proxy_failed(e, heard.warnings)
+        proxy_failed = youtube_refusal.proxy_failed(e, warned.kept)
         if proxy_failed:
             raise DownloadProxyFailed(proxy_failed) from None
         raise
@@ -159,7 +171,7 @@ def _ask_whisper(audio_path: str):
         )
 
 
-def _transcribe_sync(audio_path: str) -> tuple[list[dict], Decimal] | None:
+def _transcribe_sync(audio_path: str) -> tuple[list[dict], Decimal]:
     file_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
 
     # OpenAI Whisper API has a 25 MB limit

@@ -197,14 +197,14 @@ def ytdlp(monkeypatch):
     """
     state = {"given": []}
 
-    def _writes_an_mp3(video_url, into):
-        Path(into["outtmpl"] % {"ext": "mp3"}).write_bytes(b"audio")
+    def _writes_an_mp3(video_url, options):
+        Path(options["outtmpl"] % {"ext": "mp3"}).write_bytes(b"audio")
 
     state["download"] = _writes_an_mp3
 
-    def _download_audio(video_url, into):
-        state["given"].append(into)
-        state["download"](video_url, into)
+    def _download_audio(video_url, options):
+        state["given"].append(options)
+        state["download"](video_url, options)
 
     class _Heard:
         segments = []
@@ -235,7 +235,7 @@ class TestTheAudioForWhisper:
 
 def _ytdlp_says(words):
     """A download that fails with yt-dlp's `words`, as its DownloadError would say them."""
-    def _fails(video_url, into):
+    def _fails(video_url, options):
         raise RuntimeError(words)
     return _fails
 
@@ -261,6 +261,45 @@ class TestTheProxyUrlIsNeverSaidByTheDownload:
         for part in _SECRET_PARTS:
             assert part not in str(raised.value)
             assert part not in caplog.text
+
+
+class TestTheDownloadsOwnErrorIsKeptOnlyWhenNoProxyCanBeInIt:
+    """
+    yt-dlp's original error is chained on for its traceback, unless a proxy is
+    set: then its words may name the proxy, and nothing it says is passed on.
+    """
+
+    @pytest.mark.parametrize("words, raises", [
+        ("ERROR: [youtube] v1: HTTP Error 500: Internal Server Error",
+         transcription_service.WhisperGaveNothing),
+        ("ERROR: [youtube] v1: HTTP Error 429: Too Many Requests",
+         transcription_service.DownloadRefused),
+    ])
+    async def test_chained_on_without_a_proxy(self, ytdlp, monkeypatch, words, raises):
+        _set_proxy(monkeypatch, "")
+        ytdlp["download"] = _ytdlp_says(words)
+
+        with pytest.raises(raises) as raised:
+            await transcription_service.transcribe_youtube_video(_VIDEO)
+
+        assert isinstance(raised.value.__cause__, RuntimeError)
+        assert str(raised.value.__cause__) == words
+
+    @pytest.mark.parametrize("words, raises", [
+        (f"ERROR: [youtube] v1: HTTP Error 500: Internal Server Error (through {_PROXY})",
+         transcription_service.WhisperGaveNothing),
+        (f"ERROR: [youtube] v1: HTTP Error 429: Too Many Requests (through {_PROXY})",
+         transcription_service.DownloadRefused),
+    ])
+    async def test_left_off_with_one(self, ytdlp, monkeypatch, words, raises):
+        _set_proxy(monkeypatch, _PROXY)
+        ytdlp["download"] = _ytdlp_says(words)
+
+        with pytest.raises(raises) as raised:
+            await transcription_service.transcribe_youtube_video(_VIDEO)
+
+        assert raised.value.__cause__ is None
+        assert raised.value.__suppress_context__
 
 
 class TestARefusalOfTheDownloadMetThroughTheProxy:

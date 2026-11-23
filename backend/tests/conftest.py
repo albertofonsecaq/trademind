@@ -147,6 +147,21 @@ def youtube_pace(monkeypatch):
     return clock
 
 
+@pytest.fixture(autouse=True)
+def _refusals_kept_offline(request, monkeypatch):
+    """
+    The record of platforms refusing us in a dict, for every test not marked
+    `db`: nothing refused until the test says so.
+
+    Every request to YouTube asks that record first, through its pace turn —
+    the audio download for Whisper included (#151) — and the real one is a
+    query. An offline test that reached it would be reaching for whatever
+    database DATABASE_URL names. A test faking it itself replaces this one.
+    """
+    if request.node.get_closest_marker("db") is None:
+        fake_refusal_store(monkeypatch)
+
+
 @pytest.fixture
 async def db_session():
     """
