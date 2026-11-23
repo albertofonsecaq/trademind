@@ -91,10 +91,17 @@ has none; when none is, nothing changes.
   logged, because it names the proxy. A video's own final answer — a live event
   that has ended — reached through a proxy that stumbled on the way is still
   the video's.
-- Telling a broken proxy apart is by words, as the other verdicts are: what
-  requests and yt-dlp say when they cannot connect to the proxy, and the 407
-  "Proxy Authentication Required". A failure of the proxy they word some other
-  way — a timeout through it — still reads as the video's own.
+- Telling a broken proxy apart is by words, as the other verdicts are — what
+  requests and yt-dlp say when they cannot connect to the proxy, a tunnel it
+  answers with an error of its own (a 502 or 503), the 407 "Proxy
+  Authentication Required", a SOCKS proxy with no SOCKS support installed —
+  and, on the caption request, by type as well: the captions library passes
+  requests' own errors through, so a ProxyError, or with a SOCKS proxy any
+  connection error, is the proxy's whatever it says. Both only while a proxy is
+  set. yt-dlp's errors reach us as words alone, so a failure of the proxy it
+  words some other way — a timeout through it — still reads as the video's own;
+  so does a connection broken after an HTTP proxy's tunnel is up, which is not
+  the proxy's to own.
 - Videos with no captions have their audio downloaded for Whisper through the
   proxy as well (#152), so a video that needs Whisper gets past the block too.
   An audio download is far larger than a caption request, so it is most of

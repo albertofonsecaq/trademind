@@ -50,6 +50,25 @@ _UNREACHABLE = requests.exceptions.ProxyError(
     "Failed to establish a new connection: [Errno 61] Connection refused\")))"
 )
 
+# ... and when the proxy is reached but answers the tunnel to YouTube with an
+# error of its own, as an overloaded or misconfigured one does.
+_TUNNEL_REFUSED = requests.exceptions.ProxyError(
+    "HTTPSConnectionPool(host='www.youtube.com', port=443): Max retries exceeded with url: "
+    "/watch?v=v1 (Caused by ProxyError('Unable to connect to proxy', "
+    "OSError('Tunnel connection failed: 503 Service Unavailable')))"
+)
+
+# A SOCKS proxy raises no ProxyError of requests' own: what reaching it fails
+# with is a plain connection error, from a SOCKS connection pool ...
+_SOCKS_PROXY = "socks5h://trader-user:s3cret-pass@proxy.example.net:1080"
+_SOCKS_UNREACHABLE = requests.exceptions.ConnectionError(
+    "SOCKSHTTPSConnectionPool(host='www.youtube.com', port=443): Max retries exceeded with url: "
+    "/watch?v=v1 (Caused by NewConnectionError('<urllib3.contrib.socks.SOCKSHTTPSConnection "
+    "object at 0x10f2c3a10>: Failed to establish a new connection: [Errno 61] Connection refused'))"
+)
+# ... and, while PySocks is not installed, what every request through it fails with.
+_SOCKS_UNSUPPORTED = requests.exceptions.InvalidSchema("Missing dependencies for SOCKS support.")
+
 
 def _set_proxy(monkeypatch, url):
     monkeypatch.setattr(settings, "YOUTUBE_PROXY_URL", SecretStr(url))
@@ -71,11 +90,59 @@ class TestReadingAProxyFailure:
         for part in _SECRET_PARTS:
             assert part not in why
 
-    def test_is_not_possible_without_a_proxy_set(self, monkeypatch):
+    def test_a_tunnel_the_proxy_refuses_is_told_apart_from_one_it_cannot_be_reached_for(
+        self, monkeypatch
+    ):
+        _set_proxy(monkeypatch, _PROXY)
+
+        why = youtube_refusal.proxy_failed(_TUNNEL_REFUSED)
+
+        assert why is not None
+        assert "answered" in why and "could not be reached" not in why
+        assert "YOUTUBE_PROXY_URL" in why
+
+    def test_requests_saying_its_proxy_failed_is_enough_whatever_the_words(self, monkeypatch):
+        _set_proxy(monkeypatch, _PROXY)
+
+        why = youtube_refusal.proxy_failed(requests.exceptions.ProxyError("something new"))
+
+        assert why is not None
+        assert "YOUTUBE_PROXY_URL" in why
+
+    @pytest.mark.parametrize("error, says", [
+        (_SOCKS_UNREACHABLE, "could not be reached"),
+        (_SOCKS_UNSUPPORTED, "requests[socks]"),
+    ])
+    def test_a_socks_proxy_failing_is_one(self, monkeypatch, error, says):
+        _set_proxy(monkeypatch, _SOCKS_PROXY)
+
+        why = youtube_refusal.proxy_failed(error)
+
+        assert why is not None
+        assert says in why
+        for part in _SECRET_PARTS:
+            assert part not in why
+
+    def test_a_connection_error_through_an_http_proxy_is_not_one_by_its_type_alone(
+        self, monkeypatch
+    ):
+        # Through an HTTP proxy, requests says the proxy failed as a ProxyError;
+        # a connection broken after the tunnel is up is not the proxy's to own.
+        _set_proxy(monkeypatch, _PROXY)
+
+        assert youtube_refusal.proxy_failed(
+            requests.exceptions.ConnectionError("('Connection aborted.', RemoteDisconnected())")
+        ) is None
+
+    @pytest.mark.parametrize("error", [
+        _UNREACHABLE, _TUNNEL_REFUSED, _SOCKS_UNREACHABLE, _SOCKS_UNSUPPORTED,
+        requests.exceptions.ProxyError("something new"),
+    ])
+    def test_is_not_possible_without_a_proxy_set(self, monkeypatch, error):
         # Nothing of ours stands between us and YouTube to fail.
         _set_proxy(monkeypatch, "")
 
-        assert youtube_refusal.proxy_failed(_UNREACHABLE) is None
+        assert youtube_refusal.proxy_failed(error) is None
 
     def test_a_refusal_is_asked_first(self, monkeypatch):
         # ADR 0009: a refusal met through the proxy is still a refusal.
@@ -168,6 +235,19 @@ class TestAProxyFailureOnTheCaptionRequest:
         assert not raised.value.counts_an_attempt()
         assert not raised.value.can_never_succeed()
         assert raised.value.wait_after(0) == raised.value.wait_after(5) == timedelta(hours=1)
+
+    @pytest.mark.parametrize("error", [_SOCKS_UNREACHABLE, _SOCKS_UNSUPPORTED])
+    async def test_through_a_socks_proxy_costs_the_video_no_attempt(
+        self, youtube, monkeypatch, error
+    ):
+        _set_proxy(monkeypatch, _SOCKS_PROXY)
+        youtube["captions"] = _raises(error)
+
+        with pytest.raises(youtube_transcript.ProxyFailed) as raised:
+            await _messages()
+
+        assert not raised.value.counts_an_attempt()
+        assert youtube["whisper_asked"] == 0
 
     async def test_is_not_read_as_no_captions_so_whisper_is_not_asked(self, youtube):
         youtube["captions"] = _raises(_REJECTED)
