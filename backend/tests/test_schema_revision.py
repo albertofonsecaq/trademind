@@ -77,3 +77,22 @@ class TestADatabaseAtHead:
             r for r in startup_log.records if r.levelno == logging.INFO and _head() in r.getMessage()
         ]
         assert len(confirmations) == 1
+
+
+class TestARevisionThatCannotBeRead:
+    """No version table, permission refused: startup carries on and says it could not check."""
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            Exception('relation "alembic_version" does not exist'),
+            PermissionError("permission denied for table alembic_version"),
+            OSError("connection refused"),
+        ],
+    )
+    async def test_does_not_stop_startup_and_says_it_could_not_check(self, startup_log, error):
+        await schema_revision.warn_if_schema_is_behind(_revision_fails_with(error))
+
+        [warning] = _warnings(startup_log)
+        assert "could not check" in warning
+        assert str(error) in warning

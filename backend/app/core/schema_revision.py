@@ -38,8 +38,18 @@ def migration_scripts() -> ScriptDirectory:
 
 async def warn_if_schema_is_behind(read_database_revision: ReadRevision) -> None:
     """Called once when the backend starts. Logs; never raises, never migrates."""
-    head = migration_scripts().get_current_head()
-    current = await read_database_revision()
+    try:
+        head = migration_scripts().get_current_head()
+        current = await read_database_revision()
+    except Exception as error:
+        # A missing version table or a refused read is not a reason to stay down;
+        # it is a reason to say the check did not happen.
+        log.warning(
+            "Started without knowing whether the database is on this code's migrations: "
+            "could not check (%s)",
+            error,
+        )
+        return
     if current == head:
         log.info("The database is at migration %s, as this code expects", head)
     else:
