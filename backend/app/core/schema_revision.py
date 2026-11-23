@@ -39,8 +39,10 @@ def migration_scripts() -> ScriptDirectory:
 async def warn_if_schema_is_behind(read_database_revision: ReadRevision) -> None:
     """Called once when the backend starts. Logs; never raises, never migrates."""
     try:
-        head = migration_scripts().get_current_head()
+        scripts = migration_scripts()
+        head = scripts.get_current_head()
         current = await read_database_revision()
+        known = current is None or _is_known(scripts, current)
     except Exception as error:
         # A missing version table or a refused read is not a reason to stay down;
         # it is a reason to say the check did not happen.
@@ -52,11 +54,25 @@ async def warn_if_schema_is_behind(read_database_revision: ReadRevision) -> None
         return
     if current == head:
         log.info("The database is at migration %s, as this code expects", head)
-    else:
+    elif known:
         log.warning(
-            "The database is at migration %s but this code expects %s, so requests "
+            "The database is at %s but this code expects %s, so requests "
             "touching the newer schema will fail. Bring it up to date as the owner: %s",
-            current,
+            "no migration" if current is None else f"migration {current}",
             head,
             UPGRADE_COMMAND,
         )
+    else:
+        log.warning(
+            "The database is at migration %s, which this code does not have (it expects %s): "
+            "the database was migrated by newer code, and this code may not match its schema",
+            current,
+            head,
+        )
+
+
+def _is_known(scripts: ScriptDirectory, revision: str) -> bool:
+    try:
+        return scripts.get_revision(revision) is not None
+    except Exception:
+        return False

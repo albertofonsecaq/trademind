@@ -63,6 +63,26 @@ class TestADatabaseBehindTheCode:
         assert "DATABASE_URL_SYNC=" in warning
         assert "alembic upgrade head" in warning
 
+    async def test_with_no_migration_at_all_is_warned_about_as_behind(self, startup_log):
+        await schema_revision.warn_if_schema_is_behind(_revision_is(None))
+
+        [warning] = _warnings(startup_log)
+        assert "database is at no migration" in warning
+        assert "alembic upgrade head" in warning
+
+
+class TestADatabaseOnAMigrationThisCodeDoesNotHave:
+    """Ahead of the code, say from a newer branch: upgrading would not help, so it is not suggested."""
+
+    async def test_is_warned_about_without_suggesting_an_upgrade(self, startup_log):
+        await schema_revision.warn_if_schema_is_behind(_revision_is("999"))
+
+        [warning] = _warnings(startup_log)
+        assert "999" in warning
+        assert _head() in warning
+        assert "does not have" in warning
+        assert "alembic upgrade head" not in warning
+
 
 class TestADatabaseAtHead:
     async def test_is_not_warned_about(self, startup_log):
