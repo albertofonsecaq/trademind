@@ -782,7 +782,22 @@ export function AdminSources() {
     return { connections: c.data, sources: s.data };
   };
 
-  useEffect(() => { load(); }, [workspaceId]);
+  // Until the first load succeeds the page does not know what the workspace
+  // has, and an empty list would read as "you have no sources" (#147). A later
+  // reload that fails keeps the data already shown; its caller handles it.
+  const [loadStatus, setLoadStatus] = useState<"loading" | "failed" | "loaded">("loading");
+
+  const loadPage = async () => {
+    setLoadStatus("loading");
+    try {
+      await load();
+      setLoadStatus("loaded");
+    } catch {
+      setLoadStatus("failed");
+    }
+  };
+
+  useEffect(() => { loadPage(); }, [workspaceId]);
 
   const handleSourceTypeChange = (type: "telegram" | "youtube") => {
     setNewSourceType(type);
@@ -958,6 +973,22 @@ export function AdminSources() {
           />
         )}
 
+        {/* Nothing below is shown until the loads succeed: each section has an
+            empty state, and every one of them would be a claim the page cannot
+            make — including the paths to add a first source. */}
+        {loadStatus === "loading" && (
+          <div style={sec}>
+            <p style={{ color: "#888", fontSize: "0.875rem", margin: 0 }}>{t("common.loading")}</p>
+          </div>
+        )}
+        {loadStatus === "failed" && (
+          <div style={sec} role="alert">
+            <p style={{ color: "#c0392b", fontSize: "0.875rem", margin: "0 0 0.75rem" }}>{t("sources.loadError")}</p>
+            <button style={btn()} onClick={loadPage}>{t("sources.loadRetry")}</button>
+          </div>
+        )}
+
+        {loadStatus === "loaded" && (<>
         {/* Telegram Connections */}
         <div style={sec}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem" }}>
@@ -1126,6 +1157,7 @@ export function AdminSources() {
             ))
           )}
         </div>
+        </>)}
       </main>
     </div>
   );

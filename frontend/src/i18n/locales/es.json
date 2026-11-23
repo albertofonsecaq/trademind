@@ -275,6 +275,8 @@
     "fetchFailed": "No se pudo iniciar la obtención de esta fuente.",
     "addSource": "Agregar canal",
     "noSources": "Aún no hay fuentes. Conecta una cuenta de Telegram o agrega un canal de YouTube.",
+    "loadError": "No se pudieron cargar las fuentes de este espacio de trabajo, así que esta página no puede mostrar cuáles tiene. No se ha eliminado nada.",
+    "loadRetry": "Reintentar",
     "connections": "Cuentas de Telegram",
     "connectTelegram": "Conectar cuenta de Telegram",
     "sourceType": "Tipo de fuente",
