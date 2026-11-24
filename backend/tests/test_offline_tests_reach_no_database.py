@@ -12,12 +12,18 @@ without the guard these tests fail with a refused connection, not by reaching
 anything. They go through the same drivers the application's engine and
 alembic use, which is where the guard stands.
 """
+import asyncpg
 import pytest
+from psycopg2 import connect as psycopg2_connect_bound_at_import
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+# `conftest`, not `tests.conftest`: tests/ is no package, so the latter is a
+# second module with its own copy of the class, which pytest.raises never matches.
 from conftest import OfflineTestReachedADatabase
+
+asyncpg_connect_bound_at_import = asyncpg.connect
 
 NOWHERE_ASYNC = "postgresql+asyncpg://nobody:nothing@127.0.0.1:1/nothing"
 NOWHERE_SYNC = "postgresql+psycopg2://nobody:nothing@127.0.0.1:1/nothing"
@@ -33,7 +39,7 @@ async def test_a_query_through_an_async_session_is_stopped(offline_database_guar
     finally:
         await engine.dispose()
     assert len(offline_database_guard.attempts) == 1
-    offline_database_guard.forgive()
+    offline_database_guard.clear_attempts()
 
 
 def test_a_sync_connection_like_alembics_is_stopped(offline_database_guard):
@@ -45,7 +51,7 @@ def test_a_sync_connection_like_alembics_is_stopped(offline_database_guard):
     finally:
         engine.dispose()
     assert len(offline_database_guard.attempts) == 1
-    offline_database_guard.forgive()
+    offline_database_guard.clear_attempts()
 
 
 async def test_an_attempt_the_code_swallows_still_fails_the_test(offline_database_guard):
@@ -60,4 +66,35 @@ async def test_an_attempt_the_code_swallows_still_fails_the_test(offline_databas
 
     with pytest.raises(pytest.fail.Exception, match="tried to reach a database"):
         offline_database_guard.check()
-    offline_database_guard.forgive()
+    offline_database_guard.clear_attempts()
+
+
+async def test_a_connect_imported_before_the_guard_is_stopped(offline_database_guard):
+    with pytest.raises(OfflineTestReachedADatabase):
+        await asyncpg_connect_bound_at_import(NOWHERE_ASYNC.replace("+asyncpg", ""))
+    with pytest.raises(OfflineTestReachedADatabase):
+        psycopg2_connect_bound_at_import(NOWHERE_SYNC.replace("+psycopg2", ""))
+    assert len(offline_database_guard.attempts) == 2
+    offline_database_guard.clear_attempts()
+
+
+async def test_a_pool_is_stopped(offline_database_guard):
+    with pytest.raises(OfflineTestReachedADatabase):
+        await asyncpg.create_pool(NOWHERE_ASYNC.replace("+asyncpg", ""), min_size=1)
+    assert offline_database_guard.attempts
+    offline_database_guard.clear_attempts()
+
+
+def test_the_error_names_the_guard_and_where_it_lives(offline_database_guard):
+    with pytest.raises(OfflineTestReachedADatabase, match=r"offline_database_guard.*tests/conftest\.py"):
+        psycopg2_connect_bound_at_import(NOWHERE_SYNC.replace("+psycopg2", ""))
+    offline_database_guard.clear_attempts()
+
+
+def test_a_test_the_stopped_connection_already_failed_is_not_failed_twice(offline_database_guard):
+    with pytest.raises(OfflineTestReachedADatabase):
+        psycopg2_connect_bound_at_import(NOWHERE_SYNC.replace("+psycopg2", ""))
+    offline_database_guard.check(test_failed=True)  # no second report
+    with pytest.raises(pytest.fail.Exception):
+        offline_database_guard.check(test_failed=False)
+    offline_database_guard.clear_attempts()

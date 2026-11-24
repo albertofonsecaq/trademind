@@ -167,14 +167,19 @@ class _DatabaseGuard:
     def stop(self, driver: str):
         self.attempts.append(driver)
         raise OfflineTestReachedADatabase(
-            f"{self.test_id} opened a {driver} connection, and it is not marked `db`. "
-            "Offline tests never reach a database: DATABASE_URL defaults to the live "
-            "one, which cannot be rebuilt (docs/agents/live-data.md). Fake what "
-            "queries, or mark the test `db` and run it with TEST_DATABASE_URL."
+            f"{self.test_id} opened a {driver} connection, and it is not marked `db`, "
+            "so offline_database_guard in tests/conftest.py stopped it. Offline tests "
+            "never reach a database: DATABASE_URL defaults to the live one, which "
+            "cannot be rebuilt (docs/agents/live-data.md). Fake what queries, or mark "
+            "the test `db` and run it with TEST_DATABASE_URL."
         )
 
-    def check(self):
-        if self.attempts:
+    def check(self, *, test_failed: bool = False):
+        """
+        Fail a test that tried to connect and still passed: the code under test
+        swallowed the guard's error. One that failed has been reported already.
+        """
+        if self.attempts and not test_failed:
             pytest.fail(
                 f"{self.test_id} tried to reach a database {len(self.attempts)} time(s) "
                 f"({', '.join(self.attempts)}), and the error was swallowed on the way "
@@ -182,41 +187,63 @@ class _DatabaseGuard:
                 pytrace=False,
             )
 
-    def forgive(self):
+    def clear_attempts(self):
         """For the guard's own tests, once they have seen it stop an attempt."""
         self.attempts.clear()
+
+
+def _is_offline(request) -> bool:
+    """Every test not marked `db`: the ones that never reach a database."""
+    return request.node.get_closest_marker("db") is None
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Keeps each phase's report on the test, for the guard's teardown to read."""
+    report = yield
+    setattr(item, f"_report_{report.when}", report)
+    return report
 
 
 @pytest.fixture(autouse=True)
 def offline_database_guard(request, monkeypatch):
     """
     Every test not marked `db` is stopped at the driver if it opens a database
-    connection, and failed at teardown if it did, even when the code under test
-    caught the error and carried on (#156).
+    connection, and failed at teardown if it did and still passed — the code
+    under test caught the error and carried on (#156).
 
-    At the driver, not at the application's engine: asyncpg is what the engine
-    and every session reach through, psycopg2 is what alembic and the scripts
-    use, and a test building its own engine reaches them too. So the guard does
-    not depend on DATABASE_URL, on backend/.env, or on a test remembering to
-    fake anything. `db` tests connect through TEST_DATABASE_URL as before.
+    At the driver, not at the application's engine, and at the function each
+    driver's every connection goes through, looked up when it is called: so an
+    engine, a session, a pool, alembic, a script, and a `connect` imported
+    before the guard are all stopped, whatever DATABASE_URL or backend/.env say
+    and whether or not a test remembered to fake anything. `db` tests connect
+    through TEST_DATABASE_URL as before.
+
+    Function-scoped, like the tests it guards: a connection opened at import, or
+    in a module- or session-scoped fixture, is outside it, and so is a
+    subprocess running psql. Nothing does either today.
     """
-    guard = _DatabaseGuard(request.node.nodeid)
-    if request.node.get_closest_marker("db") is not None:
-        yield guard
+    if not _is_offline(request):
+        yield None
         return
 
-    import asyncpg
+    import asyncpg.connect_utils
     import psycopg2
 
-    def stopped(driver):
+    guard = _DatabaseGuard(request.node.nodeid)
+
+    def refuse_connections_via(driver):
         def connect(*args, **kwargs):
             guard.stop(driver)
         return connect
 
-    monkeypatch.setattr(asyncpg, "connect", stopped("asyncpg"))
-    monkeypatch.setattr(psycopg2, "connect", stopped("psycopg2"))
+    # asyncpg.connect, a pool, and a bound copy of either all end here.
+    monkeypatch.setattr(asyncpg.connect_utils, "_connect", refuse_connections_via("asyncpg"))
+    # psycopg2.connect, and a bound copy of it, call the C extension through this.
+    monkeypatch.setattr(psycopg2, "_connect", refuse_connections_via("psycopg2"))
     yield guard
-    guard.check()
+    call = getattr(request.node, "_report_call", None)
+    guard.check(test_failed=call is not None and call.failed)
 
 
 @pytest.fixture(autouse=True)
@@ -231,7 +258,7 @@ def _refusals_kept_offline(request, monkeypatch):
     YouTube tests would be stopped by `offline_database_guard` (#156), which is
     what keeps them off a database. A test faking it itself replaces this one.
     """
-    if request.node.get_closest_marker("db") is None:
+    if _is_offline(request):
         fake_refusal_store(monkeypatch)
 
 
