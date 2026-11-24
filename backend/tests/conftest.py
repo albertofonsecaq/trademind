@@ -30,6 +30,12 @@ privilege tests assert what that role cannot do (#59), so running them as the
 owner or the superuser would pass them for the wrong reason — or rather, would
 fail them, which is the point.
 
+Every other test is *prevented* from reaching a database, not just expected
+not to: `offline_database_guard` stops a connection at the driver, whatever
+DATABASE_URL or backend/.env say — and DATABASE_URL defaults to the live one —
+and fails the test at teardown even when the code under test swallowed the
+error (#156).
+
 Whatever a `db` test writes is rolled back when it finishes, so a run leaves no
 rows behind — including when the test fails, when the failure is a statement
 that aborted the transaction, and when the test commits. That last one is why
@@ -147,6 +153,72 @@ def youtube_pace(monkeypatch):
     return clock
 
 
+class OfflineTestReachedADatabase(RuntimeError):
+    """An offline test opened a database connection; the guard stopped it (#156)."""
+
+
+class _DatabaseGuard:
+    """What an offline test tried to connect to, and the rule it broke (#156)."""
+
+    def __init__(self, test_id: str):
+        self.test_id = test_id
+        self.attempts: list[str] = []
+
+    def stop(self, driver: str):
+        self.attempts.append(driver)
+        raise OfflineTestReachedADatabase(
+            f"{self.test_id} opened a {driver} connection, and it is not marked `db`. "
+            "Offline tests never reach a database: DATABASE_URL defaults to the live "
+            "one, which cannot be rebuilt (docs/agents/live-data.md). Fake what "
+            "queries, or mark the test `db` and run it with TEST_DATABASE_URL."
+        )
+
+    def check(self):
+        if self.attempts:
+            pytest.fail(
+                f"{self.test_id} tried to reach a database {len(self.attempts)} time(s) "
+                f"({', '.join(self.attempts)}), and the error was swallowed on the way "
+                "up. Offline tests never reach a database (#156).",
+                pytrace=False,
+            )
+
+    def forgive(self):
+        """For the guard's own tests, once they have seen it stop an attempt."""
+        self.attempts.clear()
+
+
+@pytest.fixture(autouse=True)
+def offline_database_guard(request, monkeypatch):
+    """
+    Every test not marked `db` is stopped at the driver if it opens a database
+    connection, and failed at teardown if it did, even when the code under test
+    caught the error and carried on (#156).
+
+    At the driver, not at the application's engine: asyncpg is what the engine
+    and every session reach through, psycopg2 is what alembic and the scripts
+    use, and a test building its own engine reaches them too. So the guard does
+    not depend on DATABASE_URL, on backend/.env, or on a test remembering to
+    fake anything. `db` tests connect through TEST_DATABASE_URL as before.
+    """
+    guard = _DatabaseGuard(request.node.nodeid)
+    if request.node.get_closest_marker("db") is not None:
+        yield guard
+        return
+
+    import asyncpg
+    import psycopg2
+
+    def stopped(driver):
+        def connect(*args, **kwargs):
+            guard.stop(driver)
+        return connect
+
+    monkeypatch.setattr(asyncpg, "connect", stopped("asyncpg"))
+    monkeypatch.setattr(psycopg2, "connect", stopped("psycopg2"))
+    yield guard
+    guard.check()
+
+
 @pytest.fixture(autouse=True)
 def _refusals_kept_offline(request, monkeypatch):
     """
@@ -155,8 +227,9 @@ def _refusals_kept_offline(request, monkeypatch):
 
     Every request to YouTube asks that record first, through its pace turn —
     the audio download for Whisper included (#151) — and the real one is a
-    query. An offline test that reached it would be reaching for whatever
-    database DATABASE_URL names. A test faking it itself replaces this one.
+    query. Kept as a convenience, not as the safety: without it about twenty
+    YouTube tests would be stopped by `offline_database_guard` (#156), which is
+    what keeps them off a database. A test faking it itself replaces this one.
     """
     if request.node.get_closest_marker("db") is None:
         fake_refusal_store(monkeypatch)
